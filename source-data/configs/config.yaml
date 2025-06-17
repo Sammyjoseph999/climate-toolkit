@@ -1,0 +1,6 @@
+agera_5:
+  dataset: sis-agrometeorological-indicators
+  request:
+    version: "2_0"
+    data_format: grib
+    download_format: zip

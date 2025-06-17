@@ -1,0 +1,4 @@
+*.zip
+*.grib
+*.env
+__pycache__
