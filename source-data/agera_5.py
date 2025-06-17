@@ -7,7 +7,7 @@ API params: https://cds.climate.copernicus.eu/datasets/reanalysis-era5-pressure-
 
 import logging
 import os
-from datetime import date
+from datetime import date, timedelta
 
 import models
 from cdsapi.api import Client
@@ -25,49 +25,66 @@ client = Client(url=url, key=key)
 
 
 class DownloadData(models.DownloadDataBase):
-    def init(
+    def __init__(
         self,
         location_coord: tuple[int],
-        variable: models.ClimateVariable,
-        source: models.ClimateDataset,
         aggregation: models.AggregationLevel,
         date_from_utc: date,
         date_to_utc: date,
     ):
         super().__init__(
             location_coord=location_coord,
-            variable=variable,
-            source=source,
             aggregation=aggregation,
             date_from_utc=date_from_utc,
             date_to_utc=date_to_utc,
         )
 
+        self.date_from_utc = date_from_utc
+        self.date_to_utc = date_to_utc
+        years, months, days = self.get_date_parts(
+            from_date=self.date_from_utc, to_date=self.date_to_utc
+        )
+        self.year = years
+        self.month = months
+        self.day = days
+
+    @staticmethod
+    def get_dates_between(from_date, to_date):
+        dates = []
+        while from_date <= to_date:
+            dates.append(from_date)
+            from_date += timedelta(days=1)
+        return dates
+
+    def get_date_parts(self, from_date, to_date):
+        dates = self.get_dates_between(from_date, to_date)
+        years = sorted(list(set([d.strftime("%Y") for d in dates])))
+        months = sorted(list(set([d.strftime("%m") for d in dates])))
+        days = sorted(list(set([d.strftime("%d") for d in dates])))
+        return years, months, days
+
     def download_rainfall(
         self,
         settings: Settings,
         client: Client = client,
-        year: list[str] = ["2025"],
-        month: list[str] = ["06"],
-        day: list[str] = ["01"],
         file_name: str = "rainfall.zip",
     ) -> None:
         """Downloads rainfall indicators from 1979 to present derived from reanalysis
 
         Args
         ---
-        file_name: file name to save the downloaded data
-        year: the year to download the data (1979 - present)
-        month: the month to download the data (01-12)
-        day: the day of the month to download the data (01-31)
+        - file_name: file name to save the downloaded data
+        - year: the year to download the data (1979 - present)
+        - month: the month to download the data (01-12)
+        - day: the day of the month to download the data (01-31)
         """
 
         # TODO: confirm that this is the correct name of the rainfall dataset
         params = {
             "variable": "liquid_precipitation_duration_fraction",
-            "year": year,
-            "month": month,
-            "day": day,
+            "year": self.year,
+            "month": self.month,
+            "day": self.day,
         }
 
         base_config = settings.agera_5.request
@@ -80,9 +97,6 @@ class DownloadData(models.DownloadDataBase):
         self,
         settings: Settings,
         client: Client = client,
-        year: list[str] = ["2025"],
-        month: list[str] = ["06"],
-        day: list[str] = ["01"],
         file_name: str = "temperature.zip",
         statistic: list[str] = ["24_hour_mean"],
     ) -> None:
@@ -90,11 +104,11 @@ class DownloadData(models.DownloadDataBase):
 
         Args
         ---
-        file_name: file name to save the downloaded data
-        year: the year to download the data (1979 - present)
-        month: the month to download the data (01-12)
-        day: the day of the month to download the data (01-31)
-        statistic: aggregation statistic. One of [
+        - file_name: file name to save the downloaded data
+        - year: the year to download the data (1979 - present)
+        - month: the month to download the data (01-12)
+        - day: the day of the month to download the data (01-31)
+        - statistic: aggregation statistic. One of [
             "24_hour_maximum",
             "24_hour_mean",
             "24_hour_minimum",
@@ -108,9 +122,9 @@ class DownloadData(models.DownloadDataBase):
         params = {
             "variable": "2m_temperature",
             "statistic": statistic,
-            "year": year,
-            "month": month,
-            "day": day,
+            "year": self.year,
+            "month": self.month,
+            "day": self.day,
         }
 
         base_config = settings.agera_5.request
