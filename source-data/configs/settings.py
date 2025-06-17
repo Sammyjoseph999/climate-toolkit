@@ -1,5 +1,4 @@
-"""This module contains settings and paths from the `source_data` module of the
-climate toolkit."""
+"""This module contains settings and paths for the `source_data` module"""
 
 from pathlib import Path
 
@@ -22,7 +21,10 @@ class Agera5Settings(BaseModel):
     """Corresponds to the 'agera_5' block in YAML."""
 
     dataset: str
-    # request: RequestSettings
+    request: dict  # or RequestSettings
+
+
+class Era5Settings(BaseModel):
     request: dict
 
 
@@ -30,6 +32,7 @@ class Settings(BaseSettings):
     """The main settings class."""
 
     agera_5: Agera5Settings
+    era_5: Era5Settings
 
     @classmethod
     def load(

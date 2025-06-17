@@ -4,3 +4,8 @@ agera_5:
     version: "2_0"
     data_format: grib
     download_format: zip
+
+era_5:
+  request:
+    data_format: grib
+    download_format: zip
