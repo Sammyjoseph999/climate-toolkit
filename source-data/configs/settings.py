@@ -1,5 +1,6 @@
 """This module contains settings and paths for the `source_data` module"""
 
+import logging
 from pathlib import Path
 
 import yaml
@@ -7,6 +8,14 @@ from pydantic import BaseModel
 from pydantic_settings import BaseSettings
 
 BASE_DIR = Path(__file__).parent.parent
+
+
+def set_logging():
+    """Configure logging for the application"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(filename)s:%(lineno)d --- %(message)s",
+    )
 
 
 class Agera5Settings(BaseModel):

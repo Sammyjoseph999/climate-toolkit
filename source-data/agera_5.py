@@ -5,15 +5,19 @@ inputs for their analysis and models.
 API params: https://cds.climate.copernicus.eu/datasets/reanalysis-era5-pressure-levels?tab=download
 """
 
+import logging
 import os
 from datetime import date
 
 import models
 from cdsapi.api import Client
-from configs.settings import Settings
+from configs.settings import Settings, set_logging
 from dotenv import load_dotenv
 
 load_dotenv()
+
+set_logging()
+logger = logging.getLogger(__name__)
 
 url = os.environ.get("CDS_URL")
 key = os.environ.get("CDS_KEY")
@@ -69,6 +73,7 @@ class DownloadData(models.DownloadDataBase):
         base_config = settings.agera_5.request
         dataset_name = settings.agera_5.dataset
         request = {**params, **base_config}
+        logger.info(f"Request parameters: {request=}, {dataset_name=}")
         client.retrieve(name=dataset_name, request=request, target=file_name)
 
     def download_temperature(
@@ -111,6 +116,7 @@ class DownloadData(models.DownloadDataBase):
         base_config = settings.agera_5.request
         dataset_name = settings.agera_5.dataset
         request = {**params, **base_config}
+        logger.info(f"Request parameters: {request=}, {dataset_name=}")
         client.retrieve(name=dataset_name, request=request, target=file_name)
 
     def download_precipitation():
