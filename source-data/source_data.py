@@ -31,22 +31,18 @@ class SourceData:
         self.settings = settings
 
         # determine the client on class instantiation
-        # TODO: client parameters to vary with source
+        # TODO: custom parameters to vary with source
         if self.source == models.ClimateDataset.agera_5:
             client = DownloadAgera5(
                 location_coord=None,
-                variable=None,
-                source=None,
                 aggregation=None,
-                date_from_utc=None,
-                date_to_utc=None,
+                date_from_utc=self.date_from_utc,
+                date_to_utc=self.date_to_utc,
             )
 
         if self.source == models.ClimateDataset.era_5:
             client = DownloadEra5(
                 location_coord=None,
-                variable=None,
-                source=None,
                 aggregation=None,
                 date_from_utc=None,
                 date_to_utc=None,
@@ -57,24 +53,15 @@ class SourceData:
     def download(self):
         """Performs actual download of the data"""
 
-        year = str(self.date_from_utc.year)
-        month = str(self.date_from_utc.month).zfill(2)
-        day = str(self.date_from_utc.day).zfill(2)
-
+        # parameters should be handled in the climate dataset module
         if self.variable == models.ClimateVariable.rainfall:
             return self.client.download_rainfall(
                 settings=self.settings,
-                year=[year],
-                month=[month],
-                day=[day],
             )
 
         if self.variable == models.ClimateVariable.temperature:
             return self.client.download_temperature(
                 settings=self.settings,
-                year=[year],
-                month=[month],
-                day=[day],
             )
 
 
@@ -88,7 +75,7 @@ if __name__ == "__main__":
         source=models.ClimateDataset.agera_5,
         aggregation=None,
         date_from_utc=date(year=2025, month=6, day=1),
-        date_to_utc=None,
+        date_to_utc=date(year=2025, month=7, day=2),
         settings=settings,
     )
 

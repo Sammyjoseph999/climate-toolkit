@@ -33,8 +33,6 @@ class DownloadDataBase(ABC):
     def __init__(
         self,
         location_coord: tuple[int],
-        variable: ClimateVariable,
-        source: ClimateDataset,
         aggregation: AggregationLevel,
         date_from_utc: date,
         date_to_utc: date,

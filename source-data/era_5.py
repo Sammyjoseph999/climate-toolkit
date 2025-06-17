@@ -14,19 +14,15 @@ client = Client(url=url, key=key)
 
 
 class DownloadData(models.DownloadDataBase):
-    def init(
+    def __init__(
         self,
         location_coord: tuple[int],
-        variable: models.ClimateVariable,
-        source: models.ClimateDataset,
         aggregation: models.AggregationLevel,
         date_from_utc: date,
         date_to_utc: date,
     ):
         super().__init__(
             location_coord=location_coord,
-            variable=variable,
-            source=source,
             aggregation=aggregation,
             date_from_utc=date_from_utc,
             date_to_utc=date_to_utc,
