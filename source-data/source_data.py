@@ -30,7 +30,8 @@ class SourceData:
         self.date_to_utc = date_to_utc
         self.settings = settings
 
-        # determine the downloader on class instantiation
+        # determine the client on class instantiation
+        # TODO: client parameters to vary with source
         if self.source == models.ClimateDataset.agera_5:
             client = DownloadAgera5(
                 location_coord=None,
@@ -51,16 +52,30 @@ class SourceData:
                 date_to_utc=None,
             )
 
-        self.downloader = client
+        self.client = client
 
     def download(self):
         """Performs actual download of the data"""
 
+        year = str(self.date_from_utc.year)
+        month = str(self.date_from_utc.month).zfill(2)
+        day = str(self.date_from_utc.day).zfill(2)
+
         if self.variable == models.ClimateVariable.rainfall:
-            return self.downloader.download_rainfall(settings=self.settings)
+            return self.client.download_rainfall(
+                settings=self.settings,
+                year=[year],
+                month=[month],
+                day=[day],
+            )
 
         if self.variable == models.ClimateVariable.temperature:
-            return self.downloader.download_temperature(settings=self.settings)
+            return self.client.download_temperature(
+                settings=self.settings,
+                year=[year],
+                month=[month],
+                day=[day],
+            )
 
 
 if __name__ == "__main__":
@@ -73,7 +88,7 @@ if __name__ == "__main__":
         source=models.ClimateDataset.agera_5,
         aggregation=None,
         date_from_utc=date(year=2025, month=6, day=1),
-        date_to_utc=date(year=2025, month=6, day=1),
+        date_to_utc=None,
         settings=settings,
     )
 
