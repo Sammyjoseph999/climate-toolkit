@@ -28,7 +28,7 @@ class AggregationLevel(Enum):
 
 
 class DownloadDataBase(ABC):
-    """An abstract class for creating the downloading data in a standardised interface"""
+    """An abstract class for creating astandardised interface for downloading data"""
 
     def __init__(
         self,

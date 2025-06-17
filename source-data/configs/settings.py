@@ -9,19 +9,11 @@ from pydantic_settings import BaseSettings
 BASE_DIR = Path(__file__).parent.parent
 
 
-class RequestSettings(BaseModel):
-    """Corresponds to the 'request' block in YAML."""
-
-    version: str
-    data_format: str
-    download_format: str
-
-
 class Agera5Settings(BaseModel):
     """Corresponds to the 'agera_5' block in YAML."""
 
     dataset: str
-    request: dict  # or RequestSettings
+    request: dict
 
 
 class Era5Settings(BaseModel):
@@ -37,7 +29,7 @@ class Settings(BaseSettings):
     @classmethod
     def load(
         cls, settings_path: Path = Path(BASE_DIR / "configs/config.yaml")
-    ) -> "Settings":
+    ):
         with open(settings_path, mode="r") as f:
             settings = yaml.safe_load(f)
 
