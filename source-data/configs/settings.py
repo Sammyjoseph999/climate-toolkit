@@ -7,6 +7,7 @@ import yaml
 from pydantic import BaseModel
 
 BASE_DIR = Path(__file__).parent.parent
+config_path = BASE_DIR / "configs/config.yaml"
 
 
 def set_logging():
@@ -47,9 +48,7 @@ class Settings(BaseModel):
     imerg: ImergSettings
 
     @classmethod
-    def load(
-        cls, settings_path: Path = Path(BASE_DIR / "configs/config.yaml")
-    ):
+    def load(cls, settings_path: Path = config_path):
         with open(settings_path, mode="r") as f:
             settings = yaml.safe_load(f)
 
