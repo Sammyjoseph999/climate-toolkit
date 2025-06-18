@@ -15,7 +15,7 @@ class DownloadData(models.DataDownloadBase):
 
     def __init__(
         self,
-        location_coord: tuple[int],
+        location_coord: tuple[float],
         aggregation: models.AggregationLevel,
         date_from_utc: date,
         date_to_utc: date,
