@@ -49,15 +49,11 @@ class DownloadData(models.DownloadDataBase):
         self.day = days
 
     @staticmethod
-    def get_dates_between(from_date, to_date):
+    def get_date_parts(from_date, to_date):
         dates = []
         while from_date <= to_date:
             dates.append(from_date)
             from_date += timedelta(days=1)
-        return dates
-
-    def get_date_parts(self, from_date, to_date):
-        dates = self.get_dates_between(from_date, to_date)
         years = sorted(list(set([d.strftime("%Y") for d in dates])))
         months = sorted(list(set([d.strftime("%m") for d in dates])))
         days = sorted(list(set([d.strftime("%d") for d in dates])))
