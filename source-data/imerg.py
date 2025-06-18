@@ -69,10 +69,8 @@ class DownloadData(models.DataDownloadBase):
         settings: Settings,
         dir_name: str = ".",
     ):
-        # Authenticate with Earthdata Login servers
         auth = earthaccess.login(strategy="environment")
 
-        # Search for granules
         temporal: tuple[str] = (
             self.date_from_utc.strftime("%Y-%m-%d"),
             self.date_to_utc.strftime("%Y-%m-%d"),
@@ -98,10 +96,9 @@ class DownloadData(models.DataDownloadBase):
             bounding_box=bounding_box,
         )
 
-        # Download the granule to the current working directory
         downloaded_files = earthaccess.download(
             results,
-            local_path=dir_name,  # Change this string to download to a different path
+            local_path=dir_name,
         )
 
         return downloaded_files
