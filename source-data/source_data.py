@@ -12,7 +12,7 @@ from terraclimate import DownloadData as DownloadTerra
 
 
 class SourceData:
-    """The main class for retrieving data in a standardised interface."""
+    """The main class for retrieving data via a standardised interface."""
 
     def __init__(
         self,
@@ -68,7 +68,7 @@ class SourceData:
         self.client = client
 
     def download(self):
-        """Performs actual download of the data"""
+        """Download climate data from the remote location."""
 
         # parameters should be handled in the climate dataset module
         if self.variable == models.ClimateVariable.rainfall:
