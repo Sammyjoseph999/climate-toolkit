@@ -29,7 +29,7 @@ class Era5Settings(BaseModel):
     request: dict
 
 
-class AggregationSettings(BaseModel):
+class AggregationLevel(BaseModel):
     monthly: str
     daily: str
     half_hourly: str
@@ -37,10 +37,10 @@ class AggregationSettings(BaseModel):
 
 class ImergSettings(BaseModel):
     version: str
-    short_name: AggregationSettings
+    short_name: AggregationLevel
 
 
-class VariableSettings(BaseModel):
+class ClimateVariable(BaseModel):
     precipitation: str
     max_temperature: str
     min_temperature: str
@@ -48,7 +48,7 @@ class VariableSettings(BaseModel):
 
 class TerraSettings(BaseModel):
     url: str
-    variable: VariableSettings
+    variable: ClimateVariable
 
 
 class Settings(BaseModel):
