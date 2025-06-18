@@ -7,6 +7,7 @@ import models
 from agera_5 import DownloadData as DownloadAgera5
 from configs.settings import Settings
 from era_5 import DownloadData as DownloadEra5
+from terraclimate import DownloadData as DownloadTerra
 
 
 class SourceData:
@@ -31,21 +32,28 @@ class SourceData:
         self.settings = settings
 
         # determine the client on class instantiation
-        # TODO: custom parameters to vary with source
         if self.source == models.ClimateDataset.agera_5:
             client = DownloadAgera5(
-                location_coord=None,
-                aggregation=None,
+                location_coord=location_coord,
+                aggregation=aggregation,
                 date_from_utc=self.date_from_utc,
                 date_to_utc=self.date_to_utc,
             )
 
         if self.source == models.ClimateDataset.era_5:
             client = DownloadEra5(
-                location_coord=None,
-                aggregation=None,
-                date_from_utc=None,
-                date_to_utc=None,
+                location_coord=location_coord,
+                aggregation=aggregation,
+                date_from_utc=date_from_utc,
+                date_to_utc=date_to_utc,
+            )
+
+        if self.source == models.ClimateDataset.terraclimate:
+            client = DownloadTerra(
+                location_coord=location_coord,
+                aggregation=aggregation,
+                date_from_utc=date_from_utc,
+                date_to_utc=date_to_utc,
             )
 
         self.client = client
@@ -68,14 +76,13 @@ class SourceData:
 if __name__ == "__main__":
     settings = Settings.load()
 
-    # download rainfall from AgERA5
     source_data = SourceData(
         location_coord=None,
         variable=models.ClimateVariable.rainfall,
-        source=models.ClimateDataset.agera_5,
+        source=models.ClimateDataset.terraclimate,
         aggregation=None,
-        date_from_utc=date(year=2025, month=6, day=1),
-        date_to_utc=date(year=2025, month=7, day=2),
+        date_from_utc=date(year=2024, month=6, day=1),
+        date_to_utc=date(year=2024, month=7, day=2),
         settings=settings,
     )
 
