@@ -40,7 +40,7 @@ class ImergSettings(BaseModel):
 
 
 class Settings(BaseModel):
-    """The main settings class."""
+    """Loads the application's settings."""
 
     agera_5: Agera5Settings
     era_5: Era5Settings
