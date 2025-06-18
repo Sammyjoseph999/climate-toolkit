@@ -29,7 +29,7 @@ class Era5Settings(BaseModel):
     request: dict
 
 
-class ImergShortNames(BaseModel):
+class AggregationSettings(BaseModel):
     monthly: str
     daily: str
     half_hourly: str
@@ -37,7 +37,18 @@ class ImergShortNames(BaseModel):
 
 class ImergSettings(BaseModel):
     version: str
-    short_name: ImergShortNames
+    short_name: AggregationSettings
+
+
+class VariableSettings(BaseModel):
+    precipitation: str
+    max_temperature: str
+    min_temperature: str
+
+
+class TerraSettings(BaseModel):
+    url: str
+    variable: VariableSettings
 
 
 class Settings(BaseModel):
@@ -46,6 +57,7 @@ class Settings(BaseModel):
     agera_5: Agera5Settings
     era_5: Era5Settings
     imerg: ImergSettings
+    terraclimate: TerraSettings
 
     @classmethod
     def load(cls, settings_path: Path = config_path):

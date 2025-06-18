@@ -88,10 +88,10 @@ if __name__ == "__main__":
     source_data = SourceData(
         location_coord=(-1.18, 36.343),
         variable=models.ClimateVariable.rainfall,
-        source=models.ClimateDataset.imerg,
+        source=models.ClimateDataset.terraclimate,
         aggregation=models.AggregationLevel.monthly,
-        date_from_utc=date(year=2014, month=1, day=1),
-        date_to_utc=date(year=2014, month=1, day=1),
+        date_from_utc=date(year=2024, month=1, day=1),
+        date_to_utc=date(year=2024, month=1, day=1),
         settings=settings,
     )
 

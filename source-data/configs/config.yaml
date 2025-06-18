@@ -11,8 +11,9 @@ era_5:
     download_format: zip
 
 terraclimate:
+  url: https://climate.northwestknowledge.net/TERRACLIMATE-DATA/
   variable:
-    rainfall: ppt
+    precipitation: ppt
     max_temperature: tmax
     min_temperature: tmin
 
