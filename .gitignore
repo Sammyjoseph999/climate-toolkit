@@ -2,3 +2,4 @@
 *.grib
 *.env
 __pycache__
+scripts_JM
