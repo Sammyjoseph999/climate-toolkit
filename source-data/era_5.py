@@ -13,7 +13,7 @@ key = os.environ.get("CDS_KEY")
 client = Client(url=url, key=key)
 
 
-class DownloadData(models.DownloadDataBase):
+class DownloadData(models.DataDownloadBase):
     def __init__(
         self,
         location_coord: tuple[int],

@@ -3,6 +3,9 @@
 from abc import ABC, abstractmethod
 from datetime import date
 from enum import Enum, auto
+from typing import Optional
+
+from configs.settings import Settings
 
 
 class ClimateVariable(Enum):
@@ -17,6 +20,7 @@ class ClimateDataset(Enum):
 
     agera_5 = auto()
     era_5 = auto()
+    terraclimate = auto()
 
 
 class AggregationLevel(Enum):
@@ -27,7 +31,7 @@ class AggregationLevel(Enum):
     monthly = auto()
 
 
-class DownloadDataBase(ABC):
+class DataDownloadBase(ABC):
     """An abstract class for creating astandardised interface for downloading data"""
 
     def __init__(
@@ -40,11 +44,13 @@ class DownloadDataBase(ABC):
         pass
 
     @abstractmethod
-    def download_rainfall():
-        """The parameters here can be flexible while reusing the ones initialised"""
+    def download_rainfall(settings: Optional[Settings]):
+        """Retrieves rainfall data from the climate database"""
+        # The parameters here can be flexible while reusing the ones initialised
         pass
 
     @abstractmethod
-    def download_temperature():
-        """The parameters here can be flexible while reusing the ones initialised"""
+    def download_temperature(settings: Optional[Settings]):
+        """Retrieves temperature data from the climate database"""
+        # The parameters here can be flexible while reusing the ones initialised
         pass
