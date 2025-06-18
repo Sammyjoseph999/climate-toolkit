@@ -5,7 +5,6 @@ from pathlib import Path
 
 import yaml
 from pydantic import BaseModel
-from pydantic_settings import BaseSettings
 
 BASE_DIR = Path(__file__).parent.parent
 
@@ -29,11 +28,23 @@ class Era5Settings(BaseModel):
     request: dict
 
 
-class Settings(BaseSettings):
+class ImergShortNames(BaseModel):
+    monthly: str
+    daily: str
+    half_hourly: str
+
+
+class ImergSettings(BaseModel):
+    version: str
+    short_name: ImergShortNames
+
+
+class Settings(BaseModel):
     """The main settings class."""
 
     agera_5: Agera5Settings
     era_5: Era5Settings
+    imerg: ImergSettings
 
     @classmethod
     def load(
@@ -49,4 +60,4 @@ if __name__ == "__main__":
     print(Settings.load().agera_5)
     print(Settings.load().agera_5.dataset)
     print(Settings.load().agera_5.request)
-    # print(Settings.load().agera_5.request.data_format)
+    print(Settings.load().imerg.short_name.monthly)

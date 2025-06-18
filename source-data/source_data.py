@@ -7,6 +7,7 @@ import models
 from agera_5 import DownloadData as DownloadAgera5
 from configs.settings import Settings
 from era_5 import DownloadData as DownloadEra5
+from imerg import DownloadData as DownloadImerg
 from terraclimate import DownloadData as DownloadTerra
 
 
@@ -15,7 +16,7 @@ class SourceData:
 
     def __init__(
         self,
-        location_coord: tuple[int],
+        location_coord: tuple[float],
         variable: models.ClimateVariable,
         source: models.ClimateDataset,
         aggregation: models.AggregationLevel,
@@ -56,6 +57,14 @@ class SourceData:
                 date_to_utc=date_to_utc,
             )
 
+        if self.source == models.ClimateDataset.imerg:
+            client = DownloadImerg(
+                location_coord=location_coord,
+                aggregation=aggregation,
+                date_from_utc=date_from_utc,
+                date_to_utc=date_to_utc,
+            )
+
         self.client = client
 
     def download(self):
@@ -77,12 +86,12 @@ if __name__ == "__main__":
     settings = Settings.load()
 
     source_data = SourceData(
-        location_coord=None,
+        location_coord=(-1.18, 36.343),
         variable=models.ClimateVariable.rainfall,
-        source=models.ClimateDataset.terraclimate,
-        aggregation=None,
-        date_from_utc=date(year=2024, month=6, day=1),
-        date_to_utc=date(year=2024, month=7, day=2),
+        source=models.ClimateDataset.imerg,
+        aggregation=models.AggregationLevel.monthly,
+        date_from_utc=date(year=2014, month=1, day=1),
+        date_to_utc=date(year=2014, month=1, day=1),
         settings=settings,
     )
 

@@ -9,3 +9,17 @@ era_5:
   request:
     data_format: grib
     download_format: zip
+
+terraclimate:
+  variable:
+    rainfall: ppt
+    max_temperature: tmax
+    min_temperature: tmin
+
+imerg:
+  version: "07"
+  short_name:
+  # short names for Final Precipitation
+    monthly: GPM_3IMERGM
+    daily: GPM_3IMERGDF
+    half_hourly: GPM_3IMERGHH

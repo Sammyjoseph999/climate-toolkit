@@ -21,6 +21,7 @@ class ClimateDataset(Enum):
     agera_5 = auto()
     era_5 = auto()
     terraclimate = auto()
+    imerg = auto()
 
 
 class AggregationLevel(Enum):
@@ -36,7 +37,7 @@ class DataDownloadBase(ABC):
 
     def __init__(
         self,
-        location_coord: tuple[int],
+        location_coord: tuple[float],
         aggregation: AggregationLevel,
         date_from_utc: date,
         date_to_utc: date,
