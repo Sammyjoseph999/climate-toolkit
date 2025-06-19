@@ -3,12 +3,12 @@ different climate databases."""
 
 from datetime import date
 
-import models
-from agera_5 import DownloadData as DownloadAgera5
-from configs.settings import Settings
-from era_5 import DownloadData as DownloadEra5
-from imerg import DownloadData as DownloadImerg
-from terraclimate import DownloadData as DownloadTerra
+from sources import models
+from sources.agera_5 import DownloadData as DownloadAgera5
+from sources.configs.settings import Settings
+from sources.era_5 import DownloadData as DownloadEra5
+from sources.imerg import DownloadData as DownloadImerg
+from sources.terraclimate import DownloadData as DownloadTerra
 
 
 class SourceData:

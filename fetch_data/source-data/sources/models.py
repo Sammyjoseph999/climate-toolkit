@@ -5,7 +5,7 @@ from datetime import date
 from enum import Enum, auto
 from typing import Optional
 
-from configs.settings import Settings
+from .configs.settings import Settings
 
 
 class ClimateVariable(Enum):

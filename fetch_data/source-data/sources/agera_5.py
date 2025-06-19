@@ -9,10 +9,11 @@ import logging
 import os
 from datetime import date, timedelta
 
-import models
 from cdsapi.api import Client
-from configs.settings import Settings, set_logging
 from dotenv import load_dotenv
+
+from . import models
+from .configs.settings import Settings, set_logging
 
 load_dotenv()
 

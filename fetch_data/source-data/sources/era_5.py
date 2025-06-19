@@ -1,10 +1,11 @@
 import os
 from datetime import date
 
-import models
 from cdsapi.api import Client
-from configs.settings import Settings
 from dotenv import load_dotenv
+
+from . import models
+from .configs.settings import Settings
 
 load_dotenv()
 

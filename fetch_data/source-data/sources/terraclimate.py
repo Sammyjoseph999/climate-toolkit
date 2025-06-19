@@ -1,9 +1,10 @@
 import logging
 from datetime import date
 
-import models
 import requests
-from configs.settings import Settings, set_logging
+
+from . import models
+from .configs.settings import Settings, set_logging
 
 set_logging()
 logger = logging.getLogger(__name__)
