@@ -141,5 +141,8 @@ class DownloadData(models.DataDownloadBase):
     def download_solar_radiation():
         pass
 
+    def download_humidity():
+        pass
+
     def download_soil_moisture():
         pass

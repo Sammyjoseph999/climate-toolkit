@@ -69,3 +69,18 @@ class DownloadData(models.DataDownloadBase):
         years = range(self.date_from_utc.year, self.date_to_utc)
         for year in years:
             self.fetch_data(variable=variable, year=year, base_url=url)
+
+    def download_precipitation():
+        pass
+
+    def download_windspeed():
+        pass
+
+    def download_solar_radiation():
+        pass
+
+    def download_humidity():
+        pass
+
+    def download_soil_moisture():
+        pass

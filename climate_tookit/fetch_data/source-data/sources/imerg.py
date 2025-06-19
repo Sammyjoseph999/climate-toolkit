@@ -106,3 +106,18 @@ class DownloadData(models.DataDownloadBase):
 
     def download_temperature(settings):
         pass
+
+    def download_precipitation():
+        pass
+
+    def download_windspeed():
+        pass
+
+    def download_solar_radiation():
+        pass
+
+    def download_humidity():
+        pass
+
+    def download_soil_moisture():
+        pass
