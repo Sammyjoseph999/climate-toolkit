@@ -6,8 +6,8 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel
 
-BASE_DIR = Path(__file__).parent.parent
-config_path = BASE_DIR / "configs/config.yaml"
+BASE_DIR = Path(__file__).parent.parent.parent
+config_path = "sources/utils/config.yaml"
 
 
 def set_logging():

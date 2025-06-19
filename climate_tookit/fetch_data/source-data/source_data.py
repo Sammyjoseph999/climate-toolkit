@@ -3,12 +3,12 @@ different climate databases."""
 
 from datetime import date
 
-from sources import models
 from sources.agera_5 import DownloadData as DownloadAgera5
-from sources.configs.settings import Settings
 from sources.era_5 import DownloadData as DownloadEra5
 from sources.imerg import DownloadData as DownloadImerg
 from sources.terraclimate import DownloadData as DownloadTerra
+from sources.utils import models
+from sources.utils.settings import Settings
 
 
 class SourceData:
@@ -88,7 +88,7 @@ if __name__ == "__main__":
     source_data = SourceData(
         location_coord=(-1.18, 36.343),
         variable=models.ClimateVariable.rainfall,
-        source=models.ClimateDataset.terraclimate,
+        source=models.ClimateDataset.imerg,
         aggregation=models.AggregationLevel.monthly,
         date_from_utc=date(year=2024, month=1, day=1),
         date_to_utc=date(year=2024, month=1, day=1),

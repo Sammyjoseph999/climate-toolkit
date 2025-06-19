@@ -4,8 +4,8 @@ from datetime import date
 from cdsapi.api import Client
 from dotenv import load_dotenv
 
-from . import models
-from .configs.settings import Settings
+from .utils import models
+from .utils.settings import Settings
 
 load_dotenv()
 

@@ -12,8 +12,8 @@ from datetime import date, timedelta
 from cdsapi.api import Client
 from dotenv import load_dotenv
 
-from . import models
-from .configs.settings import Settings, set_logging
+from .utils import models
+from .utils.settings import Settings, set_logging
 
 load_dotenv()
 

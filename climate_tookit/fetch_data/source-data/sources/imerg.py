@@ -16,8 +16,8 @@ from datetime import date
 
 import earthaccess
 
-from . import models
-from .configs.settings import Settings, set_logging
+from .utils import models
+from .utils.settings import Settings, set_logging
 
 set_logging()
 logger = logging.getLogger(__name__)
