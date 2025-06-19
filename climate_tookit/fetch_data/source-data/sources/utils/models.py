@@ -55,3 +55,28 @@ class DataDownloadBase(ABC):
         """Retrieves temperature data from the climate database"""
         # The parameters here can be flexible while reusing the ones initialised
         pass
+
+    @abstractmethod
+    def download_precipitation():
+        """Retrieves precipitation data from the climate database"""
+        pass
+
+    @abstractmethod
+    def download_windspeed():
+        """Retrieves wind speed data from the climate database"""
+        pass
+
+    @abstractmethod
+    def download_solar_radiation():
+        """Retrieves solar radiation data from the climate database"""
+        pass
+
+    @abstractmethod
+    def download_humidity():
+        """Retrieves humidity data from the climate database"""
+        pass
+
+    @abstractmethod
+    def download_soil_moisture():
+        """Retrieves soil moisture data from the climate database"""
+        pass
