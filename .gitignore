@@ -1,0 +1,8 @@
+# climate data files
+*.zip
+*.grib
+*.nc
+*.hdf5
+
+*.env
+__pycache__
