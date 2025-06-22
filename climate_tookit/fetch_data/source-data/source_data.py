@@ -7,6 +7,7 @@ from sources.agera_5 import DownloadData as DownloadAgera5
 from sources.era_5 import DownloadData as DownloadEra5
 from sources.imerg import DownloadData as DownloadImerg
 from sources.terraclimate import DownloadData as DownloadTerra
+from sources.chirps import DownloadData as DownloadChirps 
 from sources.utils import models
 from sources.utils.settings import Settings
 
@@ -63,6 +64,14 @@ class SourceData:
                 aggregation=aggregation,
                 date_from_utc=date_from_utc,
                 date_to_utc=date_to_utc,
+            )
+
+        if self.source == models.ClimateDataset.chirps:
+            client = DownloadChirps(
+                location_coord=location_coord,
+                aggregation=aggregation,
+                date_from_utc=self.date_from_utc,
+                date_to_utc=self.date_to_utc,
             )
 
         self.client = client
