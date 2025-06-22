@@ -22,6 +22,7 @@ class ClimateDataset(Enum):
     era_5 = auto()
     terraclimate = auto()
     imerg = auto()
+    chirps = auto()
 
 
 class AggregationLevel(Enum):
