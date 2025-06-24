@@ -90,7 +90,7 @@ class SourceData:
                 settings=self.settings,
             )
 
-        if self.variable == models.ClimateVariable.precip:
+        if self.variable == models.ClimateVariable.precipitation:
             return self.client.download_precipitation(
                 settings=self.settings,
             )
