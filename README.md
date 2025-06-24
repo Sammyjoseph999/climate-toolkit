@@ -1,15 +1,19 @@
-# Climate Toolkit
+# Climate Data Toolkit
 
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/github/license/Sammyjoseph999/climate-toolkit)](./LICENSE)
-[![cdsapi](https://img.shields.io/badge/cdsapi-0.7.6-yellow)](https://pypi.org/project/cdsapi/)
-[![earthaccess](https://img.shields.io/badge/earthaccess-0.14.0-brightgreen)](https://pypi.org/project/earthaccess/)
-[![pydantic](https://img.shields.io/badge/pydantic-2.11.7-blue)](https://pypi.org/project/pydantic/)
-[![python-dotenv](https://img.shields.io/badge/python--dotenv-1.1.0-lightgrey)](https://pypi.org/project/python-dotenv/)
-[![requests](https://img.shields.io/badge/requests-2.32.4-red)](https://pypi.org/project/requests/)
-[![PyYAML](https://img.shields.io/badge/PyYAML-6.0.2-blueviolet)](https://pypi.org/project/PyYAML/)
+A unified toolkit for retrieving climate data from various global datasets such as CHIRPS, AGERA5, TerraClimate, IMERG, TAMSAT, CHIRTS, ERA5, NEX-GDDP, NASA POWER and CMIP6.
 
-A modular Python library for downloading and analyzing climate data from public datasets like CHIRPS, IMERG, ERA5, AGERA5, and TerraClimate.
+## API Dataset Badges
+
+[![CHIRPS](https://img.shields.io/badge/CHIRPS-Precipitation_4.8-blue)](https://data.chc.ucsb.edu/products/CHIRPS-2.0/)
+[![AgERA5](https://img.shields.io/badge/AgERA5-Agriculture_Climate_4.8-brightgreen)](https://data.mcc.tu-berlin.de/agera5/)
+[![TerraClimate](https://img.shields.io/badge/TerraClimate-Water_Balance_4.7-lightgrey)](http://www.climatologylab.org/terraclimate.html)
+[![IMERG](https://img.shields.io/badge/IMERG-Global_Precipitation_4.7-green)](https://gpm.nasa.gov/data/imerg)
+[![TAMSAT](https://img.shields.io/badge/TAMSAT-Africa_Precipitation_4.7-yellowgreen)](https://www.tamsat.org.uk/)
+[![CHIRTS](https://img.shields.io/badge/CHIRTS-Temperature_4.7-blueviolet)](https://data.chc.ucsb.edu/products/CHIRTSdaily/)
+[![ERA5](https://img.shields.io/badge/ERA5-Reanalysis_Climate_4.2-orange)](https://cds.climate.copernicus.eu/cdsapp#!/dataset/reanalysis-era5-single-levels)
+[![NEX-GDDP](https://img.shields.io/badge/NEX--GDDP-Climate_Projections_4.1-blue)](https://www.nccs.nasa.gov/services/data-collections/land-based-products/nex-gddp)
+[![NASA POWER](https://img.shields.io/badge/NASA_POWER-Solar_Temp_Global_4.0-lightblue)](https://power.larc.nasa.gov/)
+[![CMIP6](https://img.shields.io/badge/CMIP6-Climate_Scenarios-red)](https://esgf-node.llnl.gov/projects/cmip6/)
 
 ---
 
@@ -17,7 +21,7 @@ A modular Python library for downloading and analyzing climate data from public 
 
 The Climate Toolkit offers a unified, programmatic interface to:
 
-- Retrieve climate data from CHIRPS, IMERG, ERA5, AGERA5, and TerraClimate
+- Retrieve climate data from CHIRPS, AGERA5, TerraClimate, IMERG, TAMSAT, CHIRTS, ERA5, NEX-GDDP, NASA POWER and CMIP6
 - Compute rainfall statistics, anomalies, and hazard indicators
 - Compare climate trends over historical and seasonal periods
 
