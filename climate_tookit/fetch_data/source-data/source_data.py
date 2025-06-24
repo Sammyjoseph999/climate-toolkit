@@ -7,7 +7,7 @@ from sources.agera_5 import DownloadData as DownloadAgera5
 from sources.era_5 import DownloadData as DownloadEra5
 from sources.imerg import DownloadData as DownloadImerg
 from sources.terraclimate import DownloadData as DownloadTerra
-from sources.chirps import DownloadData as DownloadChirps 
+from sources.chirps import DownloadData as DownloadChirps
 from sources.utils import models
 from sources.utils.settings import Settings
 
@@ -87,6 +87,11 @@ class SourceData:
 
         if self.variable == models.ClimateVariable.temperature:
             return self.client.download_temperature(
+                settings=self.settings,
+            )
+
+        if self.variable == models.ClimateVariable.precip:
+            return self.client.download_precipitation(
                 settings=self.settings,
             )
 
