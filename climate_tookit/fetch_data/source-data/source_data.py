@@ -2,6 +2,7 @@
 different climate databases."""
 
 from datetime import date
+from typing import Optional
 
 from sources.agera_5 import DownloadData as DownloadAgera5
 from sources.era_5 import DownloadData as DownloadEra5
@@ -19,10 +20,11 @@ class SourceData:
         location_coord: tuple[float],
         variable: models.ClimateVariable,
         source: models.ClimateDataset,
-        aggregation: models.AggregationLevel,
         date_from_utc: date,
         date_to_utc: date,
         settings: Settings,
+        variable_type: Optional[models.VariableType],
+        aggregation: Optional[models.AggregationLevel],
     ):
         self.location_coord = location_coord
         self.variable = variable
@@ -31,6 +33,7 @@ class SourceData:
         self.date_from_utc = date_from_utc
         self.date_to_utc = date_to_utc
         self.settings = settings
+        self.variable_type = variable_type
 
         # determine the client on class instantiation
         if self.source == models.ClimateDataset.agera_5:
@@ -73,12 +76,37 @@ class SourceData:
         # parameters should be handled in the climate dataset module
         if self.variable == models.ClimateVariable.rainfall:
             return self.client.download_rainfall(
-                settings=self.settings,
+                settings=self.settings, variable_type=self.variable_type
             )
 
         if self.variable == models.ClimateVariable.temperature:
             return self.client.download_temperature(
-                settings=self.settings,
+                settings=self.settings, variable_type=self.variable_type
+            )
+
+        if self.variable == models.ClimateVariable.precipitation:
+            return self.client.download_precipitation(
+                settings=self.settings, variable_type=self.variable_type
+            )
+
+        if self.variable == models.ClimateVariable.wind_speed:
+            return self.client.download_windspeed(
+                settings=self.settings, variable_type=self.variable_type
+            )
+
+        if self.variable == models.ClimateVariable.solar_radiation:
+            return self.client.download_solar_radiation(
+                settings=self.settings, variable_type=self.variable_type
+            )
+
+        if self.variable == models.ClimateVariable.humidity:
+            return self.client.download_humidity(
+                settings=self.settings, variable_type=self.variable_type
+            )
+
+        if self.variable == models.ClimateVariable.soil_moisture:
+            return self.client.download_soil_moisture(
+                settings=self.settings, variable_type=self.variable_type
             )
 
 
@@ -87,9 +115,10 @@ if __name__ == "__main__":
 
     source_data = SourceData(
         location_coord=(-1.18, 36.343),
-        variable=models.ClimateVariable.rainfall,
-        source=models.ClimateDataset.imerg,
-        aggregation=models.AggregationLevel.monthly,
+        variable=models.ClimateVariable.precipitation,
+        variable_type=None,
+        source=models.ClimateDataset.terraclimate,
+        aggregation=None,
         date_from_utc=date(year=2024, month=1, day=1),
         date_to_utc=date(year=2024, month=1, day=1),
         settings=settings,

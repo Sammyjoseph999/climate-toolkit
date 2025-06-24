@@ -3,9 +3,12 @@
 from abc import ABC, abstractmethod
 from datetime import date
 from enum import Enum, auto
-from typing import Optional
 
-from .settings import Settings
+
+class VariableType(Enum):
+    max = auto()
+    min = auto()
+    mean = auto()
 
 
 class ClimateVariable(Enum):
@@ -13,6 +16,11 @@ class ClimateVariable(Enum):
 
     rainfall = auto()
     temperature = auto()
+    precipitation = auto()
+    wind_speed = auto()
+    solar_radiation = auto()
+    humidity = auto()
+    soil_moisture = auto()
 
 
 class ClimateDataset(Enum):
@@ -45,13 +53,13 @@ class DataDownloadBase(ABC):
         pass
 
     @abstractmethod
-    def download_rainfall(settings: Optional[Settings]):
+    def download_rainfall():
         """Retrieves rainfall data from the climate database"""
         # The parameters here can be flexible while reusing the ones initialised
         pass
 
     @abstractmethod
-    def download_temperature(settings: Optional[Settings]):
+    def download_temperature():
         """Retrieves temperature data from the climate database"""
         # The parameters here can be flexible while reusing the ones initialised
         pass

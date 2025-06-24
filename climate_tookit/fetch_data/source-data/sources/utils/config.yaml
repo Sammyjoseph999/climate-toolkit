@@ -16,6 +16,9 @@ terraclimate:
     precipitation: ppt
     max_temperature: tmax
     min_temperature: tmin
+    wind_speed: ws
+    solar_radiation: srad
+    soil_moisture: soil
 
 imerg:
   version: "07"
