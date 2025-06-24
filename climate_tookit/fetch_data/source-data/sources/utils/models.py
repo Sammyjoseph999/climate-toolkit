@@ -13,7 +13,7 @@ class ClimateVariable(Enum):
 
     rainfall = auto()
     temperature = auto()
-    precip = auto()
+    precipitation = auto()
 
 
 class ClimateDataset(Enum):
