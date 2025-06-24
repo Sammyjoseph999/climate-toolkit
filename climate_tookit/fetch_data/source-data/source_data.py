@@ -2,6 +2,7 @@
 different climate databases."""
 
 from datetime import date
+from typing import Optional
 
 from sources.agera_5 import DownloadData as DownloadAgera5
 from sources.era_5 import DownloadData as DownloadEra5
@@ -19,11 +20,11 @@ class SourceData:
         location_coord: tuple[float],
         variable: models.ClimateVariable,
         source: models.ClimateDataset,
-        aggregation: models.AggregationLevel,
         date_from_utc: date,
         date_to_utc: date,
         settings: Settings,
-        variable_type: models.VariableType,
+        variable_type: Optional[models.VariableType],
+        aggregation: Optional[models.AggregationLevel],
     ):
         self.location_coord = location_coord
         self.variable = variable
@@ -114,10 +115,10 @@ if __name__ == "__main__":
 
     source_data = SourceData(
         location_coord=(-1.18, 36.343),
-        variable=models.ClimateVariable.rainfall,
-        variable_type=models.VariableType.mean,
+        variable=models.ClimateVariable.precipitation,
+        variable_type=None,
         source=models.ClimateDataset.terraclimate,
-        aggregation=models.AggregationLevel.monthly,
+        aggregation=None,
         date_from_utc=date(year=2024, month=1, day=1),
         date_to_utc=date(year=2024, month=1, day=1),
         settings=settings,

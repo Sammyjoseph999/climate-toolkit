@@ -2,6 +2,7 @@
 
 import logging
 from datetime import date
+from typing import Optional
 
 import requests
 
@@ -92,7 +93,11 @@ class DownloadData(models.DataDownloadBase):
             to_date=self.date_to_utc,
         )
 
-    def download_precipitation(self, settings: Settings):
+    def download_precipitation(
+        self,
+        settings: Settings,
+        variable_type: Optional[models.VariableType],
+    ):
         variable = settings.terraclimate.variable.precipitation
         url = settings.terraclimate.url
         self._download_from_date_range(
@@ -102,7 +107,11 @@ class DownloadData(models.DataDownloadBase):
             to_date=self.date_to_utc,
         )
 
-    def download_windspeed(self, settings: Settings):
+    def download_windspeed(
+        self,
+        settings: Settings,
+        variable_type: Optional[models.VariableType],
+    ):
         variable = settings.terraclimate.variable.precipitation
         url = settings.terraclimate.url
         self._download_from_date_range(
@@ -112,7 +121,11 @@ class DownloadData(models.DataDownloadBase):
             to_date=self.date_to_utc,
         )
 
-    def download_solar_radiation(self, settings: Settings):
+    def download_solar_radiation(
+        self,
+        settings: Settings,
+        variable_type: Optional[models.VariableType],
+    ):
         variable = settings.terraclimate.variable.solar_radiation
         url = settings.terraclimate.url
         self._download_from_date_range(
@@ -122,7 +135,11 @@ class DownloadData(models.DataDownloadBase):
             to_date=self.date_to_utc,
         )
 
-    def download_soil_moisture(self, settings: Settings):
+    def download_soil_moisture(
+        self,
+        settings: Settings,
+        variable_type: Optional[models.VariableType],
+    ):
         variable = settings.terraclimate.variable.soil_moisture
         url = settings.terraclimate.url
         self._download_from_date_range(
@@ -135,13 +152,13 @@ class DownloadData(models.DataDownloadBase):
     def download_rainfall(
         self,
         settings: Settings,
-        variable_type: models.VariableType,
+        variable_type: Optional[models.VariableType],
     ):
         logger.warning("TerraClimate does not have rainfall data.")
 
     def download_humidity(
         self,
         settings: Settings,
-        variable_type: models.VariableType,
+        variable_type: Optional[models.VariableType],
     ):
         logger.warning("TerraClimate does not have humidity data.")
