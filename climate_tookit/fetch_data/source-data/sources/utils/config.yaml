@@ -16,11 +16,14 @@ terraclimate:
     precipitation: ppt
     max_temperature: tmax
     min_temperature: tmin
+    wind_speed: ws
+    solar_radiation: srad
+    soil_moisture: soil
 
 imerg:
   version: "07"
   short_name:
-  # short names for Final Precipitation
+    # short names for Final Precipitation
     monthly: GPM_3IMERGM
     daily: GPM_3IMERGDF
     half_hourly: GPM_3IMERGHH

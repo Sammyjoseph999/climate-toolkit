@@ -18,6 +18,21 @@ def set_logging():
     )
 
 
+class AggregationLevel(BaseModel):
+    monthly: str
+    daily: str
+    half_hourly: str
+
+
+class TerraClimateVariable(BaseModel):
+    precipitation: str
+    max_temperature: str
+    min_temperature: str
+    wind_speed: str
+    solar_radiation: str
+    soil_moisture: str
+
+
 class Agera5Settings(BaseModel):
     """Corresponds to the 'agera_5' block in YAML."""
 
@@ -29,29 +44,23 @@ class Era5Settings(BaseModel):
     request: dict
 
 
-class AggregationLevel(BaseModel):
-    monthly: str
-    daily: str
-    half_hourly: str
-
-
 class ImergSettings(BaseModel):
     version: str
     short_name: AggregationLevel
 
 
-class ClimateVariable(BaseModel):
-    precipitation: str
-    max_temperature: str
-    min_temperature: str
-
-
 class TerraSettings(BaseModel):
     url: str
-    variable: ClimateVariable
-    
+    variable: TerraClimateVariable
+
+
 class ChirpsSettings(BaseModel):
     base_url: str
+
+
+class TamsatSettings(BaseModel):
+    rainfall_url: str
+    soil_moisture_url: str
 
 
 class Settings(BaseModel):
@@ -62,6 +71,7 @@ class Settings(BaseModel):
     imerg: ImergSettings
     terraclimate: TerraSettings
     chirps: ChirpsSettings
+    tamsat: TamsatSettings
 
     @classmethod
     def load(cls, settings_path: Path = config_path):
@@ -72,8 +82,10 @@ class Settings(BaseModel):
 
 
 if __name__ == "__main__":
-    print(Settings.load().agera_5)
-    print(Settings.load().agera_5.dataset)
-    print(Settings.load().agera_5.request)
-    print(Settings.load().imerg.short_name.monthly)
-    print(Settings.load().chirps.base_url)
+    s = Settings.load()
+    print(s.agera_5)
+    print(s.agera_5.dataset)
+    print(s.agera_5.request)
+    print(s.imerg.short_name.monthly)
+    print(s.chirps.base_url)
+    print(s.tamsat.rainfall_url)
