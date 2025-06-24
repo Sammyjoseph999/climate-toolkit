@@ -24,3 +24,6 @@ imerg:
     monthly: GPM_3IMERGM
     daily: GPM_3IMERGDF
     half_hourly: GPM_3IMERGHH
+
+chirps:
+  base_url: https://data.chc.ucsb.edu/products/CHIRPS-2.0/global_daily/tifs/p05/
