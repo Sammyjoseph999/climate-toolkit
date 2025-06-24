@@ -18,6 +18,21 @@ def set_logging():
     )
 
 
+class AggregationLevel(BaseModel):
+    monthly: str
+    daily: str
+    half_hourly: str
+
+
+class TerraClimateVariable(BaseModel):
+    precipitation: str
+    max_temperature: str
+    min_temperature: str
+    wind_speed: str
+    solar_radiation: str
+    soil_moisture: str
+
+
 class Agera5Settings(BaseModel):
     """Corresponds to the 'agera_5' block in YAML."""
 
@@ -29,26 +44,14 @@ class Era5Settings(BaseModel):
     request: dict
 
 
-class AggregationLevel(BaseModel):
-    monthly: str
-    daily: str
-    half_hourly: str
-
-
 class ImergSettings(BaseModel):
     version: str
     short_name: AggregationLevel
 
 
-class ClimateVariable(BaseModel):
-    precipitation: str
-    max_temperature: str
-    min_temperature: str
-
-
 class TerraSettings(BaseModel):
     url: str
-    variable: ClimateVariable
+    variable: TerraClimateVariable
 
 
 class Settings(BaseModel):
