@@ -49,6 +49,9 @@ class ClimateVariable(BaseModel):
 class TerraSettings(BaseModel):
     url: str
     variable: ClimateVariable
+    
+class ChirpsSettings(BaseModel):
+    base_url: str
 
 
 class Settings(BaseModel):
@@ -58,6 +61,7 @@ class Settings(BaseModel):
     era_5: Era5Settings
     imerg: ImergSettings
     terraclimate: TerraSettings
+    chirps: ChirpsSettings
 
     @classmethod
     def load(cls, settings_path: Path = config_path):
@@ -72,3 +76,4 @@ if __name__ == "__main__":
     print(Settings.load().agera_5.dataset)
     print(Settings.load().agera_5.request)
     print(Settings.load().imerg.short_name.monthly)
+    print(Settings.load().chirps.base_url)
