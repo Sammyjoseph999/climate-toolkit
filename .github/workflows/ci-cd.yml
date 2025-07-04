@@ -1,0 +1,104 @@
+name: CI/CD Pipeline
+
+permissions:
+  contents: write
+  pull-requests: write
+
+on:
+  push:
+    branches: [staging-test, main-test]
+  pull_request:
+    branches: [main-test]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10']
+        r-version: [4.3]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    # Setup Python
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    # Install Python dependencies
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        if [ -f setup.py ]; then pip install -e .; fi
+        if [ -f pyproject.toml ]; then pip install -e .; fi
+
+    # Setup R
+    - name: Set up R ${{ matrix.r-version }}
+      uses: r-lib/actions/setup-r@v2
+      with:
+        r-version: ${{ matrix.r-version }}
+
+    # Install R dependencies
+    - name: Install R dependencies
+      run: |
+        install.packages(c("testthat", "devtools", "roxygen2"))
+        if (file.exists("DESCRIPTION")) {
+          devtools::install_deps(dependencies = TRUE)
+        }
+      shell: Rscript {0}
+  
+    # Run Python tests
+    - name: Run Python tests with pytest
+      run: |
+        if [ -d "tests" ] && find tests -name "*.py" -type f | grep -q .; then
+          pytest tests/ -v --tb=short
+        else
+          echo "No Python test files found in tests directory"
+        fi
+    
+    # Run R tests
+    - name: Run R tests with testthat
+      run: |
+        if (dir.exists("tests") && length(list.files("tests", pattern = "\\.[rR]$", recursive = TRUE)) > 0) {
+          devtools::test()
+        } else {
+          cat("No R test files found in tests directory")
+        }
+      shell: Rscript {0}
+
+  create-pr-to-main:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create Pull Request
+        id: cpr
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: Update report
+          committer: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          author: ${{ github.actor }} <${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com>
+          signoff: false
+          branch: staging-test
+          base: main-test
+          delete-branch: false
+          assignees: Sammyjoseph999
+          reviewers: Sammyjoseph999
+          title: 'PR: Staging to Main'
+          body: |
+            Automated pull request from staging to main.
+          
+            All tests have passed in staging branch.
+          
+            **Changes:**
+            - Latest changes from staging branch
+          
+            **Test Status:** 
+            - All tests passed
+          draft: false
