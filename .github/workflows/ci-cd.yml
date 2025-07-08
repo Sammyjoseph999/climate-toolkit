@@ -64,7 +64,8 @@ jobs:
       - name: Run R tests with testthat
         run: |
           if (dir.exists("tests") && length(list.files("tests", pattern = "\\.[rR]$", recursive = TRUE)) > 0) {
-            devtools::test()
+            library(testthat)
+            test_dir("tests")
           } else {
             cat("No R test files found in tests directory")
           }
