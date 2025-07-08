@@ -2,9 +2,13 @@
 
 import logging
 from pathlib import Path
+import os
 
 import yaml
 from pydantic import BaseModel
+from dotenv import load_dotenv
+
+load_dotenv()
 
 BASE_DIR = Path(__file__).parent.parent.parent
 config_path = "sources/utils/config.yaml"
@@ -63,6 +67,11 @@ class TamsatSettings(BaseModel):
     soil_moisture_url: str
 
 
+class TamsatSettings(BaseModel):
+    rainfall_url: str
+    soil_moisture_url: str
+
+
 class Settings(BaseModel):
     """Loads the application's settings."""
 
@@ -72,6 +81,8 @@ class Settings(BaseModel):
     terraclimate: TerraSettings
     chirps: ChirpsSettings
     tamsat: TamsatSettings
+
+    gee_project_id: str = os.getenv("GEE_PROJECT_ID", "")
 
     @classmethod
     def load(cls, settings_path: Path = config_path):
@@ -89,3 +100,5 @@ if __name__ == "__main__":
     print(s.imerg.short_name.monthly)
     print(s.chirps.base_url)
     print(s.tamsat.rainfall_url)
+    print(s.tamsat.soil_moisture_url)
+    print(s.gee_project_id)

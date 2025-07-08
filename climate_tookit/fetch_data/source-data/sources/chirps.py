@@ -1,26 +1,24 @@
 """
-This module downloads precipitation data from the CHIRPS dataset.
-
+This module downloads precipitation data from the CHIRPS dataset using Google Earth Engine.
+ 
 CHIRPS (Climate Hazards Group InfraRed Precipitation with Station data)
 blends satellite imagery with station data to provide high-resolution
 precipitation estimates globally.
-
-Ref: https://data.chc.ucsb.edu/products/CHIRPS-2.0/
+ 
+Dataset ID (GEE): UCSB-CHG/CHIRPS/DAILY
 """
-
-import os
+ 
 import logging
-from datetime import date, timedelta
-
-import requests
-
+from datetime import date
+import ee
+ 
 from .utils import models
 from .utils.settings import Settings, set_logging
-
+ 
 set_logging()
 logger = logging.getLogger(__name__)
-
-
+ 
+ 
 class DownloadData(models.DataDownloadBase):
     def __init__(
         self,
@@ -35,65 +33,63 @@ class DownloadData(models.DataDownloadBase):
             date_from_utc=date_from_utc,
             date_to_utc=date_to_utc,
         )
-
-        self.date_from_utc = date_from_utc
-        self.date_to_utc = date_to_utc
+ 
+        self.settings = Settings.load()
+ 
+        try:
+            ee.Initialize(project=self.settings.gee_project_id)
+        except Exception as e:
+            logger.warning(f"Initial GEE project init failed: {e}. Attempting authentication...")
+            ee.Authenticate()
+            ee.Initialize(project=self.settings.gee_project_id)
+ 
         self.location_coord = location_coord
         self.aggregation = aggregation
-
-        self.dates = self._generate_date_list()
-
-    def _generate_date_list(self):
-        """Generates list of dates between start and end date (inclusive)."""
-        return [
-            self.date_from_utc + timedelta(days=i)
-            for i in range((self.date_to_utc - self.date_from_utc).days + 1)
-        ]
-
-    def download_precipitation(self, settings: Settings, dir_name: str = "chirps_data"):
-        """Download daily CHIRPS precipitation GeoTIFF files."""
-        base_url = settings.chirps.base_url
-
-        os.makedirs(dir_name, exist_ok=True)
-        logger.info(f"Downloading CHIRPS precipitation for {len(self.dates)} days...")
-
-        for dt in self.dates:
-            year = dt.strftime("%Y")
-            filename = f"chirps-v2.0.{dt.strftime('%Y.%m.%d')}.tif.gz"
-            url = f"{base_url}{year}/{filename}"
-            local_path = os.path.join(dir_name, filename)
-
-            if os.path.exists(local_path):
-                logger.info(f"Already exists, skipping: {filename}")
-                continue
-
-            try:
-                response = requests.get(url, stream=True, timeout=30)
-                if response.status_code == 200:
-                    with open(local_path, "wb") as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                    logger.info(f"Downloaded: {filename}")
-                else:
-                    logger.warning(f"Failed to download {filename} (Status: {response.status_code})")
-            except Exception as e:
-                logger.error(f"Error downloading {filename}: {e}")
-
+        self.date_from_utc = date_from_utc
+        self.date_to_utc = date_to_utc
+ 
+    def download_precipitation(self, settings: Settings):
+        """Returns CHIRPS precipitation values from GEE as a list of daily values for the point."""
+        lat, lon = self.location_coord
+        point = ee.Geometry.Point(lon, lat)
+        
+        start = self.date_from_utc.strftime("%Y-%m-%d")
+        end = self.date_to_utc.strftime("%Y-%m-%d")
     
-    def download_rainfall():
+        collection = ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY") \
+            .filterDate(start, end) \
+            .filterBounds(point)
+    
+        def extract(img):
+            value = img.reduceRegion(
+                reducer=ee.Reducer.first(),
+                geometry=point,
+                scale=5000
+            )
+            date_str = img.date().format("YYYY-MM-dd")
+            return ee.Feature(None, value).set("date", date_str)
+    
+        logger.info(f"Fetching CHIRPS data from GEE for {start} to {end} at {lat}, {lon}")
+    
+        features = collection.map(extract)
+        result = features.aggregate_array("precipitation").getInfo()
+    
+        return result
+ 
+    def download_rainfall(self, settings: Settings):
         pass
-
-    def download_temperature():
+ 
+    def download_temperature(self, settings: Settings):
         pass
-
-    def download_windspeed():
+ 
+    def download_windspeed(self, settings: Settings):
         pass
-
-    def download_solar_radiation():
+ 
+    def download_solar_radiation(self, settings: Settings):
         pass
-
-    def download_humidity():
+ 
+    def download_humidity(self, settings: Settings):
         pass
-
-    def download_soil_moisture():
+ 
+    def download_soil_moisture(self, settings: Settings):
         pass

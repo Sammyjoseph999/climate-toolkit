@@ -8,6 +8,7 @@ from sources.era_5 import DownloadData as DownloadEra5
 from sources.imerg import DownloadData as DownloadImerg
 from sources.terraclimate import DownloadData as DownloadTerra
 from sources.chirps import DownloadData as DownloadChirps
+from sources.tamsat import DownloadData as DownloadTamsat
 from sources.utils import models
 from sources.utils.settings import Settings
 
@@ -74,7 +75,15 @@ class SourceData:
                 date_from_utc=self.date_from_utc,
                 date_to_utc=self.date_to_utc,
             )
-
+        
+        if self.source == models.ClimateDataset.tamsat:
+            client = DownloadTamsat(
+                location_coord=location_coord,
+                aggregation=aggregation,
+                date_from_utc=self.date_from_utc,
+                date_to_utc=self.date_to_utc,
+            )
+            
         self.client = client
 
     def download(self):
@@ -115,7 +124,15 @@ class SourceData:
             return self.client.download_soil_moisture(
                 settings=self.settings, variable_type=self.variable_type
             )
-
+            
+        if self.variable == models.ClimateVariable.soil_moisture:
+            return self.client.download_soil_moisture(
+                settings = self.settings,
+            )
+        
+        raise NotImplemented(f"Download not implemented for variable: {self.variable}")
+        
+        
 
 if __name__ == "__main__":
     settings = Settings.load()
