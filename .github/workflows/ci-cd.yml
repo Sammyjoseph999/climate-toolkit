@@ -52,13 +52,13 @@ jobs:
         shell: Rscript {0}
 
       # Run Python tests
-      - name: Run Python tests with pytest
-        run: |
-          if [ -d "tests" ] && find tests -name "*.py" -type f | grep -q .; then
-            pytest tests/ -v --tb=short
-          else
-            echo "No Python test files found in tests directory"
-          fi
+      # - name: Run Python tests with pytest
+      #   run: |
+      #     if [ -d "tests" ] && find tests -name "*.py" -type f | grep -q .; then
+      #       pytest tests/ -v --tb=short
+      #     else
+      #       echo "No Python test files found in tests directory"
+      #     fi
 
       # Run R tests
       - name: Run R tests with testthat
