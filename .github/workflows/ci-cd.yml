@@ -43,13 +43,13 @@ jobs:
           r-version: ${{ matrix.r-version }}
 
       # Install R dependencies
-      # - name: Install R dependencies
-      #   run: |
-      #     install.packages(c("testthat", "devtools", "roxygen2"))
-      #     if (file.exists("DESCRIPTION")) {
-      #       devtools::install_deps(dependencies = TRUE)
-      #     }
-      #   shell: Rscript {0}
+      - name: Install R dependencies
+        run: |
+          install.packages(c("testthat", "devtools", "roxygen2"))
+          if (file.exists("DESCRIPTION")) {
+            devtools::install_deps(dependencies = TRUE)
+          }
+        shell: Rscript {0}
 
       # Run Python tests
       - name: Run Python tests with pytest
@@ -61,14 +61,14 @@ jobs:
           fi
 
       # Run R tests
-      # - name: Run R tests with testthat
-      #   run: |
-      #     if (dir.exists("tests") && length(list.files("tests", pattern = "\\.[rR]$", recursive = TRUE)) > 0) {
-      #       devtools::test()
-      #     } else {
-      #       cat("No R test files found in tests directory")
-      #     }
-      #   shell: Rscript {0}
+      - name: Run R tests with testthat
+        run: |
+          if (dir.exists("tests") && length(list.files("tests", pattern = "\\.[rR]$", recursive = TRUE)) > 0) {
+            devtools::test()
+          } else {
+            cat("No R test files found in tests directory")
+          }
+        shell: Rscript {0}
 
   create-pr-to-main:
     runs-on: ubuntu-latest
