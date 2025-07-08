@@ -13,6 +13,7 @@ import os
 import platform
 import shutil
 from datetime import date
+from typing import Optional
 
 import earthaccess
 
@@ -65,9 +66,10 @@ class DownloadData(models.DataDownloadBase):
             shutil.copy2(homeDir + ".dodsrc", os.getcwd())
             print("Copied .dodsrc to:", os.getcwd())
 
-    def download_rainfall(
+    def download_precipitation(
         self,
         settings: Settings,
+        variable_type: Optional[models.VariableType],
         dir_name: str = ".",
     ):
         auth = earthaccess.login(strategy="environment")
@@ -104,20 +106,44 @@ class DownloadData(models.DataDownloadBase):
 
         return downloaded_files
 
-    def download_temperature(settings):
-        pass
+    def download_temperature(
+        self,
+        settings: Settings,
+        variable_type: Optional[models.VariableType],
+    ):
+        logger.warning("IMERG does not have temperature data")
 
-    def download_precipitation():
-        pass
+    def download_rainfall(
+        self,
+        settings: Settings,
+        variable_type: Optional[models.VariableType],
+    ):
+        logger.warning("IMERG does not have rainfall data")
 
-    def download_windspeed():
-        pass
+    def download_windspeed(
+        self,
+        settings: Settings,
+        variable_type: Optional[models.VariableType],
+    ):
+        logger.warning("IMERG does not have wind speed data")
 
-    def download_solar_radiation():
-        pass
+    def download_solar_radiation(
+        self,
+        settings: Settings,
+        variable_type: Optional[models.VariableType],
+    ):
+        logger.warning("IMERG does not have solar radiation data")
 
-    def download_humidity():
-        pass
+    def download_humidity(
+        self,
+        settings: Settings,
+        variable_type: Optional[models.VariableType],
+    ):
+        logger.warning("IMERG does not have humidity data")
 
-    def download_soil_moisture():
-        pass
+    def download_soil_moisture(
+        self,
+        settings: Settings,
+        variable_type: Optional[models.VariableType],
+    ):
+        logger.warning("IMERG does not have soil moisture data")
