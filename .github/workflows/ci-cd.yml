@@ -6,9 +6,9 @@ permissions:
 
 on:
   push:
-    branches: [staging-test, main-test]
+    branches: [staging, main]
   pull_request:
-    branches: [main-test]
+    branches: [main]
 
 jobs:
   build-and-test:
@@ -43,13 +43,13 @@ jobs:
           r-version: ${{ matrix.r-version }}
 
       # Install R dependencies
-      # - name: Install R dependencies
-      #   run: |
-      #     install.packages(c("testthat", "devtools", "roxygen2"))
-      #     if (file.exists("DESCRIPTION")) {
-      #       devtools::install_deps(dependencies = TRUE)
-      #     }
-      #   shell: Rscript {0}
+      - name: Install R dependencies
+        run: |
+          install.packages(c("testthat", "devtools", "roxygen2"))
+          if (file.exists("DESCRIPTION")) {
+            devtools::install_deps(dependencies = TRUE)
+          }
+        shell: Rscript {0}
 
       # Run Python tests
       - name: Run Python tests with pytest
@@ -61,19 +61,19 @@ jobs:
           fi
 
       # Run R tests
-      # - name: Run R tests with testthat
-      #   run: |
-      #     if (dir.exists("tests") && length(list.files("tests", pattern = "\\.[rR]$", recursive = TRUE)) > 0) {
-      #       devtools::test()
-      #     } else {
-      #       cat("No R test files found in tests directory")
-      #     }
-      #   shell: Rscript {0}
+      - name: Run R tests with testthat
+        run: |
+          if (dir.exists("tests") && length(list.files("tests", pattern = "\\.[rR]$", recursive = TRUE)) > 0) {
+            devtools::test()
+          } else {
+            cat("No R test files found in tests directory")
+          }
+        shell: Rscript {0}
 
   create-pr-to-main:
     runs-on: ubuntu-latest
     needs: build-and-test
-    if: github.ref == 'refs/heads/staging-test'
+    if: github.ref == 'refs/heads/staging'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -82,12 +82,12 @@ jobs:
       - name: Check for differences
         id: check_diff
         run: |
-          git fetch origin main-test:main-test
-          if git diff --quiet staging-test main-test; then
-            echo "No differences found between staging-test and main-test"
+          git fetch origin main:main
+          if git diff --quiet staging main; then
+            echo "No differences found between staging and main"
             echo "create_pr=false" >> $GITHUB_OUTPUT
           else
-            echo "Differences found between staging-test and main-test"
+            echo "Differences found between staging and main"
             echo "create_pr=true" >> $GITHUB_OUTPUT
           fi
 
@@ -105,8 +105,8 @@ jobs:
 
           **Test Status:** 
           - All tests passed" \
-            --base main-test \
-            --head staging-test \
+            --base main \
+            --head staging \
             --assignee Sammyjoseph999 \
             --reviewer Sammyjoseph999
         env:
