@@ -107,7 +107,7 @@ jobs:
           - All tests passed" \
             --base main-test \
             --head staging-test \
-            --assignee john-mwangi \
-            --reviewer john-mwangi
+            --assignee Sammyjoseph999 \
+            --reviewer Sammyjoseph999
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
