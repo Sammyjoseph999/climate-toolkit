@@ -88,8 +88,8 @@ jobs:
           branch: staging-test
           base: main-test
           delete-branch: false
-          assignees: Sammyjoseph999
-          reviewers: Sammyjoseph999
+          assignees: john-mwangi
+          reviewers: john-mwangi
           title: "PR: Staging to Main"
           body: |
             Automated pull request from staging to main.
