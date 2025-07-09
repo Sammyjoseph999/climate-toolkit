@@ -6,8 +6,9 @@ from typing import Optional
 import ee
 import pandas as pd
 from dotenv import load_dotenv
-from models import AggregationLevel
-from settings import Settings, set_logging
+
+from .models import AggregationLevel
+from .settings import Settings, set_logging
 
 load_dotenv()
 
@@ -15,7 +16,7 @@ set_logging()
 logger = logging.getLogger(__name__)
 
 
-def query_gee_daily(
+def get_gee_data_daily(
     image_name: str,
     location_coord: tuple[float],
     from_date: date,
@@ -32,7 +33,7 @@ def query_gee_daily(
 
     API ref: https://developers.google.com/earth-engine/apidocs/
 
-    Pre-requisites:\n
+    **Pre-requisites:**\n
     - [Register or create](https://www.google.com/url?q=https%3A%2F%2Fcode.earthengine.google.com%2Fregister)
     a Google Cloud Project
     - Register your project for commercial or noncommercial use
@@ -103,11 +104,11 @@ def query_gee_daily(
             tileScale=tile_scale,
         )
 
-        current_date = next_date
-
         data = {"date": current_date, **expression.getInfo()}
         temp = pd.DataFrame(data, index=[0])
         tbl = pd.concat(objs=[tbl, temp], axis=0)
+
+        current_date = next_date
 
     return tbl.reset_index(drop=True)
 
@@ -115,9 +116,9 @@ def query_gee_daily(
 if __name__ == "__main__":
 
     nairobi = (36.817223, -1.286389)
-    settings = Settings.load().era_5
+    settings = Settings.load().imerg
 
-    climate_data = query_gee_daily(
+    climate_data = get_gee_data_daily(
         image_name=settings.gee_image,
         location_coord=nairobi,
         from_date=date(2020, 1, 12),
