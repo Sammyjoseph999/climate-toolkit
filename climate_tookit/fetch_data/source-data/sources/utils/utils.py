@@ -23,7 +23,7 @@ def query_gee_daily(
     scale: Optional[float] = None,
     crs: Optional[str] = None,
     location_name: Optional[str] = None,
-    max_pixels: float = 10_000_000,
+    max_pixels: float = 1e9,
     aggregation: AggregationLevel = AggregationLevel.daily,
     tile_scale: float = 1,
 ) -> pd.DataFrame:
@@ -117,11 +117,11 @@ if __name__ == "__main__":
     nairobi = (36.817223, -1.286389)
 
     climate_data = query_gee_daily(
-        image_name=GEE_IMAGE.imerg,
+        image_name=GEE_IMAGE.era_5,
         location_coord=nairobi,
         from_date=date(2020, 1, 12),
         to_date=date(2020, 1, 14),
-        scale=5566,
+        scale=10_000,
     )
 
     print(climate_data.columns)
