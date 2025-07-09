@@ -8,6 +8,7 @@ import requests
 
 from .utils import models
 from .utils.settings import Settings, set_logging
+from .utils.utils import get_gee_data_monthly
 
 set_logging()
 logger = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ class DownloadData(models.DataDownloadBase):
 
         self.date_from_utc = date_from_utc
         self.date_to_utc = date_to_utc
+        self.location_coord = location_coord
 
     def _fetch_data(self, variable: str, year: int, base_url: str):
         """Main function for downloading data from the climate database"""
@@ -85,13 +87,19 @@ class DownloadData(models.DataDownloadBase):
         else:
             variable = settings.terraclimate.variable.max_temperature
 
-        url = settings.terraclimate.url
-        self._download_from_date_range(
-            variable=variable,
-            url=url,
+        data_settings = settings.terraclimate
+
+        climate_data = get_gee_data_monthly(
+            image_name=data_settings.gee_image,
+            location_coord=self.location_coord,
             from_date=self.date_from_utc,
             to_date=self.date_to_utc,
+            scale=data_settings.resolution,
         )
+
+        logger.info(f"Available variables: {list(climate_data.columns)}")
+        cols = ["date", variable]
+        return climate_data[cols]
 
     def download_precipitation(
         self,
@@ -99,27 +107,41 @@ class DownloadData(models.DataDownloadBase):
         variable_type: Optional[models.VariableType],
     ):
         variable = settings.terraclimate.variable.precipitation
-        url = settings.terraclimate.url
-        self._download_from_date_range(
-            variable=variable,
-            url=url,
+
+        data_settings = settings.terraclimate
+
+        climate_data = get_gee_data_monthly(
+            image_name=data_settings.gee_image,
+            location_coord=self.location_coord,
             from_date=self.date_from_utc,
             to_date=self.date_to_utc,
+            scale=data_settings.resolution,
         )
+
+        logger.info(f"Available variables: {list(climate_data.columns)}")
+        cols = ["date", variable]
+        return climate_data[cols]
 
     def download_windspeed(
         self,
         settings: Settings,
         variable_type: Optional[models.VariableType],
     ):
-        variable = settings.terraclimate.variable.precipitation
-        url = settings.terraclimate.url
-        self._download_from_date_range(
-            variable=variable,
-            url=url,
+        variable = settings.terraclimate.variable.wind_speed
+
+        data_settings = settings.terraclimate
+
+        climate_data = get_gee_data_monthly(
+            image_name=data_settings.gee_image,
+            location_coord=self.location_coord,
             from_date=self.date_from_utc,
             to_date=self.date_to_utc,
+            scale=data_settings.resolution,
         )
+
+        logger.info(f"Available variables: {list(climate_data.columns)}")
+        cols = ["date", variable]
+        return climate_data[cols]
 
     def download_solar_radiation(
         self,
@@ -127,13 +149,20 @@ class DownloadData(models.DataDownloadBase):
         variable_type: Optional[models.VariableType],
     ):
         variable = settings.terraclimate.variable.solar_radiation
-        url = settings.terraclimate.url
-        self._download_from_date_range(
-            variable=variable,
-            url=url,
+
+        data_settings = settings.terraclimate
+
+        climate_data = get_gee_data_monthly(
+            image_name=data_settings.gee_image,
+            location_coord=self.location_coord,
             from_date=self.date_from_utc,
             to_date=self.date_to_utc,
+            scale=data_settings.resolution,
         )
+
+        logger.info(f"Available variables: {list(climate_data.columns)}")
+        cols = ["date", variable]
+        return climate_data[cols]
 
     def download_soil_moisture(
         self,
@@ -141,13 +170,20 @@ class DownloadData(models.DataDownloadBase):
         variable_type: Optional[models.VariableType],
     ):
         variable = settings.terraclimate.variable.soil_moisture
-        url = settings.terraclimate.url
-        self._download_from_date_range(
-            variable=variable,
-            url=url,
+
+        data_settings = settings.terraclimate
+
+        climate_data = get_gee_data_monthly(
+            image_name=data_settings.gee_image,
+            location_coord=self.location_coord,
             from_date=self.date_from_utc,
             to_date=self.date_to_utc,
+            scale=data_settings.resolution,
         )
+
+        logger.info(f"Available variables: {list(climate_data.columns)}")
+        cols = ["date", variable]
+        return climate_data[cols]
 
     def download_rainfall(
         self,

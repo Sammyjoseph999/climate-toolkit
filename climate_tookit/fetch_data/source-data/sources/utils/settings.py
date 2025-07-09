@@ -33,6 +33,10 @@ class TerraClimateVariable(BaseModel):
     soil_moisture: str
 
 
+class Era5ClimateVariable(BaseModel):
+    precipitation: str
+
+
 class Agera5Settings(BaseModel):
     """Corresponds to the 'agera_5' block in YAML."""
 
@@ -42,16 +46,33 @@ class Agera5Settings(BaseModel):
 
 class Era5Settings(BaseModel):
     request: dict
+    gee_image: str
+    resolution: float
+    variable: Era5ClimateVariable
+
+
+class ImergClimateVariable(BaseModel):
+    precipitation: str
 
 
 class ImergSettings(BaseModel):
     version: str
     short_name: AggregationLevel
+    gee_image: str
+    resolution: float
+    variable: ImergClimateVariable
 
 
 class TerraSettings(BaseModel):
     url: str
     variable: TerraClimateVariable
+    gee_image: str
+    resolution: float
+
+
+class ChirtsSettings(BaseModel):
+    gee_image: str
+    resolution: float
 
 
 class Settings(BaseModel):
@@ -61,6 +82,7 @@ class Settings(BaseModel):
     era_5: Era5Settings
     imerg: ImergSettings
     terraclimate: TerraSettings
+    chirts: ChirtsSettings
 
     @classmethod
     def load(cls, settings_path: Path = config_path):
