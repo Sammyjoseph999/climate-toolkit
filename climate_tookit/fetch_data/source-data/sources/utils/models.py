@@ -88,3 +88,7 @@ class DataDownloadBase(ABC):
     def download_soil_moisture():
         """Retrieves soil moisture data from the climate database"""
         pass
+
+
+class GEE_IMAGE(Enum):
+    chirps = "UCSB-CHG/CHIRPS/DAILY"
