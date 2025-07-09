@@ -11,6 +11,8 @@ era_5:
     download_format: zip
   resolution: 9000
   gee_image: ECMWF/ERA5/DAILY
+  variable:
+    precipitation: total_precipitation
 
 terraclimate:
   url: https://climate.northwestknowledge.net/TERRACLIMATE-DATA/
@@ -33,6 +35,8 @@ imerg:
     half_hourly: GPM_3IMERGHH
   resolution: 5566
   gee_image: NASA/GPM_L3/IMERG_V07
+  variable:
+    precipitation: precipitation
 
 chirts:
   gee_image: UCSB-CHG/CHIRTS/DAILY

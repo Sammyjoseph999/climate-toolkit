@@ -33,6 +33,10 @@ class TerraClimateVariable(BaseModel):
     soil_moisture: str
 
 
+class Era5ClimateVariable(BaseModel):
+    precipitation: str
+
+
 class Agera5Settings(BaseModel):
     """Corresponds to the 'agera_5' block in YAML."""
 
@@ -44,6 +48,11 @@ class Era5Settings(BaseModel):
     request: dict
     gee_image: str
     resolution: float
+    variable: Era5ClimateVariable
+
+
+class ImergClimateVariable(BaseModel):
+    precipitation: str
 
 
 class ImergSettings(BaseModel):
@@ -51,6 +60,7 @@ class ImergSettings(BaseModel):
     short_name: AggregationLevel
     gee_image: str
     resolution: float
+    variable: ImergClimateVariable
 
 
 class TerraSettings(BaseModel):

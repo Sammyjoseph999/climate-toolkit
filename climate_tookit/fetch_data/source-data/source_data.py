@@ -117,11 +117,12 @@ if __name__ == "__main__":
         location_coord=(-1.18, 36.343),
         variable=models.ClimateVariable.precipitation,
         variable_type=None,
-        source=models.ClimateDataset.terraclimate,
+        source=models.ClimateDataset.imerg,
         aggregation=None,
-        date_from_utc=date(year=2024, month=1, day=1),
-        date_to_utc=date(year=2024, month=1, day=1),
+        date_from_utc=date(year=2020, month=1, day=1),
+        date_to_utc=date(year=2020, month=1, day=3),
         settings=settings,
     )
 
-    source_data.download()
+    climate_data = source_data.download()
+    print(climate_data)

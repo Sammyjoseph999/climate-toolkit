@@ -15,10 +15,9 @@ import shutil
 from datetime import date
 from typing import Optional
 
-import earthaccess
-
 from .utils import models
 from .utils.settings import Settings, set_logging
+from .utils.utils import get_gee_data_daily
 
 set_logging()
 logger = logging.getLogger(__name__)
@@ -70,41 +69,20 @@ class DownloadData(models.DataDownloadBase):
         self,
         settings: Settings,
         variable_type: Optional[models.VariableType],
-        dir_name: str = ".",
     ):
-        auth = earthaccess.login(strategy="environment")
+        data_settings = settings.imerg
 
-        temporal: tuple[str] = (
-            self.date_from_utc.strftime("%Y-%m-%d"),
-            self.date_to_utc.strftime("%Y-%m-%d"),
-        )
-        bounding_box = (
-            self.location_coord[1],
-            self.location_coord[0],
-            self.location_coord[1],
-            self.location_coord[0],
+        climate_data = get_gee_data_daily(
+            image_name=data_settings.gee_image,
+            location_coord=self.location_coord,
+            from_date=self.date_from_utc,
+            to_date=self.date_to_utc,
+            scale=data_settings.resolution,
         )
 
-        short_name = getattr(settings.imerg.short_name, self.aggregation.name)
-        version = settings.imerg.version
-
-        logger.info(
-            f"Searching IMERG database with the parameters: {temporal=}, {bounding_box=}, {short_name=}, {version=}"
-        )
-
-        results = earthaccess.search_data(
-            short_name=short_name,
-            version=version,
-            temporal=temporal,
-            bounding_box=bounding_box,
-        )
-
-        downloaded_files = earthaccess.download(
-            results,
-            local_path=dir_name,
-        )
-
-        return downloaded_files
+        logger.info(f"Available variables: {list(climate_data.columns)}")
+        cols = ["date", data_settings.variable.precipitation]
+        return climate_data[cols]
 
     def download_temperature(
         self,

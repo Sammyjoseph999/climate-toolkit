@@ -1,13 +1,19 @@
+import logging
 import os
 from datetime import date
+from typing import Optional
 
 from cdsapi.api import Client
 from dotenv import load_dotenv
 
 from .utils import models
-from .utils.settings import Settings
+from .utils.settings import Settings, set_logging
+from .utils.utils import get_gee_data_daily
 
 load_dotenv()
+
+set_logging()
+logger = logging.getLogger(__name__)
 
 url = os.environ.get("CDS_URL")
 key = os.environ.get("CDS_KEY")
@@ -29,52 +35,44 @@ class DownloadData(models.DataDownloadBase):
             date_to_utc=date_to_utc,
         )
 
-    def download_rainfall():
-        pass
+        self.date_from_utc = date_from_utc
+        self.date_to_utc = date_to_utc
+        self.location_coord = location_coord
+        self.aggregation = aggregation
 
-    def download_temperature():
-        pass
-
-    def download_precipitation():
-        pass
-
-    def download_windspeed():
-        pass
-
-    def download_solar_radiation():
-        pass
-
-    def download_humidity():
-        pass
-
-    def download_soil_moisture():
-        pass
-
-    def download_pressure_levels(
+    def download_precipitation(
         self,
         settings: Settings,
-        pressure_level: list[str] = ["1000"],
-        year: list[str] = ["2025"],
-        month: list[str] = ["06"],
-        day: list[str] = ["01"],
-        time: list[str] = ["00:00"],
-        file_name: str = "pressure_levels.zip",
-    ) -> None:
-        """Downloads ERA5 hourly data on pressure levels from 1940 to present
+        variable_type: Optional[models.VariableType],
+    ):
+        data_settings = settings.era_5
 
-        ref: https://cds.climate.copernicus.eu/datasets/reanalysis-era5-pressure-levels?tab=download
-        """
+        climate_data = get_gee_data_daily(
+            image_name=data_settings.gee_image,
+            location_coord=self.location_coord,
+            from_date=self.date_from_utc,
+            to_date=self.date_to_utc,
+            scale=data_settings.resolution,
+        )
 
-        dataset = "reanalysis-era5-pressure-levels"
-        params = {
-            "product_type": ["reanalysis"],
-            "variable": ["geopotential"],
-            "pressure_level": pressure_level,
-            "year": year,
-            "month": month,
-            "day": day,
-            "time": time,
-        }
-        base_config = settings.era_5.request
-        request = {**params, **base_config}
-        client.retrieve(name=dataset, request=request, target=file_name)
+        logger.info(f"Available variables: {list(climate_data.columns)}")
+        cols = ["date", data_settings.variable.precipitation]
+        return climate_data[cols]
+
+    def download_rainfall():
+        logger.warning("ERA5 does not have rainfall data")
+
+    def download_temperature():
+        logger.warning("ERA5 does not have temperature data")
+
+    def download_windspeed():
+        logger.warning("ERA5 does not have wind speed data")
+
+    def download_solar_radiation():
+        logger.warning("ERA5 does not have solar radiation data")
+
+    def download_humidity():
+        logger.warning("ERA5 does not have humidity data")
+
+    def download_soil_moisture():
+        logger.warning("ERA5 does not have soil moisture data")
