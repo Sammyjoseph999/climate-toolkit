@@ -27,8 +27,8 @@ def query_gee_daily(
     aggregation: AggregationLevel = AggregationLevel.daily,
     tile_scale: float = 1,
 ) -> pd.DataFrame:
-    """Access the Google Earth Engine (GEE) API to access weather information
-    in a weather dataset.
+    """Uses the Google Earth Engine (GEE) API to retrieve weather information
+    from a weather dataset.
 
     API ref: https://developers.google.com/earth-engine/apidocs/
 
