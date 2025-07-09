@@ -97,5 +97,5 @@ class GEE_IMAGE(Enum):
 
     chirps = "UCSB-CHG/CHIRPS/DAILY"
     terraclimate = "IDAHO_EPSCOR/TERRACLIMATE"  # monthly
-    era_5 = "ECMWF/ERA5/DAILY"
-    imerg = "NASA/GPM_L3/IMERG_V07"  # half-hourly
+    era_5 = "ECMWF/ERA5/DAILY"  # cadence: daily, resolution: ~9 km
+    imerg = "NASA/GPM_L3/IMERG_V07"  # cadence: half-hourly
