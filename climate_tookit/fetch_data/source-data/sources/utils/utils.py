@@ -6,8 +6,8 @@ from typing import Optional
 import ee
 import pandas as pd
 from dotenv import load_dotenv
-from models import GEE_IMAGE, AggregationLevel
-from settings import set_logging
+from models import AggregationLevel
+from settings import Settings, set_logging
 
 load_dotenv()
 
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def query_gee_daily(
-    image_name: GEE_IMAGE,
+    image_name: str,
     location_coord: tuple[float],
     from_date: date,
     to_date: date,
@@ -77,14 +77,14 @@ def query_gee_daily(
     current_date = from_date
     tbl = pd.DataFrame()
 
-    logger.info(f"Retrieving information from {image_name.value}...")
+    logger.info(f"Retrieving information from {image_name}...")
 
     while current_date <= to_date:
         next_date = current_date + delta
 
         # get an image
         image = (
-            ee.ImageCollection(image_name.value)
+            ee.ImageCollection(image_name)
             .filterDate(
                 current_date.strftime(date_format),
                 next_date.strftime(date_format),
@@ -115,9 +115,10 @@ def query_gee_daily(
 if __name__ == "__main__":
 
     nairobi = (36.817223, -1.286389)
+    settings = Settings.load()
 
     climate_data = query_gee_daily(
-        image_name=GEE_IMAGE.era_5,
+        image_name=settings.era_5.gee_image,
         location_coord=nairobi,
         from_date=date(2020, 1, 12),
         to_date=date(2020, 1, 14),

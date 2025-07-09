@@ -88,14 +88,3 @@ class DataDownloadBase(ABC):
     def download_soil_moisture():
         """Retrieves soil moisture data from the climate database"""
         pass
-
-
-class GEE_IMAGE(Enum):
-    """
-    ref: https://developers.google.com/earth-engine/datasets/catalog/
-    """
-
-    chirps = "UCSB-CHG/CHIRPS/DAILY"
-    terraclimate = "IDAHO_EPSCOR/TERRACLIMATE"  # monthly
-    era_5 = "ECMWF/ERA5/DAILY"  # cadence: daily, resolution: ~9 km
-    imerg = "NASA/GPM_L3/IMERG_V07"  # cadence: half-hourly
