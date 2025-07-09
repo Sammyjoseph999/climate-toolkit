@@ -15,7 +15,7 @@ set_logging()
 logger = logging.getLogger(__name__)
 
 
-def query_gee(
+def query_gee_daily(
     image_name: GEE_IMAGE,
     location_coord: tuple[float],
     from_date: date,
@@ -55,11 +55,10 @@ def query_gee(
 
     Returns
     ---
-    A pandas dataframe containing the requested climate data.
+    A pandas dataframe containing all the varibles in that climate dataset
     """
 
     logger.info("Authenticating to GEE...")
-
     ee.Authenticate()
     ee.Initialize(project=os.environ.get("GCP_PROJECT_ID"))
 
@@ -78,12 +77,12 @@ def query_gee(
     current_date = from_date
     tbl = pd.DataFrame()
 
-    logger.info("Retrieving information from the climate database...")
+    logger.info(f"Retrieving information from {image_name.value}...")
 
     while current_date <= to_date:
         next_date = current_date + delta
 
-        # filter the image
+        # get an image
         image = (
             ee.ImageCollection(image_name.value)
             .filterDate(
@@ -95,7 +94,7 @@ def query_gee(
 
         # reduce the image
         expression = image.reduceRegion(
-            reducer=ee.Reducer.first(),
+            reducer=ee.Reducer.mean(),
             geometry=location,
             scale=scale,
             maxPixels=max_pixels,
@@ -117,12 +116,13 @@ if __name__ == "__main__":
 
     nairobi = (36.817223, -1.286389)
 
-    climate_data = query_gee(
-        image_name=GEE_IMAGE.chirps,
+    climate_data = query_gee_daily(
+        image_name=GEE_IMAGE.imerg,
         location_coord=nairobi,
         from_date=date(2020, 1, 12),
         to_date=date(2020, 1, 14),
         scale=5566,
     )
 
+    print(climate_data.columns)
     print(climate_data)
