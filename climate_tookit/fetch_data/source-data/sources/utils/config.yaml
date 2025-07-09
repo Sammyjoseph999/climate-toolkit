@@ -17,10 +17,11 @@ era_5:
 terraclimate:
   url: https://climate.northwestknowledge.net/TERRACLIMATE-DATA/
   variable:
-    precipitation: ppt
-    max_temperature: tmax
-    min_temperature: tmin
-    wind_speed: ws
+    # https://developers.google.com/earth-engine/datasets/catalog/IDAHO_EPSCOR_TERRACLIMATE#bands
+    precipitation: pr
+    max_temperature: tmmx
+    min_temperature: tmmn
+    wind_speed: vs
     solar_radiation: srad
     soil_moisture: soil
   resolution: 4000
@@ -29,7 +30,7 @@ terraclimate:
 imerg:
   version: "07"
   short_name:
-  # short names for Final Precipitation
+    # short names for Final Precipitation
     monthly: GPM_3IMERGM
     daily: GPM_3IMERGDF
     half_hourly: GPM_3IMERGHH
