@@ -115,14 +115,14 @@ def query_gee_daily(
 if __name__ == "__main__":
 
     nairobi = (36.817223, -1.286389)
-    settings = Settings.load()
+    settings = Settings.load().era_5
 
     climate_data = query_gee_daily(
-        image_name=settings.era_5.gee_image,
+        image_name=settings.gee_image,
         location_coord=nairobi,
         from_date=date(2020, 1, 12),
         to_date=date(2020, 1, 14),
-        scale=10_000,
+        scale=settings.resolution,
     )
 
     print(climate_data.columns)

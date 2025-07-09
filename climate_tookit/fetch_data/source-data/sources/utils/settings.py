@@ -43,18 +43,21 @@ class Agera5Settings(BaseModel):
 class Era5Settings(BaseModel):
     request: dict
     gee_image: str
+    resolution: float
 
 
 class ImergSettings(BaseModel):
     version: str
     short_name: AggregationLevel
     gee_image: str
+    resolution: float
 
 
 class TerraSettings(BaseModel):
     url: str
     variable: TerraClimateVariable
     gee_image: str
+    resolution: float
 
 
 class Settings(BaseModel):
