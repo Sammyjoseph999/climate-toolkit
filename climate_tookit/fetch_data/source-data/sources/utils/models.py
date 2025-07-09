@@ -91,4 +91,11 @@ class DataDownloadBase(ABC):
 
 
 class GEE_IMAGE(Enum):
+    """
+    ref: https://developers.google.com/earth-engine/datasets/catalog/
+    """
+
     chirps = "UCSB-CHG/CHIRPS/DAILY"
+    terraclimate = "IDAHO_EPSCOR/TERRACLIMATE"  # monthly
+    era_5 = "ECMWF/ERA5/DAILY"
+    imerg = "NASA/GPM_L3/IMERG_V07"  # half-hourly
