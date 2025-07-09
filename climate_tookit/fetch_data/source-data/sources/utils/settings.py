@@ -60,6 +60,11 @@ class TerraSettings(BaseModel):
     resolution: float
 
 
+class ChirtsSettings(BaseModel):
+    gee_image: str
+    resolution: float
+
+
 class Settings(BaseModel):
     """Loads the application's settings."""
 
@@ -67,6 +72,7 @@ class Settings(BaseModel):
     era_5: Era5Settings
     imerg: ImergSettings
     terraclimate: TerraSettings
+    chirts: ChirtsSettings
 
     @classmethod
     def load(cls, settings_path: Path = config_path):

@@ -33,3 +33,7 @@ imerg:
     half_hourly: GPM_3IMERGHH
   resolution: 5566
   gee_image: NASA/GPM_L3/IMERG_V07
+
+chirts:
+  gee_image: UCSB-CHG/CHIRTS/DAILY
+  resolution: 5566
