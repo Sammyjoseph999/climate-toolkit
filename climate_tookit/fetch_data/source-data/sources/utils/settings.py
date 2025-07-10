@@ -2,13 +2,9 @@
 
 import logging
 from pathlib import Path
-import os
 
 import yaml
 from pydantic import BaseModel
-from dotenv import load_dotenv
-
-load_dotenv()
 
 BASE_DIR = Path(__file__).parent.parent.parent
 config_path = "sources/utils/config.yaml"
@@ -37,6 +33,10 @@ class TerraClimateVariable(BaseModel):
     soil_moisture: str
 
 
+class Era5ClimateVariable(BaseModel):
+    precipitation: str
+
+
 class Agera5Settings(BaseModel):
     """Corresponds to the 'agera_5' block in YAML."""
 
@@ -46,30 +46,33 @@ class Agera5Settings(BaseModel):
 
 class Era5Settings(BaseModel):
     request: dict
+    gee_image: str
+    resolution: float
+    variable: Era5ClimateVariable
+
+
+class ImergClimateVariable(BaseModel):
+    precipitation: str
 
 
 class ImergSettings(BaseModel):
     version: str
     short_name: AggregationLevel
+    gee_image: str
+    resolution: float
+    variable: ImergClimateVariable
 
 
 class TerraSettings(BaseModel):
     url: str
     variable: TerraClimateVariable
+    gee_image: str
+    resolution: float
 
 
-class ChirpsSettings(BaseModel):
-    base_url: str
-
-
-class TamsatSettings(BaseModel):
-    rainfall_url: str
-    soil_moisture_url: str
-
-
-class TamsatSettings(BaseModel):
-    rainfall_url: str
-    soil_moisture_url: str
+class ChirtsSettings(BaseModel):
+    gee_image: str
+    resolution: float
 
 
 class Settings(BaseModel):
@@ -79,10 +82,7 @@ class Settings(BaseModel):
     era_5: Era5Settings
     imerg: ImergSettings
     terraclimate: TerraSettings
-    chirps: ChirpsSettings
-    tamsat: TamsatSettings
-
-    gee_project_id: str = os.getenv("GEE_PROJECT_ID", "")
+    chirts: ChirtsSettings
 
     @classmethod
     def load(cls, settings_path: Path = config_path):
@@ -93,12 +93,7 @@ class Settings(BaseModel):
 
 
 if __name__ == "__main__":
-    s = Settings.load()
-    print(s.agera_5)
-    print(s.agera_5.dataset)
-    print(s.agera_5.request)
-    print(s.imerg.short_name.monthly)
-    print(s.chirps.base_url)
-    print(s.tamsat.rainfall_url)
-    print(s.tamsat.soil_moisture_url)
-    print(s.gee_project_id)
+    print(Settings.load().agera_5)
+    print(Settings.load().agera_5.dataset)
+    print(Settings.load().agera_5.request)
+    print(Settings.load().imerg.short_name.monthly)

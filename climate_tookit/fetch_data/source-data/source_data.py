@@ -3,12 +3,11 @@ different climate databases."""
 
 from datetime import date
 from typing import Optional
+
 from sources.agera_5 import DownloadData as DownloadAgera5
 from sources.era_5 import DownloadData as DownloadEra5
 from sources.imerg import DownloadData as DownloadImerg
 from sources.terraclimate import DownloadData as DownloadTerra
-from sources.chirps import DownloadData as DownloadChirps
-from sources.tamsat import DownloadData as DownloadTamsat
 from sources.utils import models
 from sources.utils.settings import Settings
 
@@ -28,6 +27,7 @@ class SourceData:
         aggregation: Optional[models.AggregationLevel],
     ):
         self.location_coord = location_coord
+        self.variable = variable
         self.source = source
         self.aggregation = aggregation
         self.date_from_utc = date_from_utc
@@ -68,22 +68,6 @@ class SourceData:
                 date_to_utc=date_to_utc,
             )
 
-        if self.source == models.ClimateDataset.chirps:
-            client = DownloadChirps(
-                location_coord=location_coord,
-                aggregation=aggregation,
-                date_from_utc=self.date_from_utc,
-                date_to_utc=self.date_to_utc,
-            )
-        
-        if self.source == models.ClimateDataset.tamsat:
-            client = DownloadTamsat(
-                location_coord=location_coord,
-                aggregation=aggregation,
-                date_from_utc=self.date_from_utc,
-                date_to_utc=self.date_to_utc,
-            )
-            
         self.client = client
 
     def download(self):
@@ -124,28 +108,22 @@ class SourceData:
             return self.client.download_soil_moisture(
                 settings=self.settings, variable_type=self.variable_type
             )
-            
-        if self.variable == models.ClimateVariable.soil_moisture:
-            return self.client.download_soil_moisture(
-                settings = self.settings,
-            )
-        
-        raise NotImplemented(f"Download not implemented for variable: {self.variable}")
-        
-        
+
 
 if __name__ == "__main__":
     settings = Settings.load()
+    nairobi = (36.817223, -1.286389)
 
     source_data = SourceData(
-        location_coord=(-1.18, 36.343),
-        source=models.ClimateDataset.imerg,
+        location_coord=nairobi,
+        variable=models.ClimateVariable.wind_speed,
         variable_type=None,
         source=models.ClimateDataset.terraclimate,
         aggregation=None,
-        date_from_utc=date(year=2024, month=1, day=1),
-        date_to_utc=date(year=2024, month=1, day=1),
+        date_from_utc=date(year=2020, month=1, day=1),
+        date_to_utc=date(year=2020, month=3, day=3),
         settings=settings,
     )
 
-    source_data.download()
+    climate_data = source_data.download()
+    print(climate_data)
