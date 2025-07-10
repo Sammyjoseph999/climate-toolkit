@@ -29,7 +29,7 @@ def get_gee_data_daily(
     tile_scale: float = 1,
 ) -> pd.DataFrame:
     """Uses the Google Earth Engine (GEE) API to retrieve weather information
-    from a weather dataset.
+    from a weather dataset. Used for dataset whose cadence is daily.
 
     API ref: https://developers.google.com/earth-engine/apidocs/
 
@@ -123,7 +123,7 @@ def get_gee_data_monthly(
     tile_scale: float = 1,
 ):
     """Uses the Google Earth Engine (GEE) API to retrieve weather information
-    from a weather dataset.
+    from a weather dataset. Used for dataset whose cadence is monthly.
 
     API ref: https://developers.google.com/earth-engine/apidocs/
 
