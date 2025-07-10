@@ -95,20 +95,26 @@ jobs:
       - name: Create Pull Request
         if: steps.check_diff.outputs.create_pr == 'true'
         run: |
-          gh pr create \
-            --title "PR: Staging to Main" \
-            --body "Automated pull request from staging to main.
+          if gh pr view staging --base main > /dev/null 2>&1; then
+            echo "Pull request already exists. Updating existing PR..."
+            echo "Changes have been added to the current PR"
+          else
+            echo "Creating new pull request..."
+            gh pr create \
+              --title "PR: Staging to Main" \
+              --body "Automated pull request from staging to main.
 
-          All tests have passed in staging branch.
+            All tests have passed in staging branch.
 
-          **Changes:**
-          - Latest changes from staging branch
+            **Changes:**
+            - Latest changes from staging branch
 
-          **Test Status:** 
-          - All tests passed" \
-            --base main \
-            --head staging \
-            --assignee Sammyjoseph999 \
-            --reviewer Sammyjoseph999
+            **Test Status:** 
+            - All tests passed" \
+              --base main \
+              --head staging \
+              --assignee Sammyjoseph999 \
+              --reviewer Sammyjoseph999
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
