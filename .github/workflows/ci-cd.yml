@@ -95,14 +95,16 @@ jobs:
       - name: Create Pull Request
         if: steps.check_diff.outputs.create_pr == 'true'
         run: |
-          if gh pr view staging --base main > /dev/null 2>&1; then
+          prs=$(gh pr list --base main --head staging --json number,title,url)
+          if [[ -n "$prs" ]]; then
             echo "Pull request already exists. Updating existing PR..."
+            echo "$prs"
             echo "Changes have been added to the current PR"
           else
             echo "Creating new pull request..."
             gh pr create \
               --title "PR: Staging to Main" \
-              --body "Automated pull request from staging to main.
+              --body "Automated pull request from ${{ github.ref_name }} to ${{ github.event.pull_request.base.ref }}.
 
             All tests have passed in staging branch.
 
