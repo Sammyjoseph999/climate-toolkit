@@ -116,12 +116,12 @@ if __name__ == "__main__":
 
     source_data = SourceData(
         location_coord=nairobi,
-        variable=models.ClimateVariable.wind_speed,
+        variable=models.ClimateVariable.precipitation,
         variable_type=None,
-        source=models.ClimateDataset.terraclimate,
+        source=models.ClimateDataset.era_5,
         aggregation=None,
         date_from_utc=date(year=2020, month=1, day=1),
-        date_to_utc=date(year=2020, month=3, day=3),
+        date_to_utc=date(year=2020, month=1, day=5),
         settings=settings,
     )
 

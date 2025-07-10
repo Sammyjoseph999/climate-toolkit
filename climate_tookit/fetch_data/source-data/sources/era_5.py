@@ -59,20 +59,44 @@ class DownloadData(models.DataDownloadBase):
         cols = ["date", data_settings.variable.precipitation]
         return climate_data[cols]
 
-    def download_rainfall():
+    def download_rainfall(
+        self,
+        settings: Settings,
+        variable_type: Optional[models.VariableType],
+    ):
         logger.warning("ERA5 does not have rainfall data")
 
-    def download_temperature():
+    def download_temperature(
+        self,
+        settings: Settings,
+        variable_type: Optional[models.VariableType],
+    ):
         logger.warning("ERA5 does not have temperature data")
 
-    def download_windspeed():
+    def download_windspeed(
+        self,
+        settings: Settings,
+        variable_type: Optional[models.VariableType],
+    ):
         logger.warning("ERA5 does not have wind speed data")
 
-    def download_solar_radiation():
+    def download_solar_radiation(
+        self,
+        settings: Settings,
+        variable_type: Optional[models.VariableType],
+    ):
         logger.warning("ERA5 does not have solar radiation data")
 
-    def download_humidity():
+    def download_humidity(
+        self,
+        settings: Settings,
+        variable_type: Optional[models.VariableType],
+    ):
         logger.warning("ERA5 does not have humidity data")
 
-    def download_soil_moisture():
+    def download_soil_moisture(
+        self,
+        settings: Settings,
+        variable_type: Optional[models.VariableType],
+    ):
         logger.warning("ERA5 does not have soil moisture data")
