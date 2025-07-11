@@ -80,6 +80,8 @@ class SourceData:
 
 
 if __name__ == "__main__":
+    import time
+
     settings = Settings.load()
 
     # nairobi = (36.817223, -1.286389)
@@ -95,9 +97,13 @@ if __name__ == "__main__":
         source=models.ClimateDataset.imerg,
         aggregation=None,
         date_from_utc=date(year=2020, month=1, day=1),
-        date_to_utc=date(year=2020, month=1, day=5),
+        date_to_utc=date(year=2020, month=3, day=5),
         settings=settings,
     )
 
+    start = time.time()
     climate_data = source_data.download()
+    end = time.time()
+    elapsed = end - start
+    print("time taken (secs):", elapsed)
     print(climate_data)
