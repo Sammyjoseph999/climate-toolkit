@@ -100,3 +100,41 @@ class DownloadData(models.DataDownloadBase):
         variable_type: Optional[models.VariableType],
     ):
         logger.warning("ERA5 does not have soil moisture data")
+
+    def download_variables(
+        self,
+        settings: Settings,
+        variables: list[models.ClimateVariable],
+        source: models.ClimateDataset,
+    ):
+
+        data_settings = getattr(settings, source.name)
+
+        climate_data = get_gee_data_daily(
+            image_name=data_settings.gee_image,
+            location_coord=self.location_coord,
+            from_date=self.date_from_utc,
+            to_date=self.date_to_utc,
+            scale=data_settings.resolution,
+        )
+
+        dataset_cols = list(climate_data.columns)
+        req_vars = [v.name for v in variables]
+
+        available_cols = []
+        missing_vars = []
+        for v in variables:
+            try:
+                c = getattr(data_settings.variable, v.name)
+                available_cols.append(c)
+            except:
+                logger.warning(
+                    f"{source.name.upper()} does not have {v.name} data"
+                )
+                missing_vars.append(v.name)
+
+        logger.info(f"Available columns: {dataset_cols}")
+        logger.info(f"Requested variables: {req_vars}")
+
+        cols = ["date"] + available_cols
+        return climate_data[cols]
