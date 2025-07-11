@@ -15,7 +15,8 @@ class ClimateVariable(Enum):
     """The enum for climate variables"""
 
     rainfall = auto()
-    temperature = auto()
+    max_temperature = auto()
+    min_temperature = auto()
     precipitation = auto()
     wind_speed = auto()
     solar_radiation = auto()
@@ -87,4 +88,9 @@ class DataDownloadBase(ABC):
     @abstractmethod
     def download_soil_moisture():
         """Retrieves soil moisture data from the climate database"""
+        pass
+
+    @abstractmethod
+    def download_variables():
+        """Retrieves all variables available in the climate database"""
         pass
