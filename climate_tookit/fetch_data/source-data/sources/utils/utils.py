@@ -8,7 +8,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from .models import AggregationLevel
-from .settings import Settings, set_logging
+from .settings import set_logging
 
 load_dotenv()
 
@@ -78,7 +78,7 @@ def get_gee_data_daily(
     current_date = from_date
     tbl = pd.DataFrame()
 
-    logger.info(f"Retrieving information from {image_name}...")
+    logger.info(f"Retrieving information from GEE Image: {image_name}")
 
     while current_date <= to_date:
         next_date = current_date + delta
@@ -171,7 +171,7 @@ def get_gee_data_monthly(
     delta = timedelta(days=31)
     tbl = pd.DataFrame()
 
-    logger.info(f"Retrieving information from {image_name}...")
+    logger.info(f"Retrieving information from GEE Image: {image_name}")
 
     while current_date <= final_date:
         next_date = current_date + delta
@@ -203,31 +203,3 @@ def get_gee_data_monthly(
         current_date = next_date
 
     return tbl.reset_index(drop=True)
-
-
-if __name__ == "__main__":
-
-    nairobi = (36.817223, -1.286389)
-    settings = Settings.load().imerg
-
-    climate_data = get_gee_data_daily(
-        image_name=settings.gee_image,
-        location_coord=nairobi,
-        from_date=date(2020, 1, 12),
-        to_date=date(2020, 1, 14),
-        scale=settings.resolution,
-    )
-
-    print(climate_data.columns)
-    print(climate_data)
-
-    climate_data = get_gee_data_monthly(
-        image_name="IDAHO_EPSCOR/TERRACLIMATE",
-        location_coord=nairobi,
-        scale=5566,
-        from_date=date(2020, 1, 1),
-        to_date=date(2020, 3, 31),
-    )
-
-    print(climate_data.columns)
-    print(climate_data)

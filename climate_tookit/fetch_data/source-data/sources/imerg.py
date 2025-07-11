@@ -160,7 +160,6 @@ class DownloadData(models.DataDownloadBase):
 
         logger.info(f"Available columns: {dataset_cols}")
         logger.info(f"Requested variables: {req_vars}")
-        logger.warning(f"Missing variables: {missing_vars}")
 
         cols = ["date"] + available_cols
         return climate_data[cols]
