@@ -3,6 +3,7 @@
 from abc import ABC, abstractmethod
 from datetime import date
 from enum import Enum, auto
+from typing import NamedTuple
 
 
 class VariableType(Enum):
@@ -39,6 +40,11 @@ class AggregationLevel(Enum):
     hourly = auto()
     daily = auto()
     monthly = auto()
+
+
+class Location(NamedTuple):
+    lat: float
+    lon: float
 
 
 class DataDownloadBase(ABC):

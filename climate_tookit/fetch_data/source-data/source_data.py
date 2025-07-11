@@ -9,6 +9,7 @@ from sources.era_5 import DownloadData as DownloadEra5
 from sources.imerg import DownloadData as DownloadImerg
 from sources.terraclimate import DownloadData as DownloadTerra
 from sources.utils import models
+from sources.utils.models import Location
 from sources.utils.settings import Settings
 
 
@@ -80,10 +81,12 @@ class SourceData:
 
 if __name__ == "__main__":
     settings = Settings.load()
-    nairobi = (36.817223, -1.286389)
+
+    # nairobi = (36.817223, -1.286389)
+    location = Location(lon=36.817223, lat=-1.286389)
 
     source_data = SourceData(
-        location_coord=nairobi,
+        location_coord=(location.lon, location.lat),
         variables=[
             models.ClimateVariable.precipitation,
             models.ClimateVariable.max_temperature,
