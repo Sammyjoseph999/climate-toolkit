@@ -18,23 +18,19 @@ def set_logging():
     )
 
 
-class AggregationLevel(BaseModel):
+class Cadence(BaseModel):
     monthly: str
     daily: str
     half_hourly: str
 
 
-class TerraClimateVariable(BaseModel):
-    precipitation: str
-    max_temperature: str
-    min_temperature: str
-    wind_speed: str
-    solar_radiation: str
-    soil_moisture: str
-
-
-class Era5ClimateVariable(BaseModel):
-    precipitation: str
+class ClimateVariable(BaseModel):
+    precipitation: str | None
+    max_temperature: str | None
+    min_temperature: str | None
+    wind_speed: str | None
+    solar_radiation: str | None
+    soil_moisture: str | None
 
 
 class Agera5Settings(BaseModel):
@@ -48,26 +44,25 @@ class Era5Settings(BaseModel):
     request: dict
     gee_image: str
     resolution: float
-    variable: Era5ClimateVariable
-
-
-class ImergClimateVariable(BaseModel):
-    precipitation: str
+    variable: ClimateVariable
+    cadence: str
 
 
 class ImergSettings(BaseModel):
     version: str
-    short_name: AggregationLevel
+    short_name: Cadence
     gee_image: str
     resolution: float
-    variable: ImergClimateVariable
+    variable: ClimateVariable
+    cadence: str
 
 
 class TerraSettings(BaseModel):
     url: str
-    variable: TerraClimateVariable
+    variable: ClimateVariable
     gee_image: str
     resolution: float
+    cadence: str
 
 
 class ChirtsSettings(BaseModel):
