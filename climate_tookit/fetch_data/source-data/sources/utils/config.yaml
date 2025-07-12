@@ -14,6 +14,11 @@ era_5:
   cadence: daily
   variable:
     precipitation: total_precipitation
+    max_temperature: null
+    min_temperature: null
+    wind_speed: null
+    solar_radiation: null
+    soil_moisture: null
 
 terraclimate:
   url: https://climate.northwestknowledge.net/TERRACLIMATE-DATA/
@@ -41,6 +46,11 @@ imerg:
   cadence: half_hourly
   variable:
     precipitation: precipitation
+    max_temperature: null
+    min_temperature: null
+    wind_speed: null
+    solar_radiation: null
+    soil_moisture: null
 
 chirts:
   gee_image: UCSB-CHG/CHIRTS/DAILY

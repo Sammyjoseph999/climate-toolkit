@@ -110,9 +110,6 @@ class DownloadData(models.DataDownloadBase):
         ee.Authenticate()
         ee.Initialize(project=os.environ.get("GCP_PROJECT_ID"))
 
-        if cadence != Cadence.daily:
-            logger.warning("Only daily cadence is supported.")
-
         # define the location
         location = (
             ee.Geometry.Point(location_coord)
@@ -293,10 +290,10 @@ class DownloadData(models.DataDownloadBase):
         available_cols = []
         missing_vars = []
         for v in variables:
-            try:
-                c = getattr(data_settings.variable, v.name)
+            c = getattr(data_settings.variable, v.name)
+            if c is not None:
                 available_cols.append(c)
-            except:
+            else:
                 logger.warning(
                     f"{source.name.upper()} does not have {v.name} data"
                 )
