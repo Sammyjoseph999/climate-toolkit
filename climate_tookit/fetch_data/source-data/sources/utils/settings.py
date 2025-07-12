@@ -18,7 +18,7 @@ def set_logging():
     )
 
 
-class AggregationLevel(BaseModel):
+class Cadence(BaseModel):
     monthly: str
     daily: str
     half_hourly: str
@@ -49,6 +49,7 @@ class Era5Settings(BaseModel):
     gee_image: str
     resolution: float
     variable: Era5ClimateVariable
+    cadence: str
 
 
 class ImergClimateVariable(BaseModel):
@@ -57,10 +58,11 @@ class ImergClimateVariable(BaseModel):
 
 class ImergSettings(BaseModel):
     version: str
-    short_name: AggregationLevel
+    short_name: Cadence
     gee_image: str
     resolution: float
     variable: ImergClimateVariable
+    cadence: str
 
 
 class TerraSettings(BaseModel):
@@ -68,6 +70,7 @@ class TerraSettings(BaseModel):
     variable: TerraClimateVariable
     gee_image: str
     resolution: float
+    cadence: str
 
 
 class ChirtsSettings(BaseModel):

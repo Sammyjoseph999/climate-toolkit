@@ -11,6 +11,7 @@ era_5:
     download_format: zip
   resolution: 9000
   gee_image: ECMWF/ERA5/DAILY
+  cadence: daily
   variable:
     precipitation: total_precipitation
 
@@ -26,6 +27,7 @@ terraclimate:
     soil_moisture: soil
   resolution: 4000
   gee_image: IDAHO_EPSCOR/TERRACLIMATE
+  cadence: monthly
 
 imerg:
   version: "07"
@@ -36,6 +38,7 @@ imerg:
     half_hourly: GPM_3IMERGHH
   resolution: 5566
   gee_image: NASA/GPM_L3/IMERG_V07
+  cadence: half_hourly
   variable:
     precipitation: precipitation
 

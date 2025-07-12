@@ -5,6 +5,8 @@ from datetime import date
 from enum import Enum, auto
 from typing import NamedTuple
 
+import pandas as pd
+
 
 class VariableType(Enum):
     max = auto()
@@ -34,8 +36,8 @@ class ClimateDataset(Enum):
     imerg = auto()
 
 
-class AggregationLevel(Enum):
-    """The enum for aggregation levels"""
+class Cadence(Enum):
+    """The enum for cadence levels"""
 
     hourly = auto()
     daily = auto()
@@ -52,8 +54,8 @@ class DataDownloadBase(ABC):
 
     def __init__(
         self,
+        variables: list[ClimateVariable],
         location_coord: tuple[float],
-        aggregation: AggregationLevel,
         date_from_utc: date,
         date_to_utc: date,
     ):
@@ -97,6 +99,6 @@ class DataDownloadBase(ABC):
         pass
 
     @abstractmethod
-    def download_variables():
+    def download_variables() -> pd.DataFrame:
         """Retrieves all variables available in the climate database"""
         pass

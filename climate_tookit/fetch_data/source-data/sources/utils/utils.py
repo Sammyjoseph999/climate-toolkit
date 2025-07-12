@@ -7,7 +7,7 @@ import ee
 import pandas as pd
 from dotenv import load_dotenv
 
-from .models import AggregationLevel
+from .models import Cadence
 from .settings import set_logging
 
 load_dotenv()
@@ -25,7 +25,7 @@ def get_gee_data_daily(
     crs: Optional[str] = None,
     location_name: Optional[str] = None,
     max_pixels: float = 1e9,
-    aggregation: AggregationLevel = AggregationLevel.daily,
+    cadence: Cadence = Cadence.daily,
     tile_scale: float = 1,
 ) -> pd.DataFrame:
     """Uses the Google Earth Engine (GEE) API to retrieve weather information
@@ -45,11 +45,11 @@ def get_gee_data_daily(
     - location_coord: The point geometry (longitude, latitude)
     - from_date, to_date: The date range
     - location_name: The name of the location_coord
-    - aggregation: Aggregation type (daily, monthly, etc). Only daily is currently supported
+    - cadence: cadence type (daily, monthly, etc). Only daily is currently supported
     - scale: A nominal scale in meters of the projection to work in.
     - crs: The projection to work in. If unspecified, the projection of the
     image's first band is used. If specified in addition to scale, rescaled to the specified scale.
-    - tile_scale: A scaling factor between 0.1 and 16 used to adjust aggregation
+    - tile_scale: A scaling factor between 0.1 and 16 used to adjust cadence
     tile size; setting a larger tileScale (e.g., 2 or 4) uses smaller tiles
     and may enable computations that run out of memory with the default.
     - max_pixels: The maximum number of pixels to reduce.
@@ -63,8 +63,8 @@ def get_gee_data_daily(
     ee.Authenticate()
     ee.Initialize(project=os.environ.get("GCP_PROJECT_ID"))
 
-    if aggregation != AggregationLevel.daily:
-        logger.warning("Only daily aggregation is supported.")
+    if cadence != Cadence.daily:
+        logger.warning("Only daily cadence is supported.")
 
     # define the location
     location = (
@@ -152,11 +152,11 @@ def get_gee_data_monthly(
     - location_coord: The point geometry (longitude, latitude)
     - from_date, to_date: The date range
     - location_name: The name of the location_coord
-    - aggregation: Aggregation type (daily, monthly, etc). Only daily is currently supported
+    - cadence: cadence type (daily, monthly, etc). Only daily is currently supported
     - scale: A nominal scale in meters of the projection to work in.
     - crs: The projection to work in. If unspecified, the projection of the
     image's first band is used. If specified in addition to scale, rescaled to the specified scale.
-    - tile_scale: A scaling factor between 0.1 and 16 used to adjust aggregation
+    - tile_scale: A scaling factor between 0.1 and 16 used to adjust cadence
     tile size; setting a larger tileScale (e.g., 2 or 4) uses smaller tiles
     and may enable computations that run out of memory with the default.
     - max_pixels: The maximum number of pixels to reduce.
@@ -229,7 +229,7 @@ def get_gee_data_daily_old(
     crs: Optional[str] = None,
     location_name: Optional[str] = None,
     max_pixels: float = 1e9,
-    aggregation: AggregationLevel = AggregationLevel.daily,
+    cadence: Cadence = Cadence.daily,
     tile_scale: float = 1,
 ) -> pd.DataFrame:
     """Uses the Google Earth Engine (GEE) API to retrieve weather information
@@ -249,11 +249,11 @@ def get_gee_data_daily_old(
     - location_coord: The point geometry (longitude, latitude)
     - from_date, to_date: The date range
     - location_name: The name of the location_coord
-    - aggregation: Aggregation type (daily, monthly, etc). Only daily is currently supported
+    - cadence: cadence type (daily, monthly, etc). Only daily is currently supported
     - scale: A nominal scale in meters of the projection to work in.
     - crs: The projection to work in. If unspecified, the projection of the
     image's first band is used. If specified in addition to scale, rescaled to the specified scale.
-    - tile_scale: A scaling factor between 0.1 and 16 used to adjust aggregation
+    - tile_scale: A scaling factor between 0.1 and 16 used to adjust cadence
     tile size; setting a larger tileScale (e.g., 2 or 4) uses smaller tiles
     and may enable computations that run out of memory with the default.
     - max_pixels: The maximum number of pixels to reduce.
@@ -267,8 +267,8 @@ def get_gee_data_daily_old(
     ee.Authenticate()
     ee.Initialize(project=os.environ.get("GCP_PROJECT_ID"))
 
-    if aggregation != AggregationLevel.daily:
-        logger.warning("Only daily aggregation is supported.")
+    if cadence != Cadence.daily:
+        logger.warning("Only daily cadence is supported.")
 
     # define the location
     location = (
@@ -343,11 +343,11 @@ def get_gee_data_monthly_old(
     - location_coord: The point geometry (longitude, latitude)
     - from_date, to_date: The date range
     - location_name: The name of the location_coord
-    - aggregation: Aggregation type (daily, monthly, etc). Only daily is currently supported
+    - cadence: cadence type (daily, monthly, etc). Only daily is currently supported
     - scale: A nominal scale in meters of the projection to work in.
     - crs: The projection to work in. If unspecified, the projection of the
     image's first band is used. If specified in addition to scale, rescaled to the specified scale.
-    - tile_scale: A scaling factor between 0.1 and 16 used to adjust aggregation
+    - tile_scale: A scaling factor between 0.1 and 16 used to adjust cadence
     tile size; setting a larger tileScale (e.g., 2 or 4) uses smaller tiles
     and may enable computations that run out of memory with the default.
     - max_pixels: The maximum number of pixels to reduce.
