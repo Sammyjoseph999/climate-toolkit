@@ -3,9 +3,7 @@ different climate databases."""
 
 from datetime import date
 
-from sources.era_5 import DownloadData as DownloadEra5
-from sources.imerg import DownloadData as DownloadImerg
-from sources.terraclimate import DownloadData as DownloadTerra
+from sources.gee import DownloadData as DownloadGEE
 from sources.utils import models
 from sources.utils.models import Location
 from sources.utils.settings import Settings
@@ -31,28 +29,12 @@ class SourceData:
         self.settings = settings
 
         # determine the client on class instantiation
-        if self.source == models.ClimateDataset.era_5:
-            client = DownloadEra5(
-                variables=variables,
-                location_coord=location_coord,
-                date_from_utc=date_from_utc,
-                date_to_utc=date_to_utc,
-                settings=settings,
-                source=source,
-            )
-
-        if self.source == models.ClimateDataset.terraclimate:
-            client = DownloadTerra(
-                variables=variables,
-                location_coord=location_coord,
-                date_from_utc=date_from_utc,
-                date_to_utc=date_to_utc,
-                settings=settings,
-                source=source,
-            )
-
-        if self.source == models.ClimateDataset.imerg:
-            client = DownloadImerg(
+        if self.source in (
+            models.ClimateDataset.era_5,
+            models.ClimateDataset.terraclimate,
+            models.ClimateDataset.imerg,
+        ):
+            client = DownloadGEE(
                 variables=variables,
                 location_coord=location_coord,
                 date_from_utc=date_from_utc,
@@ -84,7 +66,7 @@ if __name__ == "__main__":
             models.ClimateVariable.max_temperature,
             models.ClimateVariable.min_temperature,
         ],
-        source=models.ClimateDataset.imerg,
+        source=models.ClimateDataset.terraclimate,
         date_from_utc=date(year=2020, month=1, day=1),
         date_to_utc=date(year=2020, month=3, day=5),
         settings=settings,
