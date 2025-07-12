@@ -1,3 +1,5 @@
+"""Downloads climate data from the ERA 5 dataset hosted in the Climate Data Store."""
+
 import logging
 import os
 from datetime import date
