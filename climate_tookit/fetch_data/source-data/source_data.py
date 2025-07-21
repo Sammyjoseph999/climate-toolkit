@@ -63,7 +63,6 @@ class SourceData:
 
         return self.client.download_variables()
 
-
 if __name__ == "__main__":
     import time
 
