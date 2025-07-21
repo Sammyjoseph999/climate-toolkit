@@ -3,6 +3,9 @@
 from abc import ABC, abstractmethod
 from datetime import date
 from enum import Enum, auto
+from typing import NamedTuple
+
+import pandas as pd
 
 
 class VariableType(Enum):
@@ -15,7 +18,8 @@ class ClimateVariable(Enum):
     """The enum for climate variables"""
 
     rainfall = auto()
-    temperature = auto()
+    max_temperature = auto()
+    min_temperature = auto()
     precipitation = auto()
     wind_speed = auto()
     solar_radiation = auto()
@@ -30,14 +34,24 @@ class ClimateDataset(Enum):
     era_5 = auto()
     terraclimate = auto()
     imerg = auto()
+    chirps = auto()
+    cmip6 = auto()
+    nex_gddp = auto()
+    nasa_power = auto()
+    tamsat = auto
 
 
-class AggregationLevel(Enum):
-    """The enum for aggregation levels"""
+class Cadence(Enum):
+    """The enum for cadence levels"""
 
     hourly = auto()
     daily = auto()
     monthly = auto()
+
+
+class Location(NamedTuple):
+    lat: float
+    lon: float
 
 
 class DataDownloadBase(ABC):
@@ -45,8 +59,8 @@ class DataDownloadBase(ABC):
 
     def __init__(
         self,
+        variables: list[ClimateVariable],
         location_coord: tuple[float],
-        aggregation: AggregationLevel,
         date_from_utc: date,
         date_to_utc: date,
     ):
@@ -87,4 +101,9 @@ class DataDownloadBase(ABC):
     @abstractmethod
     def download_soil_moisture():
         """Retrieves soil moisture data from the climate database"""
+        pass
+
+    @abstractmethod
+    def download_variables() -> pd.DataFrame:
+        """Retrieves all variables available in the climate database"""
         pass
