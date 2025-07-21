@@ -18,23 +18,19 @@ def set_logging():
     )
 
 
-class AggregationLevel(BaseModel):
+class Cadence(BaseModel):
     monthly: str
     daily: str
     half_hourly: str
 
 
-class TerraClimateVariable(BaseModel):
-    precipitation: str
-    max_temperature: str
-    min_temperature: str
-    wind_speed: str
-    solar_radiation: str
-    soil_moisture: str
-
-
-class Era5ClimateVariable(BaseModel):
-    precipitation: str
+class ClimateVariable(BaseModel):
+    precipitation: str | None
+    max_temperature: str | None
+    min_temperature: str | None
+    wind_speed: str | None
+    solar_radiation: str | None
+    soil_moisture: str | None
 
 
 class Agera5Settings(BaseModel):
@@ -48,32 +44,63 @@ class Era5Settings(BaseModel):
     request: dict
     gee_image: str
     resolution: float
-    variable: Era5ClimateVariable
-
-
-class ImergClimateVariable(BaseModel):
-    precipitation: str
+    variable: ClimateVariable
+    cadence: str
 
 
 class ImergSettings(BaseModel):
     version: str
-    short_name: AggregationLevel
+    short_name: Cadence
     gee_image: str
     resolution: float
-    variable: ImergClimateVariable
+    variable: ClimateVariable
+    cadence: str
 
 
 class TerraSettings(BaseModel):
     url: str
-    variable: TerraClimateVariable
+    variable: ClimateVariable
     gee_image: str
     resolution: float
+    cadence: str
 
 
 class ChirtsSettings(BaseModel):
     gee_image: str
     resolution: float
+    
+class ChirpsSettings(BaseModel):
+    gee_image: str
+    resolution: float
+    variable: ClimateVariable
+    cadence: str
 
+class Cmip6Settings(BaseModel):
+    gee_image: str
+    resolution: float
+    cadence: str
+    variable: ClimateVariable
+    
+class NexGddpSettings(BaseModel):
+    gee_image: str
+    resolution: float
+    cadence: str
+    variable: ClimateVariable
+    
+class NasaPowerSettings(BaseModel):
+    api: str
+    resolution: float
+    cadence: str
+    variable: ClimateVariable
+
+class TamsatSettings(BaseModel):
+    rainfall_url: str
+    soil_moisture_url: str
+    data_format: str
+    download_format: str
+    cadence: str
+    resolution: float
+    variable: ClimateVariable
 
 class Settings(BaseModel):
     """Loads the application's settings."""
@@ -83,6 +110,11 @@ class Settings(BaseModel):
     imerg: ImergSettings
     terraclimate: TerraSettings
     chirts: ChirtsSettings
+    chirps: ChirpsSettings
+    cmip6: Cmip6Settings
+    nex_gddp: NexGddpSettings
+    nasa_power: NasaPowerSettings
+    tamsat: TamsatSettings
 
     @classmethod
     def load(cls, settings_path: Path = config_path):
@@ -97,3 +129,9 @@ if __name__ == "__main__":
     print(Settings.load().agera_5.dataset)
     print(Settings.load().agera_5.request)
     print(Settings.load().imerg.short_name.monthly)
+    print(Settings.load().chirps.variable)
+    print(Settings.load().cmip6.variable)
+    print(Settings.load().nex_gddp.variable)
+    print(Settings.load().nasa_power.variable)
+    print(Settings.load().tamsat.rainfall_url)
+    print(Settings.load().tamsat.soil_moisture_url)
