@@ -13,9 +13,7 @@ import os
 import platform
 import shutil
 from datetime import date
-from typing import Optional
 
-import earthaccess
 
 from .utils import models
 from .utils.settings import Settings, set_logging
@@ -27,22 +25,26 @@ logger = logging.getLogger(__name__)
 class DownloadData(models.DataDownloadBase):
     def __init__(
         self,
+        variables: list[models.ClimateVariable],
         location_coord: tuple[float],
-        aggregation: models.AggregationLevel,
         date_from_utc: date,
         date_to_utc: date,
+        settings: Settings,
+        source: models.ClimateDataset,
     ):
         super().__init__(
             location_coord=location_coord,
-            aggregation=aggregation,
             date_from_utc=date_from_utc,
             date_to_utc=date_to_utc,
+            variables=variables,
         )
 
         self.date_from_utc = date_from_utc
         self.date_to_utc = date_to_utc
         self.location_coord = location_coord
-        self.aggregation = aggregation
+        self.variables = variables
+        self.settings = settings
+        self.source = source
 
     @staticmethod
     def create_access_files():
@@ -66,84 +68,26 @@ class DownloadData(models.DataDownloadBase):
             shutil.copy2(homeDir + ".dodsrc", os.getcwd())
             print("Copied .dodsrc to:", os.getcwd())
 
-    def download_precipitation(
-        self,
-        settings: Settings,
-        variable_type: Optional[models.VariableType],
-        dir_name: str = ".",
-    ):
-        auth = earthaccess.login(strategy="environment")
+    def download_precipitation(self):
+        raise NotImplementedError
 
-        temporal: tuple[str] = (
-            self.date_from_utc.strftime("%Y-%m-%d"),
-            self.date_to_utc.strftime("%Y-%m-%d"),
-        )
-        bounding_box = (
-            self.location_coord[1],
-            self.location_coord[0],
-            self.location_coord[1],
-            self.location_coord[0],
-        )
+    def download_temperature(self):
+        raise NotImplementedError
 
-        short_name = getattr(settings.imerg.short_name, self.aggregation.name)
-        version = settings.imerg.version
+    def download_rainfall(self):
+        raise NotImplementedError
 
-        logger.info(
-            f"Searching IMERG database with the parameters: {temporal=}, {bounding_box=}, {short_name=}, {version=}"
-        )
+    def download_windspeed(self):
+        raise NotImplementedError
 
-        results = earthaccess.search_data(
-            short_name=short_name,
-            version=version,
-            temporal=temporal,
-            bounding_box=bounding_box,
-        )
+    def download_solar_radiation(self):
+        raise NotImplementedError
 
-        downloaded_files = earthaccess.download(
-            results,
-            local_path=dir_name,
-        )
+    def download_humidity(self):
+        raise NotImplementedError
 
-        return downloaded_files
+    def download_soil_moisture(self):
+        raise NotImplementedError
 
-    def download_temperature(
-        self,
-        settings: Settings,
-        variable_type: Optional[models.VariableType],
-    ):
-        logger.warning("IMERG does not have temperature data")
-
-    def download_rainfall(
-        self,
-        settings: Settings,
-        variable_type: Optional[models.VariableType],
-    ):
-        logger.warning("IMERG does not have rainfall data")
-
-    def download_windspeed(
-        self,
-        settings: Settings,
-        variable_type: Optional[models.VariableType],
-    ):
-        logger.warning("IMERG does not have wind speed data")
-
-    def download_solar_radiation(
-        self,
-        settings: Settings,
-        variable_type: Optional[models.VariableType],
-    ):
-        logger.warning("IMERG does not have solar radiation data")
-
-    def download_humidity(
-        self,
-        settings: Settings,
-        variable_type: Optional[models.VariableType],
-    ):
-        logger.warning("IMERG does not have humidity data")
-
-    def download_soil_moisture(
-        self,
-        settings: Settings,
-        variable_type: Optional[models.VariableType],
-    ):
-        logger.warning("IMERG does not have soil moisture data")
+    def download_variables(self):
+        raise NotImplementedError
