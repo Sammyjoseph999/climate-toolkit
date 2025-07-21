@@ -11,8 +11,14 @@ era_5:
     download_format: zip
   resolution: 9000
   gee_image: ECMWF/ERA5/DAILY
+  cadence: daily
   variable:
     precipitation: total_precipitation
+    max_temperature: null
+    min_temperature: null
+    wind_speed: null
+    solar_radiation: null
+    soil_moisture: null
 
 terraclimate:
   url: https://climate.northwestknowledge.net/TERRACLIMATE-DATA/
@@ -26,6 +32,7 @@ terraclimate:
     soil_moisture: soil
   resolution: 4000
   gee_image: IDAHO_EPSCOR/TERRACLIMATE
+  cadence: monthly
 
 imerg:
   version: "07"
@@ -36,9 +43,78 @@ imerg:
     half_hourly: GPM_3IMERGHH
   resolution: 5566
   gee_image: NASA/GPM_L3/IMERG_V07
+  cadence: half_hourly
   variable:
     precipitation: precipitation
+    max_temperature: null
+    min_temperature: null
+    wind_speed: null
+    solar_radiation: null
+    soil_moisture: null
 
 chirts:
   gee_image: UCSB-CHG/CHIRTS/DAILY
   resolution: 5566
+
+chirps:
+  gee_image: UCSB-CHG/CHIRPS/DAILY
+  resolution: 5566
+  variable:
+    precipitation: precipitation
+    max_temperature: null
+    min_temperature: null
+    wind_speed: null
+    solar_radiation: null
+    soil_moisture: null
+  cadence: daily
+
+cmip6:
+  gee_image: NASA/GDDP-CMIP6
+  resolution: 5566
+  cadence: daily
+  variable:
+    precipitation: pr
+    max_temperature: tasmax
+    min_temperature: tasmin
+    wind_speed: null
+    solar_radiation: null
+    soil_moisture: null
+
+nex_gddp:
+  gee_image: NASA/NEX-GDDP
+  resolution: 5566
+  cadence: daily
+  variable:
+    precipitation: pr
+    max_temperature: tasmax
+    min_temperature: tasmin
+    wind_speed: null
+    solar_radiation: null
+    soil_moisture: null
+
+nasa_power:
+  api: https://power.larc.nasa.gov/api/temporal/monthly/point
+  resolution: 11100
+  cadence: monthly
+  variable:
+    precipitation: PRECTOT
+    max_temperature: T2M_MAX
+    min_temperature: T2M_MIN
+    wind_speed: WS2M
+    solar_radiation: ALLSKY_SFC_SW_DWN
+    soil_moisture: null
+
+tamsat:
+  rainfall_url: https://gws-access.jasmin.ac.uk/public/tamsat/rfe/data/v3.1/monthly/
+  soil_moisture_url: https://gws-access.jasmin.ac.uk/public/tamsat/soil_moisture/data/v2.3.1/monthly/
+  data_format: netcdf
+  download_format: http
+  cadence: monthly
+  resolution: 0.1
+  variable:
+    precipitation: rfe
+    soil_moisture: smcl
+    max_temperature: null
+    min_temperature: null
+    wind_speed: null
+    solar_radiation: null
