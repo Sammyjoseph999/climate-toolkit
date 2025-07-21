@@ -84,31 +84,39 @@ jobs:
         id: check_diff
         run: |
           git fetch origin main:main
-          if git diff --quiet staging main; then
-            echo "No differences found between staging and main"
+          if git diff --quiet ${{ github.ref_name }} main; then
+            echo "No differences found between ${{ github.ref_name }} and main"
             echo "create_pr=false" >> $GITHUB_OUTPUT
           else
-            echo "Differences found between staging and main"
+            echo "Differences found between ${{ github.ref_name }} and main"
             echo "create_pr=true" >> $GITHUB_OUTPUT
           fi
 
       - name: Create Pull Request
         if: steps.check_diff.outputs.create_pr == 'true'
         run: |
-          gh pr create \
-            --title "PR: Staging to Main" \
-            --body "Automated pull request from staging to main.
+          prs=$(gh pr list --base main --head ${{ github.ref_name }} --json number,title,url)
+          if [[ -n "$prs" ]]; then
+            echo "Pull request already exists. Updating existing PR..."
+            echo "$prs"
+            echo "Changes have been added to the current PR"
+          else
+            echo "Creating new pull request from ${{ github.ref_name }} to main"
+            gh pr create \
+              --title "PR: Staging to Main" \
+              --body "Automated pull request from ${{ github.ref_name }} to main.
 
-          All tests have passed in staging branch.
+            All tests have passed in staging branch.
 
-          **Changes:**
-          - Latest changes from staging branch
+            **Changes:**
+            - Latest changes from staging branch
 
-          **Test Status:** 
-          - All tests passed" \
-            --base main \
-            --head staging \
-            --assignee Sammyjoseph999 \
-            --reviewer Sammyjoseph999
+            **Test Status:** 
+            - All tests passed" \
+              --base main \
+              --head ${{ github.ref_name }} \
+              --assignee Sammyjoseph999 \
+              --reviewer Sammyjoseph999
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
