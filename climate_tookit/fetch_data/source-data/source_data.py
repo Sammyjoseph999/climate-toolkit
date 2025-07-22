@@ -5,6 +5,7 @@ from datetime import date
 
 from sources.gee import DownloadData as DownloadGEE
 from sources.tamsat import DownloadData as DownloadTAMSAT
+from sources.nasa_power import DownloadData as DownloadNASA
 from sources.utils import models
 from sources.utils.models import Location
 from sources.utils.settings import Settings
@@ -55,6 +56,16 @@ class SourceData:
                 date_from_utc=date_from_utc,
                 date_to_utc=date_to_utc,
             )
+        
+        elif self.source == models.ClimateDataset.nasa_power:
+            client = DownloadNASA(
+                variables=variables,
+                location_coord=location_coord,
+                date_from_utc=date_from_utc,
+                date_to_utc=date_to_utc,
+                settings=settings,
+                source=source,
+            )
 
         self.client = client
 
@@ -79,7 +90,7 @@ if __name__ == "__main__":
             models.ClimateVariable.min_temperature,
             models.ClimateVariable.soil_moisture,
         ],
-        source=models.ClimateDataset.tamsat,
+        source=models.ClimateDataset.nasa_power,
         date_from_utc=date(year=2020, month=1, day=1),
         date_to_utc=date(year=2020, month=3, day=5),
         settings=settings,
