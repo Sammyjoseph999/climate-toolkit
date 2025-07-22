@@ -93,16 +93,21 @@ nex_gddp:
     soil_moisture: null
 
 nasa_power:
-  api: https://power.larc.nasa.gov/api/temporal/monthly/point
-  resolution: 11100
-  cadence: monthly
+  endpoint: "https://power.larc.nasa.gov/api/temporal/monthly"
+  parameters:
+    - T2M
+    - RH2M
+    - PRECTOTCORR
+  temporal_api: "monthly"
+  resolution: 11132
   variable:
-    precipitation: PRECTOT
-    max_temperature: T2M_MAX
-    min_temperature: T2M_MIN
-    wind_speed: WS2M
-    solar_radiation: ALLSKY_SFC_SW_DWN
+    precipitation: "PRECTOTCORR"
+    max_temperature: null
+    min_temperature: null
+    wind_speed: null
+    solar_radiation: null
     soil_moisture: null
+  cadence: "monthly"
 
 tamsat:
   rainfall_url: https://gws-access.jasmin.ac.uk/public/tamsat/rfe/data/v3.1/monthly/
