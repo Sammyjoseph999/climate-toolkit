@@ -88,10 +88,12 @@ class NexGddpSettings(BaseModel):
     variable: ClimateVariable
     
 class NasaPowerSettings(BaseModel):
-    api: str
+    endpoint: str
+    parameters: list[str]
+    temporal_api: str
     resolution: float
-    cadence: str
     variable: ClimateVariable
+    cadence: str
 
 class TamsatSettings(BaseModel):
     rainfall_url: str
