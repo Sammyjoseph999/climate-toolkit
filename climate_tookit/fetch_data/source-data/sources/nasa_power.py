@@ -38,7 +38,6 @@ class DownloadData(models.DataDownloadBase):
         self.source = source
  
     def _get_parameter_codes(self) -> list[str]:
-        nasa_cfg = self.settings.nasa_power
         params = []
  
         if models.ClimateVariable.precipitation in self.variables:
@@ -74,7 +73,7 @@ class DownloadData(models.DataDownloadBase):
             print(f"Error fetching NASA POWER data: {e}")
             return {}
  
-    def download_variables(self, settings: Settings = None) -> pd.DataFrame:
+    def download_variables(self) -> pd.DataFrame:
         if not self.variables:
             return pd.DataFrame()
  
