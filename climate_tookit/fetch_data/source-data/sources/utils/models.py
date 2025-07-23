@@ -38,7 +38,8 @@ class ClimateDataset(Enum):
     cmip6 = auto()
     nex_gddp = auto()
     nasa_power = auto()
-    tamsat = auto
+    tamsat = auto()
+    chirts = auto()
 
 
 class Cadence(Enum):
