@@ -55,6 +55,14 @@ imerg:
 chirts:
   gee_image: UCSB-CHG/CHIRTS/DAILY
   resolution: 5566
+  cadence: daily
+  variable:
+    max_temperature: maximum_temperature
+    min_temperature: minimum_temperature
+    precipitation: null
+    wind_speed: null
+    solar_radiation: null
+    soil_moisture: null
 
 chirps:
   gee_image: UCSB-CHG/CHIRPS/DAILY
