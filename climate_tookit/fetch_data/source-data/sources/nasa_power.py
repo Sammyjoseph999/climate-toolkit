@@ -3,6 +3,7 @@ This module provides functionality to download monthly climate data
 from the NASA POWER API.
 """
  
+import logging
 import pandas as pd
 import requests
 from datetime import date
@@ -11,6 +12,7 @@ from sources.utils import models
 from sources.utils.settings import Settings
 from collections import defaultdict
  
+logger = logging.getLogger(__name__)
  
 class DownloadData(models.DataDownloadBase):
     def __init__(
@@ -76,31 +78,48 @@ class DownloadData(models.DataDownloadBase):
     def download_variables(self) -> pd.DataFrame:
         if not self.variables:
             return pd.DataFrame()
- 
+
         raw_data = self._fetch_monthly_data()
         if not raw_data:
             return pd.DataFrame()
- 
+
         data_by_date = defaultdict(dict)
+        available_vars = set()
+        
         for var_code, values in raw_data.items():
             for dt_str, val in values.items():
                 if len(dt_str) == 6 and dt_str.isdigit():
                     year, month = dt_str[:4], dt_str[4:6]
                     if 1 <= int(month) <= 12:
                         dt = pd.to_datetime(f"{year}-{month}-01")
- 
-                        # Map NASA codes to readable names
+                        
                         if var_code == "PRECTOTCORR":
                             data_by_date[dt]["precipitation"] = val
+                            available_vars.add("precipitation")
                         elif var_code == "T2M":
-                            data_by_date[dt]["temperature"] = val
+                            # Assign T2M to both max and min temp
+                            data_by_date[dt]["max_temperature"] = val
+                            data_by_date[dt]["min_temperature"] = val
+                            available_vars.update(["max_temperature", "min_temperature"])
                         elif var_code == "RH2M":
                             data_by_date[dt]["humidity"] = val
- 
+                            available_vars.add("humidity")
+
         df = pd.DataFrame([
             {"date": dt, **vals} for dt, vals in sorted(data_by_date.items())
         ])
-        return df
+
+        requested_vars = [v.name for v in self.variables]
+        
+        for var in requested_vars:
+            if var not in available_vars:
+                logger.warning(f"NASA POWER does not have {var} data")
+
+        logger.info(f"Available columns: {df.columns.tolist()}")
+        logger.info(f"Requested variables: {requested_vars}")
+
+        final_columns = ["date"] + [col for col in requested_vars if col in df.columns]
+        return df[final_columns]
  
     def download_precipitation(self):
         raise NotImplementedError
