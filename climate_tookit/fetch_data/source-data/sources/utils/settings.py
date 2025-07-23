@@ -68,6 +68,8 @@ class TerraSettings(BaseModel):
 class ChirtsSettings(BaseModel):
     gee_image: str
     resolution: float
+    cadence: str
+    variable: ClimateVariable
     
 class ChirpsSettings(BaseModel):
     gee_image: str
