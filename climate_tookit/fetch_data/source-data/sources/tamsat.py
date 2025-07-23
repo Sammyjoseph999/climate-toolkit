@@ -85,22 +85,37 @@ class DownloadData(models.DataDownloadBase):
         if not self.variables:
             print("No variables specified for download")
             return pd.DataFrame()
+
         settings = settings or self.settings
         data_dict = {}
+        available_vars = set()
+
         for variable in self.variables:
-            if variable in [
-                models.ClimateVariable.rainfall,
-                models.ClimateVariable.precipitation,
-            ]:
+            if variable in [models.ClimateVariable.rainfall, models.ClimateVariable.precipitation]:
                 print("Reading rainfall/precipitation data...")
                 data_dict["precipitation"] = self._read_nc_variable("rfe")
+                available_vars.add("precipitation")
             elif variable == models.ClimateVariable.soil_moisture:
                 print("Reading soil moisture data...")
                 data_dict["soil_moisture"] = self._read_nc_variable("smcl")
+                available_vars.add("soil_moisture")
             else:
-                print(f"Variable {variable} not supported by TAMSAT, skipping...")
-        return pd.DataFrame({"date": self.dates, **data_dict})
- 
+                print(f"TAMSAT does not support variable: {variable.name}")
+
+        df = pd.DataFrame({"date": self.dates, **data_dict})
+
+        requested_vars = [v.name for v in self.variables]
+
+        for var in requested_vars:
+            if var not in df.columns:
+                print(f"WARNING: TAMSAT does not have {var} data")
+
+        print(f"Available columns: {df.columns.tolist()}")
+        print(f"Requested variables: {requested_vars}")
+
+        final_columns = ["date"] + [col for col in requested_vars if col in df.columns]
+        return df[final_columns]
+
     def download_precipitation(self):
         raise NotImplementedError
  
