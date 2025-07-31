@@ -39,6 +39,7 @@ class SourceData:
             models.ClimateDataset.cmip6,
             models.ClimateDataset.nex_gddp,
             models.ClimateDataset.chirts,
+            models.ClimateDataset.agera_5,
         ):
             client = DownloadGEE(
                 variables=variables,
@@ -67,7 +68,7 @@ class SourceData:
                 settings=settings,
                 source=source,
             )
-            
+                 
 
         self.client = client
 

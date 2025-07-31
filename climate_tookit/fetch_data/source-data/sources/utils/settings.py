@@ -25,19 +25,19 @@ class Cadence(BaseModel):
 
 
 class ClimateVariable(BaseModel):
-    precipitation: str | None
-    max_temperature: str | None
-    min_temperature: str | None
-    wind_speed: str | None
-    solar_radiation: str | None
-    soil_moisture: str | None
+    precipitation: str | None = None
+    max_temperature: str | None = None
+    min_temperature: str | None = None
+    wind_speed: str | None = None
+    solar_radiation: str | None = None
+    soil_moisture: str | None = None
 
 
 class Agera5Settings(BaseModel):
-    """Corresponds to the 'agera_5' block in YAML."""
-
-    dataset: str
-    request: dict
+    gee_image: str
+    cadence: str
+    variable: ClimateVariable
+    resolution: float = 0.25
 
 
 class Era5Settings(BaseModel):
@@ -130,8 +130,6 @@ class Settings(BaseModel):
 
 if __name__ == "__main__":
     print(Settings.load().agera_5)
-    print(Settings.load().agera_5.dataset)
-    print(Settings.load().agera_5.request)
     print(Settings.load().imerg.short_name.monthly)
     print(Settings.load().chirps.variable)
     print(Settings.load().cmip6.variable)
