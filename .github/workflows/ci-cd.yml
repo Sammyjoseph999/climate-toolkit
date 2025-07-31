@@ -96,7 +96,7 @@ jobs:
         if: steps.check_diff.outputs.create_pr == 'true'
         run: |
           prs=$(gh pr list --base main --head ${{ github.ref_name }} --json number,title,url)
-          if [[ -n "$prs" ]]; then
+          if [[ -n "$prs" && "prs" != "[]" ]]; then
             echo "Pull request already exists. Updating existing PR..."
             echo "$prs"
             echo "Changes have been added to the current PR"

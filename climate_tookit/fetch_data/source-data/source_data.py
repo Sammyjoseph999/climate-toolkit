@@ -38,7 +38,7 @@ class SourceData:
             models.ClimateDataset.chirps,
             models.ClimateDataset.cmip6,
             models.ClimateDataset.nex_gddp,
-            models.ClimateDataset.chirts
+            models.ClimateDataset.chirts,
         ):
             client = DownloadGEE(
                 variables=variables,
@@ -92,9 +92,9 @@ if __name__ == "__main__":
             models.ClimateVariable.min_temperature,
             models.ClimateVariable.soil_moisture,
         ],
-        source=models.ClimateDataset.chirts,
-        date_from_utc=date(year=2015, month=1, day=1),
-        date_to_utc=date(year=2015, month=3, day=5),
+        source=models.ClimateDataset.imerg,
+        date_from_utc=date(year=2020, month=1, day=1),
+        date_to_utc=date(year=2020, month=3, day=5),
         settings=settings,
     )
 
