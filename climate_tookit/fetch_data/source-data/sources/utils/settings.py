@@ -32,6 +32,15 @@ class ClimateVariable(BaseModel):
     solar_radiation: str | None = None
     soil_moisture: str | None = None
 
+class SoilVariable(BaseModel):
+    bulk_density: str | None = None
+    clay_content: str | None = None
+    ph: str | None = None
+    sand_content: str | None = None
+    silt_content: str | None = None
+    organic_carbon: str | None = None
+    organic_carbon_stock: str | None = None
+    soil_moisture: str | None = None
 
 class Agera5Settings(BaseModel):
     gee_image: str
@@ -106,6 +115,25 @@ class TamsatSettings(BaseModel):
     resolution: float
     variable: ClimateVariable
 
+class SoilGridSettings(BaseModel):
+    # Support both single image (backward compatibility) and multiple images
+    gee_image: str | None = None
+    gee_images: dict[str, str] | None = None
+    cadence: str
+    resolution: float
+    variable: SoilVariable
+ 
+    @property
+    def has_multiple_images(self) -> bool:
+        """Check if this configuration uses multiple GEE images."""
+        return self.gee_images is not None and len(self.gee_images) > 0
+ 
+    def get_image_for_variable(self, variable_name: str) -> str | None:
+        """Get the appropriate GEE image for a given variable."""
+        if self.has_multiple_images:
+            return self.gee_images.get(variable_name)
+        return self.gee_image
+
 class Settings(BaseModel):
     """Loads the application's settings."""
 
@@ -119,6 +147,7 @@ class Settings(BaseModel):
     nex_gddp: NexGddpSettings
     nasa_power: NasaPowerSettings
     tamsat: TamsatSettings
+    soil_grid: SoilGridSettings
 
     @classmethod
     def load(cls, settings_path: Path = config_path):
@@ -137,3 +166,4 @@ if __name__ == "__main__":
     print(Settings.load().nasa_power.variable)
     print(Settings.load().tamsat.rainfall_url)
     print(Settings.load().tamsat.soil_moisture_url)
+    print(Settings.load().soil_grid)
