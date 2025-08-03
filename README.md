@@ -1,6 +1,6 @@
 # Climate Data Toolkit
 
-A unified toolkit for retrieving climate data from various global datasets such as CHIRPS, AGERA5, TerraClimate, IMERG, TAMSAT, CHIRTS, ERA5, NEX-GDDP, NASA POWER and CMIP6.
+A unified toolkit for retrieving climate data from various global datasets such as CHIRPS, AGERA5, TerraClimate, IMERG, TAMSAT, CHIRTS, ERA5, NEX-GDDP, NASA POWER, CMIP6 and SoilGrids.
 
 ## API Dataset Badges
 
@@ -14,6 +14,7 @@ A unified toolkit for retrieving climate data from various global datasets such 
 [![NEX-GDDP](https://img.shields.io/badge/NEX--GDDP-Climate_Projections_4.1-blue)](https://www.nccs.nasa.gov/services/data-collections/land-based-products/nex-gddp)
 [![NASA POWER](https://img.shields.io/badge/NASA_POWER-Solar_Temp_Global_4.0-lightblue)](https://power.larc.nasa.gov/)
 [![CMIP6](https://img.shields.io/badge/CMIP6-Climate_Scenarios-red)](https://esgf-node.llnl.gov/projects/cmip6/)
+[![SoilGrids](https://img.shields.io/badge/SoilGrids-Soil_Properties_4.6-brown)](https://www.isric.org/explore/soilgrids/)
 
 ---
 
@@ -21,7 +22,7 @@ A unified toolkit for retrieving climate data from various global datasets such 
 
 The Climate Toolkit offers a unified, programmatic interface to:
 
-- Retrieve climate data from CHIRPS, AGERA5, TerraClimate, IMERG, TAMSAT, CHIRTS, ERA5, NEX-GDDP, NASA POWER and CMIP6
+- Retrieve climate data from CHIRPS, AGERA5, TerraClimate, IMERG, TAMSAT, CHIRTS, ERA5, NEX-GDDP, NASA POWER, CMIP6 and SoilGrids
 - Compute rainfall statistics, anomalies, and hazard indicators
 - Compare climate trends over historical and seasonal periods
 
