@@ -17,7 +17,7 @@ class SourceData:
     def __init__(
         self,
         location_coord: tuple[float],
-        variables: list[models.ClimateVariable],
+        variables: list[models.ClimateVariable|models.SoilVariable],
         source: models.ClimateDataset,
         date_from_utc: date,
         date_to_utc: date,
@@ -29,6 +29,8 @@ class SourceData:
         self.date_from_utc = date_from_utc
         self.date_to_utc = date_to_utc
         self.settings = settings
+        
+        client = None
 
         # determine the client on class instantiation
         if self.source in (
@@ -40,6 +42,7 @@ class SourceData:
             models.ClimateDataset.nex_gddp,
             models.ClimateDataset.chirts,
             models.ClimateDataset.agera_5,
+            models.ClimateDataset.soil_grid,
         ):
             client = DownloadGEE(
                 variables=variables,
@@ -69,7 +72,9 @@ class SourceData:
                 source=source,
             )
                  
-
+        if client is None:
+            raise ValueError(f"No download client defined for source: {self.source}")
+        
         self.client = client
 
     def download(self):
@@ -92,6 +97,9 @@ if __name__ == "__main__":
             models.ClimateVariable.max_temperature,
             models.ClimateVariable.min_temperature,
             models.ClimateVariable.soil_moisture,
+            models.SoilVariable.ph,
+            models.SoilVariable.bulk_density,
+            models.SoilVariable.clay_content,
         ],
         source=models.ClimateDataset.imerg,
         date_from_utc=date(year=2020, month=1, day=1),
