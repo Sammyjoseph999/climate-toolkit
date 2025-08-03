@@ -26,6 +26,16 @@ class ClimateVariable(Enum):
     humidity = auto()
     soil_moisture = auto()
 
+class SoilVariable(Enum):
+    """Soil-specific variables from ISRIC SoilGrids250m v2.0"""
+    bulk_density = auto()
+    coarse_fragments = auto()
+    ph = auto()
+    sand_content = auto()
+    clay_content = auto()
+    organic_carbon = auto()
+    organic_carbon_stock = auto()
+    soil_moisture = auto()
 
 class ClimateDataset(Enum):
     """The enum to represent climate datasets"""
@@ -40,6 +50,7 @@ class ClimateDataset(Enum):
     nasa_power = auto()
     tamsat = auto()
     chirts = auto()
+    soil_grid = auto()
 
 
 class Cadence(Enum):
