@@ -1,4 +1,14 @@
-"""Downloads climate data from the AGERA5 dataset hosted in Google Earth Engine."""
+"""
+This module handles the downloading of climate data from the NEX-GDDP
+dataset hosted by NASA's Earth Engine.
+
+Dataset Reference:
+https://developers.google.com/earth-engine/datasets/catalog/NASA_NEX-GDDP
+
+Pre-requisites:
+1. GEE Authentication using `earthengine authenticate`
+2. Ensure project ID is authorized in GCP if needed
+"""
 
 import logging
 from datetime import date
@@ -26,6 +36,7 @@ class DownloadData(models.DataDownloadBase):
             date_to_utc=date_to_utc,
             variables=variables,
         )
+
         self.date_from_utc = date_from_utc
         self.date_to_utc = date_to_utc
         self.location_coord = location_coord
@@ -36,10 +47,10 @@ class DownloadData(models.DataDownloadBase):
     def download_precipitation(self):
         raise NotImplementedError
 
-    def download_rainfall(self):
+    def download_temperature(self):
         raise NotImplementedError
 
-    def download_temperature(self):
+    def download_rainfall(self):
         raise NotImplementedError
 
     def download_windspeed(self):
