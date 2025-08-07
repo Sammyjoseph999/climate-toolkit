@@ -1,4 +1,11 @@
-"""Downloads climate data from the AGERA5 dataset hosted in Google Earth Engine."""
+"""
+This module downloads temperature data from the CHIRTS dataset using Google Earth Engine.
+
+CHIRTS (Climate Hazards InfraRed Temperature with Stations) provides
+daily maximum and minimum temperature estimates, primarily for Africa.
+
+Dataset ID (GEE): UCSB-CHG/CHIRTS/DAILY
+"""
 
 import logging
 from datetime import date
@@ -20,12 +27,14 @@ class DownloadData(models.DataDownloadBase):
         settings: Settings,
         source: models.ClimateDataset,
     ):
+        
         super().__init__(
             location_coord=location_coord,
             date_from_utc=date_from_utc,
             date_to_utc=date_to_utc,
             variables=variables,
         )
+
         self.date_from_utc = date_from_utc
         self.date_to_utc = date_to_utc
         self.location_coord = location_coord
@@ -52,7 +61,4 @@ class DownloadData(models.DataDownloadBase):
         raise NotImplementedError
 
     def download_soil_moisture(self):
-        raise NotImplementedError
-
-    def download_variables(self):
         raise NotImplementedError

@@ -1,3 +1,5 @@
+"""This module downloads data from the TerraClimate website"""
+
 import logging
 from datetime import date
 
@@ -11,26 +13,30 @@ logger = logging.getLogger(__name__)
 
 
 class DownloadData(models.DataDownloadBase):
-    """Downloads data from the TerraClimate climate dataset in NetCDF format"""
-
     def __init__(
         self,
+        variables: list[models.ClimateVariable],
         location_coord: tuple[float],
-        aggregation: models.AggregationLevel,
         date_from_utc: date,
         date_to_utc: date,
+        settings: Settings,
+        source: models.ClimateDataset,
     ):
         super().__init__(
             location_coord=location_coord,
-            aggregation=aggregation,
             date_from_utc=date_from_utc,
             date_to_utc=date_to_utc,
+            variables=variables,
         )
 
         self.date_from_utc = date_from_utc
         self.date_to_utc = date_to_utc
+        self.location_coord = location_coord
+        self.variables = variables
+        self.settings = settings
+        self.source = source
 
-    def fetch_data(self, variable: str, year: int, base_url: str):
+    def _fetch_data(self, variable: str, year: int, base_url: str):
         """Main function for downloading data from the climate database"""
 
         filename = f"TerraClimate_{variable}_{year}.nc"
@@ -56,31 +62,36 @@ class DownloadData(models.DataDownloadBase):
         except Exception as e:
             logger.exception(f"An unexpected error occurred: {e}")
 
-    def download_rainfall(self, settings: Settings):
-        variable = settings.terraclimate.variable.precipitation
-        url = settings.terraclimate.url
-        years = range(self.date_from_utc.year, self.date_to_utc.year + 1)
+    def _download_from_date_range(
+        self, from_date: date, to_date: date, variable: str, url: str
+    ):
+        """Downloads datasets for a climate variable from TerraClimate given a
+        date range."""
+
+        years = range(from_date.year, to_date.year + 1)
         for year in years:
-            self.fetch_data(variable=variable, year=year, base_url=url)
+            self._fetch_data(variable=variable, year=year, base_url=url)
 
-    def download_temperature(self, settings: Settings):
-        variable = settings.terraclimate.variable.max_temperature
-        url = settings.terraclimate.url
-        years = range(self.date_from_utc.year, self.date_to_utc)
-        for year in years:
-            self.fetch_data(variable=variable, year=year, base_url=url)
+    def download_temperature(self):
+        raise NotImplementedError
 
-    def download_precipitation():
-        pass
+    def download_precipitation(self):
+        raise NotImplementedError
 
-    def download_windspeed():
-        pass
+    def download_windspeed(self):
+        raise NotImplementedError
 
-    def download_solar_radiation():
-        pass
+    def download_solar_radiation(self):
+        raise NotImplementedError
 
-    def download_humidity():
-        pass
+    def download_soil_moisture(self):
+        raise NotImplementedError
 
-    def download_soil_moisture():
-        pass
+    def download_rainfall(self):
+        raise NotImplementedError
+
+    def download_humidity(self):
+        raise NotImplementedError
+
+    def download_variables(self):
+        raise NotImplementedError

@@ -3,11 +3,11 @@ different climate databases."""
 
 from datetime import date
 
-from sources.agera_5 import DownloadData as DownloadAgera5
-from sources.era_5 import DownloadData as DownloadEra5
-from sources.imerg import DownloadData as DownloadImerg
-from sources.terraclimate import DownloadData as DownloadTerra
+from sources.gee import DownloadData as DownloadGEE
+from sources.tamsat import DownloadData as DownloadTAMSAT
+from sources.nasa_power import DownloadData as DownloadNASA
 from sources.utils import models
+from sources.utils.models import Location
 from sources.utils.settings import Settings
 
 
@@ -17,82 +17,99 @@ class SourceData:
     def __init__(
         self,
         location_coord: tuple[float],
-        variable: models.ClimateVariable,
+        variables: list[models.ClimateVariable|models.SoilVariable],
         source: models.ClimateDataset,
-        aggregation: models.AggregationLevel,
         date_from_utc: date,
         date_to_utc: date,
         settings: Settings,
     ):
         self.location_coord = location_coord
-        self.variable = variable
+        self.variables = variables
         self.source = source
-        self.aggregation = aggregation
         self.date_from_utc = date_from_utc
         self.date_to_utc = date_to_utc
         self.settings = settings
+        
+        client = None
 
         # determine the client on class instantiation
-        if self.source == models.ClimateDataset.agera_5:
-            client = DownloadAgera5(
+        if self.source in (
+            models.ClimateDataset.era_5,
+            models.ClimateDataset.terraclimate,
+            models.ClimateDataset.imerg,
+            models.ClimateDataset.chirps,
+            models.ClimateDataset.cmip6,
+            models.ClimateDataset.nex_gddp,
+            models.ClimateDataset.chirts,
+            models.ClimateDataset.agera_5,
+            models.ClimateDataset.soil_grid,
+        ):
+            client = DownloadGEE(
+                variables=variables,
                 location_coord=location_coord,
-                aggregation=aggregation,
-                date_from_utc=self.date_from_utc,
-                date_to_utc=self.date_to_utc,
+                date_from_utc=date_from_utc,
+                date_to_utc=date_to_utc,
+                settings=settings,
+                source=source,
             )
-
-        if self.source == models.ClimateDataset.era_5:
-            client = DownloadEra5(
+        
+        elif self.source == models.ClimateDataset.tamsat:
+            client = DownloadTAMSAT(
+                variables=variables,
                 location_coord=location_coord,
-                aggregation=aggregation,
+                aggregation=None,
                 date_from_utc=date_from_utc,
                 date_to_utc=date_to_utc,
             )
-
-        if self.source == models.ClimateDataset.terraclimate:
-            client = DownloadTerra(
+        
+        elif self.source == models.ClimateDataset.nasa_power:
+            client = DownloadNASA(
+                variables=variables,
                 location_coord=location_coord,
-                aggregation=aggregation,
                 date_from_utc=date_from_utc,
                 date_to_utc=date_to_utc,
+                settings=settings,
+                source=source,
             )
-
-        if self.source == models.ClimateDataset.imerg:
-            client = DownloadImerg(
-                location_coord=location_coord,
-                aggregation=aggregation,
-                date_from_utc=date_from_utc,
-                date_to_utc=date_to_utc,
-            )
-
+                 
+        if client is None:
+            raise ValueError(f"No download client defined for source: {self.source}")
+        
         self.client = client
 
     def download(self):
         """Download climate data from the remote location."""
 
-        # parameters should be handled in the climate dataset module
-        if self.variable == models.ClimateVariable.rainfall:
-            return self.client.download_rainfall(
-                settings=self.settings,
-            )
-
-        if self.variable == models.ClimateVariable.temperature:
-            return self.client.download_temperature(
-                settings=self.settings,
-            )
-
+        return self.client.download_variables()
 
 if __name__ == "__main__":
+    import time
+
     settings = Settings.load()
 
+    # nairobi = (36.817223, -1.286389)
+    location = Location(lon=36.817223, lat=-1.286389)
+
     source_data = SourceData(
-        location_coord=(-1.18, 36.343),
-        variable=models.ClimateVariable.rainfall,
+        location_coord=(location.lon, location.lat),
+        variables=[
+            models.ClimateVariable.precipitation,
+            models.ClimateVariable.max_temperature,
+            models.ClimateVariable.min_temperature,
+            models.ClimateVariable.soil_moisture,
+            models.SoilVariable.ph,
+            models.SoilVariable.bulk_density,
+            models.SoilVariable.clay_content,
+        ],
         source=models.ClimateDataset.imerg,
-        aggregation=models.AggregationLevel.monthly,
-        date_from_utc=date(year=2024, month=1, day=1),
-        date_to_utc=date(year=2024, month=1, day=1),
+        date_from_utc=date(year=2020, month=1, day=1),
+        date_to_utc=date(year=2020, month=3, day=5),
         settings=settings,
     )
 
-    source_data.download()
+    start = time.time()
+    climate_data = source_data.download()
+    end = time.time()
+    elapsed = end - start
+    print("time taken (secs):", elapsed)
+    print(climate_data)
