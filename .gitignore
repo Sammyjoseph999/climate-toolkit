@@ -11,3 +11,4 @@ env/
 climate_tookit/fetch_data/source-data/chirps_data/
 
 local
+.vscode/
