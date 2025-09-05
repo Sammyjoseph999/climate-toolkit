@@ -72,3 +72,5 @@ if __name__ == "__main__":
     )
  
     print(df)
+    
+#python climate_tookit/fetch_data/transform_data/transform_data.py --source agera_5 --lon 36.817223 --lat -1.286389 --start 2020-01-01 --end 2020-03-05
