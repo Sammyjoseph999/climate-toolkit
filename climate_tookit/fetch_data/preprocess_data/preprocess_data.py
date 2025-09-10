@@ -17,6 +17,21 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'transform_data'))
 
 from transform_data import transform_data
 
+def format_numeric_precision(df: pd.DataFrame, decimal_places: int = 1) -> pd.DataFrame:
+    """Round all numeric columns to specified decimal places."""
+    if df.empty:
+        return df
+    
+    formatted_df = df.copy()
+    
+    # Get numeric columns (excluding date/time columns)
+    numeric_columns = formatted_df.select_dtypes(include=[np.number]).columns
+    
+    for col in numeric_columns:
+        formatted_df[col] = formatted_df[col].round(decimal_places)
+    
+    return formatted_df
+
 def clean_climate_data(df: pd.DataFrame) -> pd.DataFrame:
     """Clean climate data: handle missing values, outliers, and data quality issues."""
     if df.empty:
@@ -174,12 +189,16 @@ def preprocess_data(
     date_from=None,
     date_to=None,
     settings=None,
-    transformed_data=None
+    transformed_data=None,
+    decimal_places: int = 1
 ) -> pd.DataFrame:
     """Preprocess climate data into analysis-ready format.
     
     Receives transformed data and applies cleaning, quality control, and preprocessing.
     Can also handle data fetching if transformed_data is not provided.
+    
+    Args:
+        decimal_places: Number of decimal places for numeric values (default: 1)
     """
     if transformed_data is not None:
         transformed_df = transformed_data
@@ -204,7 +223,10 @@ def preprocess_data(
     converted_df = apply_unit_conversions(cleaned_df, source)
 
     print("Performing quality control...")
-    final_df = quality_control_checks(converted_df)
+    qc_df = quality_control_checks(converted_df)
+    
+    print(f"Formatting numeric values to {decimal_places} decimal place(s)...")
+    final_df = format_numeric_precision(qc_df, decimal_places)
 
     print(f"Preprocessing complete: {len(final_df)} analysis-ready records")
     return final_df
@@ -219,6 +241,7 @@ if __name__ == "__main__":
     parser.add_argument("--lat", type=float, help="Latitude")
     parser.add_argument("--start", type=str, help="Start date (YYYY-MM-DD)")
     parser.add_argument("--end", type=str, help="End date (YYYY-MM-DD)")
+    parser.add_argument("--decimal-places", type=int, default=1, help="Number of decimal places (default: 1)")
     args = parser.parse_args()
 
     location_coord = (args.lon, args.lat) if args.lon and args.lat else None
@@ -230,6 +253,7 @@ if __name__ == "__main__":
         location_coord=location_coord,
         date_from=date_from,
         date_to=date_to,
+        decimal_places=args.decimal_places,
     )
 
     if not df.empty:
@@ -243,3 +267,7 @@ if __name__ == "__main__":
  
         
 # python climate_tookit/fetch_data/preprocess_data/preprocess_data.py --source agera_5 --lon 36.8 --lat -1.3 --start 2023-01-01 --end 2023-01-30
+
+
+# custom precision(2 decimal places)
+# python climate_tookit/fetch_data/preprocess_data/preprocess_data.py --source agera_5 --lon 36.8 --lat -1.3 --start 2023-01-01 --end 2023-01-30 --decimal-places 2
