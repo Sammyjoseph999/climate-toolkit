@@ -5,7 +5,7 @@ current_dir = os.path.dirname(__file__)
 sys.path.append(os.path.join(current_dir, 'transform_data'))
 sys.path.append(os.path.join(current_dir, 'source_data'))
  
-from transform_data import DataTransformer
+from transform_data import transform_data
 from source_data import SourceData
  
 def fetch_data(location_coord, variables, source, date_from, date_to, settings):
@@ -19,7 +19,7 @@ def fetch_data(location_coord, variables, source, date_from, date_to, settings):
     )
     raw_data = source_data.download()
  
-    transformer = DataTransformer()
+    transformer = transform_data()
     standardized_data = transformer.transform_data(raw_data, source, variables)
  
     return standardized_data
