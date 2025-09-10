@@ -1,0 +1,61 @@
+#"""Data dictionary module with source variable mappings."""
+
+source_mappings:
+  agera_5:
+    Precipitation_Flux: precipitation
+    Temperature_Air_2m_Max_24h: max_temperature
+    Temperature_Air_2m_Min_24h: min_temperature
+    Solar_Radiation_Flux: solar_radiation
+    Wind_Speed_10m_Mean: wind_speed
+    Relative_Humidity_2m_06h: humidity
+  
+  era_5:
+    total_precipitation: precipitation
+    wind_speed: wind_speed
+    solar_radiation: solar_radiation
+    soil_moisture: soil_moisture
+  
+  terraclimate:
+    pr: precipitation
+    tmmx: max_temperature
+    tmmn: min_temperature
+    vs: wind_speed
+    srad: solar_radiation
+    soil: soil_moisture
+  
+  imerg:
+    precipitation: precipitation
+  
+  chirts:
+    maximum_temperature: max_temperature
+    minimum_temperature: min_temperature
+    relative_humidity: humidity
+  
+  chirps:
+    precipitation: precipitation
+  
+  cmip6:
+    pr: precipitation
+    tasmax: max_temperature
+    tasmin: min_temperature
+  
+  nex_gddp:
+    pr: precipitation
+    tasmax: max_temperature
+    tasmin: min_temperature
+  
+  nasa_power:
+    precipitation: precipitation
+    max_temperature: max_temperature
+    min_temperature: min_temperature
+  
+  tamsat:
+    rfe: precipitation
+    smcl: soilmoisture
+  
+  soil_grid:
+    ph: soil_ph
+    bulk_density: soil_bulk_density
+    clay_content: soil_clay_content
+    sand_content: soil_sand_content
+    organic_carbon: soil_organic_carbon

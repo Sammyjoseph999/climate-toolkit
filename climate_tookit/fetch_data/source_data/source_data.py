@@ -102,7 +102,7 @@ if __name__ == "__main__":
             SoilVariable.bulk_density,
             SoilVariable.clay_content,
         ],
-        source=ClimateDataset.era_5,
+        source=ClimateDataset.chirts,
         date_from_utc=date(year=2016, month=1, day=1),
         date_to_utc=date(year=2016, month=3, day=5),
         settings=settings,
@@ -114,3 +114,5 @@ if __name__ == "__main__":
     elapsed = end - start
     print("time taken (secs):", elapsed)
     print(climate_data)
+    
+# python .\climate_tookit\fetch_data\source_data\source_data.py
