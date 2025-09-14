@@ -101,10 +101,12 @@ if __name__ == "__main__":
             SoilVariable.ph,
             SoilVariable.bulk_density,
             SoilVariable.clay_content,
+            SoilVariable.silt_content,
+            SoilVariable.cation_exchange_capacity,
         ],
-        source=ClimateDataset.chirts,
-        date_from_utc=date(year=2016, month=1, day=1),
-        date_to_utc=date(year=2016, month=3, day=5),
+        source=ClimateDataset.agera_5,
+        date_from_utc=date(year=2024, month=1, day=1),
+        date_to_utc=date(year=2024, month=3, day=5),
         settings=settings,
     )
  
