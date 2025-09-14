@@ -138,16 +138,20 @@ soil_grid:
   gee_images:
     clay_content: OpenLandMap/SOL/SOL_CLAY-WFRACTION_USDA-3A1A1A_M/v02
     sand_content: OpenLandMap/SOL/SOL_SAND-WFRACTION_USDA-3A1A1A_M/v02
+    silt_content: projects/soilgrids-isric/silt_mean
     bulk_density: OpenLandMap/SOL/SOL_BULKDENS-FINEEARTH_USDA-4A1H_M/v02
     ph: OpenLandMap/SOL/SOL_PH-H2O_USDA-4C1A2A_M/v02
     organic_carbon: OpenLandMap/SOL/SOL_ORGANIC-CARBON_USDA-6A1C_M/v02
+    cation_exchange_capacity: projects/soilgrids-isric/cec_mean
   cadence: static
   resolution: 250
   variable:
     clay_content: b0
     sand_content: b0
+    silt_content: silt_0-5cm_mean
     bulk_density: b0
     ph: b0
     organic_carbon: b0
+    cation_exchange_capacity: cec_0-5cm_mean
     organic_carbon_stock: null
     soil_moisture: null
