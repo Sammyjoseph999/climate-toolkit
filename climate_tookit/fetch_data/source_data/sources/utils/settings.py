@@ -40,6 +40,7 @@ class SoilVariable(BaseModel):
     organic_carbon: str | None = None
     organic_carbon_stock: str | None = None
     soil_moisture: str | None = None
+    cation_exchange_capacity: str | None = None
 
 class Agera5Settings(BaseModel):
     gee_image: str
