@@ -36,6 +36,8 @@ class SoilVariable(Enum):
     organic_carbon = auto()
     organic_carbon_stock = auto()
     soil_moisture = auto()
+    silt_content = auto()
+    cation_exchange_capacity = auto()
 
 class ClimateDataset(Enum):
     """The enum to represent climate datasets"""
