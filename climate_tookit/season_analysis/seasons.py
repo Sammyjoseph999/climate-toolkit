@@ -313,7 +313,7 @@ def main():
                      for _, row in df.iterrows()]
         df['et0'] = et0_values
         df['threshold'] = df['et0'] * 0.5
-        df['rainy_day'] = df['precip'] >= df['threshold']
+        df['rainy_day'] = df['precip'] >= 1.00
         print(df.head(10))
         print("...")
         print(df.tail(10))
