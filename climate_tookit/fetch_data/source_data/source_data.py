@@ -98,6 +98,8 @@ if __name__ == "__main__":
             ClimateVariable.max_temperature,
             ClimateVariable.min_temperature,
             ClimateVariable.soil_moisture,
+            ClimateVariable.wind_speed,
+            ClimateVariable.solar_radiation,
             SoilVariable.ph,
             SoilVariable.bulk_density,
             SoilVariable.clay_content,
@@ -105,8 +107,8 @@ if __name__ == "__main__":
             SoilVariable.cation_exchange_capacity,
         ],
         source=ClimateDataset.agera_5,
-        date_from_utc=date(year=2024, month=1, day=1),
-        date_to_utc=date(year=2024, month=3, day=5),
+        date_from_utc=date(year=2020, month=1, day=1),
+        date_to_utc=date(year=2020, month=3, day=5),
         settings=settings,
     )
  
