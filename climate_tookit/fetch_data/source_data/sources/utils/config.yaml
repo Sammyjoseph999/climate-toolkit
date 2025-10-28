@@ -16,9 +16,9 @@ era_5:
   cadence: daily
   variable:
     precipitation: total_precipitation
-    max_temperature: null
-    min_temperature: null
-    wind_speed: null
+    max_temperature: maximum_2m_air_temperature
+    min_temperature: minimum_2m_air_temperature
+    wind_speed: u_component_of_wind_10m
     solar_radiation: null
     soil_moisture: null
 
@@ -91,7 +91,7 @@ cmip6:
     soil_moisture: null
 
 nex_gddp:
-  gee_image: NASA/NEX-GDDP
+  gee_image: NASA/GDDP-CMIP6
   resolution: 5566
   cadence: daily
   variable:
