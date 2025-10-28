@@ -18,6 +18,9 @@ import json
 import argparse
 from typing import Tuple, Dict, List, Any
 
+# Set pandas display options for 2 decimal places globally
+pd.set_option('display.float_format', lambda x: f'{x:.2f}')
+
 current_dir = os.path.dirname(__file__)
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(os.path.join(parent_dir, 'fetch_data', 'preprocess_data'))
@@ -84,11 +87,9 @@ def get_climate_data(lat: float, lon: float, start_date: str, end_date: str,
     print(f"Data shape: {df.shape}")
     print(f"Summary Statistics:\n{df.describe()}")
 
-    # Handle the case where preprocessing returns limited data
     if df.empty or len(df.columns) <= 1:
         raise Exception(f"No usable climate data returned from {source}. Check source configuration.")
 
-    # Map to expected column names with flexible handling
     column_mapping = {
         'max_temperature': 'tmax',
         'min_temperature': 'tmin',
@@ -100,7 +101,6 @@ def get_climate_data(lat: float, lon: float, start_date: str, end_date: str,
 
     precip_columns = ['precipitation', 'precip', 'rainfall', 'rain']
 
-    # Handle precipitation
     precip_found = False
     for col in precip_columns:
         if col in df.columns:
@@ -112,7 +112,6 @@ def get_climate_data(lat: float, lon: float, start_date: str, end_date: str,
         print(f"Warning: No precipitation data found in {source}. Setting default values.")
         df['precip'] = 0.0
 
-    # Handle temperature
     temp_found = {'tmax': False, 'tmin': False}
     for old_col, new_col in column_mapping.items():
         if old_col in df.columns:
@@ -120,14 +119,12 @@ def get_climate_data(lat: float, lon: float, start_date: str, end_date: str,
             temp_found[new_col] = True
 
     if not (temp_found['tmax'] and temp_found['tmin']):
-        # For precipitation-only sources like CHIRPS, use reasonable default temperatures
         if source.lower() == 'chirps' and precip_found:
             print(f"Warning: {source} provides precipitation only. Using default temperature values for ET0 calculation.")
-            df['tmax'] = 25.0  # Default max temperature for tropical location
-            df['tmin'] = 15.0  # Default min temperature
+            df['tmax'] = 25.0
+            df['tmin'] = 15.0
             temp_found = {'tmax': True, 'tmin': True}
         else:
-            # Available columns
             available_cols = [col for col in df.columns if col != 'date']
             raise Exception(f"Temperature data not available from {source}. Available columns: {available_cols}")
 
@@ -347,14 +344,12 @@ def analyze_climate_statistics(location_coord: Tuple[float, float],
     start_date, end_date = date_range
 
     try:
-        df = get_climate_data(lat, lon, start_date, end_date,source)
+        df = get_climate_data(lat, lon, start_date, end_date, source)
 
-        # ET0 for season detection and water balance
         et0_values = [calculate_et0(row['tmin'], row['tmax'], lat, row['date'])
                      for _, row in df.iterrows()]
         df['et0'] = et0_values
 
-        # Daily water balance
         df = calculate_water_balance(df)
 
         if SEASON_ANALYSIS_AVAILABLE:
@@ -362,7 +357,6 @@ def analyze_climate_statistics(location_coord: Tuple[float, float],
         else:
             seasons = detect_seasons(df, gap_days, min_season_days)
 
-        # Calculate comprehensive statistics by season
         statistics = calculate_comprehensive_season_statistics(df, seasons)
 
         result = {
@@ -400,7 +394,6 @@ def calculate_comprehensive_season_statistics(df: pd.DataFrame, seasons: List[Di
     Returns:
         Dict[str, Any]: Comprehensive statistics by season and overall
     """
-    # Overall statistics
     overall_stats = {
         'total_days': len(df),
         'precipitation': {
@@ -439,11 +432,9 @@ def calculate_comprehensive_season_statistics(df: pd.DataFrame, seasons: List[Di
         }
     }
 
-    # Enhanced season statistics with daily water balance analysis
     season_stats = []
 
     for i, season in enumerate(seasons, 1):
-        # Filter data for specific detected season
         season_df = df[
             (df['date'] >= season['onset_date']) &
             (df['date'] <= season['cessation_date'])
@@ -452,7 +443,6 @@ def calculate_comprehensive_season_statistics(df: pd.DataFrame, seasons: List[Di
         if len(season_df) == 0:
             continue
 
-        # Daily water balance season statistics
         daily_water_balance = []
         for _, row in season_df.iterrows():
             daily_wb = {
@@ -465,14 +455,11 @@ def calculate_comprehensive_season_statistics(df: pd.DataFrame, seasons: List[Di
             }
             daily_water_balance.append(daily_wb)
 
-        # Comprehensive season statistics
         season_stat = {
             'season_number': i,
             'onset_date': season['onset_date'].strftime('%Y-%m-%d'),
             'cessation_date': season['cessation_date'].strftime('%Y-%m-%d'),
             'length_days': season['length_days'],
-
-            # All climate variables statistics
             'precipitation': {
                 'total_mm': season_df['precip'].sum(),
                 'mean_daily': season_df['precip'].mean(),
@@ -513,8 +500,6 @@ def calculate_comprehensive_season_statistics(df: pd.DataFrame, seasons: List[Di
                 'cumulative_start': season_df['cumulative_balance'].iloc[0],
                 'cumulative_end': season_df['cumulative_balance'].iloc[-1]
             },
-
-            # Daily water balance for detailed analysis
             'daily_water_balance': daily_water_balance[:10] if len(daily_water_balance) > 10 else daily_water_balance,
             'daily_records_total': len(daily_water_balance)
         }
@@ -545,17 +530,17 @@ def format_as_dataframes(result: Dict[str, Any]) -> None:
     overall = stats['overall_statistics']
 
     for key, value in overall['precipitation'].items():
-        overall_data.append({'Variable': 'Precipitation', 'Metric': key, 'Value': value, 'Unit': 'mm' if 'mm' in key or key in ['total_mm', 'mean_daily', 'median_daily', 'std_daily', 'max_daily'] else 'days'})
+        overall_data.append({'Variable': 'Precipitation', 'Metric': key, 'Value': f"{value:.2f}" if isinstance(value, float) else value, 'Unit': 'mm' if 'mm' in key or key in ['total_mm', 'mean_daily', 'median_daily', 'std_daily', 'max_daily'] else 'days'})
 
     for key, value in overall['temperature'].items():
-        overall_data.append({'Variable': 'Temperature', 'Metric': key, 'Value': value, 'Unit': '°C'})
+        overall_data.append({'Variable': 'Temperature', 'Metric': key, 'Value': f"{value:.2f}", 'Unit': '°C'})
 
     for key, value in overall['et0'].items():
-        overall_data.append({'Variable': 'ET0', 'Metric': key, 'Value': value, 'Unit': 'mm' if 'mm' in key or key.endswith('daily') else ''})
+        overall_data.append({'Variable': 'ET0', 'Metric': key, 'Value': f"{value:.2f}", 'Unit': 'mm' if 'mm' in key or key.endswith('daily') else ''})
 
     for key, value in overall['water_balance'].items():
         unit = 'mm' if key in ['total_balance', 'mean_daily', 'cumulative_final', 'max_deficit', 'max_surplus'] else 'days'
-        overall_data.append({'Variable': 'Water Balance', 'Metric': key, 'Value': value, 'Unit': unit})
+        overall_data.append({'Variable': 'Water Balance', 'Metric': key, 'Value': f"{value:.2f}" if isinstance(value, float) else value, 'Unit': unit})
 
     overall_df = pd.DataFrame(overall_data)
     print(overall_df.to_string(index=False))
@@ -576,43 +561,43 @@ def format_as_dataframes(result: Dict[str, Any]) -> None:
             precip_row = base_info.copy()
             precip_row.update({
                 'Variable': 'Precipitation',
-                'Total_mm': season['precipitation']['total_mm'],
-                'Mean_Daily': season['precipitation']['mean_daily'],
-                'Max_Daily': season['precipitation']['max_daily'],
+                'Total_mm': f"{season['precipitation']['total_mm']:.2f}",
+                'Mean_Daily': f"{season['precipitation']['mean_daily']:.2f}",
+                'Max_Daily': f"{season['precipitation']['max_daily']:.2f}",
                 'Rainy_Days': season['precipitation']['rainy_days'],
-                'Intensity': season['precipitation']['intensity']
+                'Intensity': f"{season['precipitation']['intensity']:.2f}"
             })
             season_data.append(precip_row)
 
             temp_row = base_info.copy()
             temp_row.update({
                 'Variable': 'Temperature',
-                'Mean_Tmax': season['temperature']['mean_tmax'],
-                'Mean_Tmin': season['temperature']['mean_tmin'],
-                'Mean_Tavg': season['temperature']['mean_tavg'],
-                'Max_Tmax': season['temperature']['max_tmax'],
-                'Min_Tmin': season['temperature']['min_tmin']
+                'Mean_Tmax': f"{season['temperature']['mean_tmax']:.2f}",
+                'Mean_Tmin': f"{season['temperature']['mean_tmin']:.2f}",
+                'Mean_Tavg': f"{season['temperature']['mean_tavg']:.2f}",
+                'Max_Tmax': f"{season['temperature']['max_tmax']:.2f}",
+                'Min_Tmin': f"{season['temperature']['min_tmin']:.2f}"
             })
             season_data.append(temp_row)
 
             et0_row = base_info.copy()
             et0_row.update({
                 'Variable': 'ET0',
-                'Total_mm': season['et0']['total_mm'],
-                'Mean_Daily': season['et0']['mean_daily'],
-                'Max_Daily': season['et0']['max_daily'],
-                'Min_Daily': season['et0']['min_daily']
+                'Total_mm': f"{season['et0']['total_mm']:.2f}",
+                'Mean_Daily': f"{season['et0']['mean_daily']:.2f}",
+                'Max_Daily': f"{season['et0']['max_daily']:.2f}",
+                'Min_Daily': f"{season['et0']['min_daily']:.2f}"
             })
             season_data.append(et0_row)
 
             wb_row = base_info.copy()
             wb_row.update({
                 'Variable': 'Water Balance',
-                'Total_Balance': season['water_balance']['total_balance'],
-                'Mean_Daily': season['water_balance']['mean_daily'],
+                'Total_Balance': f"{season['water_balance']['total_balance']:.2f}",
+                'Mean_Daily': f"{season['water_balance']['mean_daily']:.2f}",
                 'Deficit_Days': season['water_balance']['deficit_days'],
                 'Surplus_Days': season['water_balance']['surplus_days'],
-                'Stress_Ratio': season['water_balance']['water_stress_ratio']
+                'Stress_Ratio': f"{season['water_balance']['water_stress_ratio']:.2f}"
             })
             season_data.append(wb_row)
 
