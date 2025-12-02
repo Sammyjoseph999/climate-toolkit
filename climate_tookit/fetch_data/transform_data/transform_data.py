@@ -13,7 +13,7 @@ def load_variable_mappings():
     return data['source_mappings']
 
 from source_data import SourceData
-from sources.utils.models import ClimateVariable, ClimateDataset
+from sources.utils.models import ClimateVariable, ClimateDataset, SoilVariable
 from sources.utils.settings import Settings
 
 
@@ -52,6 +52,16 @@ def transform_data(
             ClimateVariable.soil_moisture,
             ClimateVariable.wind_speed,
             ClimateVariable.humidity,
+            SoilVariable.bulk_density,
+            SoilVariable.cation_exchange_capacity,
+            SoilVariable.clay_content,
+            SoilVariable.coarse_fragments,
+            SoilVariable.organic_carbon,
+            SoilVariable.organic_carbon_stock,
+            SoilVariable.ph,
+            SoilVariable.sand_content,
+            SoilVariable.silt_content,
+            SoilVariable.soil_moisture,
         ]
     if date_from is None:
         date_from = date.today()
