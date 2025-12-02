@@ -10,8 +10,10 @@ source_mappings:
     Relative_Humidity_2m_06h: humidity
   
   era_5:
+    maximum_2m_air_temperature: max_temperature
+    minimum_2m_air_temperature: min_temperature
     total_precipitation: precipitation
-    wind_speed: wind_speed
+    u_component_of_wind_10m: wind_speed
     solar_radiation: solar_radiation
     soil_moisture: soil_moisture
   
@@ -34,7 +36,7 @@ source_mappings:
   chirps:
     precipitation: precipitation
   
-  cmip6:
+  cmip_6:
     pr: precipitation
     tasmax: max_temperature
     tasmin: min_temperature
