@@ -57,6 +57,7 @@ def apply_unit_conversions(df: pd.DataFrame, source: str) -> pd.DataFrame:
 
     converted_df = df.copy()
 
+    # Temperature: Kelvin to Celsius conversion
     if source in ['agera_5', 'era_5', 'nex_gddp']:
         temp_columns = ['max_temperature', 'min_temperature']
         for col in temp_columns:
@@ -64,6 +65,30 @@ def apply_unit_conversions(df: pd.DataFrame, source: str) -> pd.DataFrame:
                 if converted_df[col].mean() > 200:
                     converted_df[col] = converted_df[col] - 273.15
                     print(f"Converted {col} from Kelvin to Celsius")
+
+    # ERA5: Precipitation meters to millimeters
+    if source == 'era_5' and 'precipitation' in converted_df.columns:
+        converted_df['precipitation'] = (converted_df['precipitation'] * 1000).round(2)
+        print("Converted precipitation from meters to millimeters")
+
+    # CMIP6: Temperature to Celsius and precipitation conversion
+    if source == 'cmip_6':
+        temp_columns = ['max_temperature', 'min_temperature']
+        for col in temp_columns:
+            if col in converted_df.columns:
+                converted_df[col] = converted_df[col] - 273.15
+                converted_df[col] = converted_df[col].round(2)
+                print(f"Converted {col} to Celsius (2 decimal places)")
+        
+        if 'precipitation' in converted_df.columns:
+            converted_df['precipitation'] = (converted_df['precipitation'] * 86400).round(2)
+            print("Converted precipitation (multiplied by 86400, 2 decimal places)")
+
+    # TerraClimate: Solar radiation conversion
+    if source == 'terraclimate':
+        if 'srad' in converted_df.columns:
+            converted_df['srad'] = (converted_df['srad'] * 0.0864).round(2)
+            print("Converted srad (multiplied by 0.0864, 2 decimal places)")
 
     return converted_df
 
@@ -136,19 +161,22 @@ def preprocess_data(
     if transformed_df.empty:
         return pd.DataFrame()
 
-    print("Cleaning data...")
-    cleaned_df = clean_climate_data(transformed_df)
-
     print("Applying unit conversions...")
-    converted_df = apply_unit_conversions(cleaned_df, source)
+    converted_df = apply_unit_conversions(transformed_df, source)
+
+    print("Cleaning data...")
+    cleaned_df = clean_climate_data(converted_df)
 
     print("Performing quality control...")
-    final_df = quality_control_checks(converted_df)
+    final_df = quality_control_checks(cleaned_df)
+
+    numeric_columns = final_df.select_dtypes(include=[np.number]).columns
+    for col in numeric_columns:
+        final_df[col] = final_df[col].round(2)
 
     print(f"Preprocessing complete: {len(final_df)} analysis-ready records")
     return final_df
-
-
+   
 if __name__ == "__main__":
     import argparse
 
@@ -191,7 +219,3 @@ if __name__ == "__main__":
  
         
 # python climate_tookit/fetch_data/preprocess_data/preprocess_data.py --source agera_5 --lon 36.8 --lat -1.3 --start 2023-01-01 --end 2023-01-30
-
-
-# custom precision(2 decimal places)
-# python climate_tookit/fetch_data/preprocess_data/preprocess_data.py --source agera_5 --lon 36.8 --lat -1.3 --start 2023-01-01 --end 2023-01-30 --decimal-places 2
