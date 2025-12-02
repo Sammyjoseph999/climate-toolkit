@@ -143,7 +143,7 @@ class Settings(BaseModel):
     terraclimate: TerraSettings
     chirts: ChirtsSettings
     chirps: ChirpsSettings
-    cmip6: Cmip6Settings
+    cmip_6: Cmip6Settings
     nex_gddp: NexGddpSettings
     nasa_power: NasaPowerSettings
     tamsat: TamsatSettings
@@ -161,7 +161,7 @@ if __name__ == "__main__":
     print(Settings.load().agera_5)
     print(Settings.load().imerg.short_name.monthly)
     print(Settings.load().chirps.variable)
-    print(Settings.load().cmip6.variable)
+    print(Settings.load().cmip_6.variable)
     print(Settings.load().nex_gddp.variable)
     print(Settings.load().nasa_power.variable)
     print(Settings.load().tamsat.rainfall_url)
