@@ -1,5 +1,5 @@
 agera_5:
-  gee_image: projects/climate-engine-pro/assets/ce-ag-era5/daily
+  gee_image: projects/climate-engine-pro/assets/ce-ag-era5-v2/daily
   cadence: daily
   resolution: 0.25
   variable:
@@ -78,7 +78,7 @@ chirps:
     soil_moisture: null
   cadence: daily
 
-cmip6:
+cmip_6:
   gee_image: NASA/GDDP-CMIP6
   resolution: 5566
   cadence: daily
