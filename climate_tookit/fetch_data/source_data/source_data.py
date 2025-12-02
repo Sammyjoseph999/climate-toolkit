@@ -5,9 +5,11 @@ different climate databases.
 
 import sys
 import os
-sys.path.append(os.path.dirname(__file__))
+import argparse
+import json
+from datetime import datetime, date
 
-from datetime import date
+sys.path.append(os.path.dirname(__file__))
 
 from sources.gee import DownloadData as DownloadGEE
 from sources.tamsat import DownloadData as DownloadTAMSAT
@@ -20,17 +22,8 @@ from sources.utils.settings import Settings
 class SourceData:
     """The main class for retrieving data via a standardised interface."""
 
-    def __init__(
-        self,
-        location_coord: tuple[float],
-        variables: list[ClimateVariable|SoilVariable],
-        source: ClimateDataset,
-        date_from_utc: date,
-        date_to_utc: date,
-        settings: Settings,
-        model: str = None,
-        scenario: str = None
-    ):
+    def __init__(self, location_coord, variables, source, date_from_utc,
+                 date_to_utc, settings, model=None, scenario=None):
         self.location_coord = location_coord
         self.variables = variables
         self.source = source
@@ -42,59 +35,34 @@ class SourceData:
 
         client = None
 
-        # NEX-GDDP gets special handling with model/scenario
-        if self.source == ClimateDataset.nex_gddp:
+        if source == ClimateDataset.nex_gddp:
             client = DownloadNEXGDDP(
-                variables=variables,
-                location_coord=location_coord,
-                date_from_utc=date_from_utc,
-                date_to_utc=date_to_utc,
-                settings=settings,
-                source=source,
-                model=model,
-                scenario=scenario
+                variables=variables, location_coord=location_coord,
+                date_from_utc=date_from_utc, date_to_utc=date_to_utc,
+                settings=settings, source=source, model=model, scenario=scenario
             )
-
-        elif self.source in (
-            ClimateDataset.era_5,
-            ClimateDataset.terraclimate,
-            ClimateDataset.imerg,
-            ClimateDataset.chirps,
-            ClimateDataset.cmip6,
-            ClimateDataset.chirts,
-            ClimateDataset.agera_5,
-            ClimateDataset.soil_grid,
-        ):
+        elif source in (ClimateDataset.era_5, ClimateDataset.terraclimate,
+                       ClimateDataset.imerg, ClimateDataset.chirps, ClimateDataset.cmip_6,
+                       ClimateDataset.chirts, ClimateDataset.agera_5, ClimateDataset.soil_grid):
             client = DownloadGEE(
-                variables=variables,
-                location_coord=location_coord,
-                date_from_utc=date_from_utc,
-                date_to_utc=date_to_utc,
-                settings=settings,
-                source=source,
+                variables=variables, location_coord=location_coord,
+                date_from_utc=date_from_utc, date_to_utc=date_to_utc,
+                settings=settings, source=source
             )
-
-        elif self.source == ClimateDataset.tamsat:
+        elif source == ClimateDataset.tamsat:
             client = DownloadTAMSAT(
-                variables=variables,
-                location_coord=location_coord,
-                aggregation=None,
-                date_from_utc=date_from_utc,
-                date_to_utc=date_to_utc,
+                variables=variables, location_coord=location_coord,
+                aggregation=None, date_from_utc=date_from_utc, date_to_utc=date_to_utc
             )
-
-        elif self.source == ClimateDataset.nasa_power:
+        elif source == ClimateDataset.nasa_power:
             client = DownloadNASA(
-                variables=variables,
-                location_coord=location_coord,
-                date_from_utc=date_from_utc,
-                date_to_utc=date_to_utc,
-                settings=settings,
-                source=source,
+                variables=variables, location_coord=location_coord,
+                date_from_utc=date_from_utc, date_to_utc=date_to_utc,
+                settings=settings, source=source
             )
 
         if client is None:
-            raise ValueError(f"No download client defined for source: {self.source}")
+            raise ValueError(f"No download client defined for source: {source}")
 
         self.client = client
 
@@ -103,31 +71,68 @@ class SourceData:
         return self.client.download_variables()
 
 
-if __name__ == "__main__":
-    import time
+def main():
+    parser = argparse.ArgumentParser(description='Download climate data')
+    parser.add_argument('--lon', type=float, required=True)
+    parser.add_argument('--lat', type=float, required=True)
+    parser.add_argument('--source', required=True)
+    parser.add_argument('--variables', required=True)
+    parser.add_argument('--from', dest='date_from', required=True)
+    parser.add_argument('--to', dest='date_to', required=True)
+    parser.add_argument('--model', default=None)
+    parser.add_argument('--scenario', default=None)
+    parser.add_argument('--output', '-o', default=None)
+    args = parser.parse_args()
+
+    variables = []
+    for v in args.variables.split(','):
+        v = v.strip()
+        if hasattr(ClimateVariable, v):
+            variables.append(getattr(ClimateVariable, v))
+        elif hasattr(SoilVariable, v):
+            variables.append(getattr(SoilVariable, v))
+        else:
+            print(f"Error: Unknown variable '{v}'")
+            return 1
+
+    source = getattr(ClimateDataset, args.source, None)
+    if not source:
+        print(f"Error: Unknown source '{args.source}'")
+        return 1
+
+    date_from = datetime.strptime(args.date_from, "%Y-%m-%d").date()
+    date_to = datetime.strptime(args.date_to, "%Y-%m-%d").date()
 
     settings = Settings.load()
 
-    location = Location(lon=36.817223, lat=-1.286389)
-
     source_data = SourceData(
-        location_coord=(location.lon, location.lat),
-        variables=[
-            ClimateVariable.precipitation,
-            ClimateVariable.max_temperature,
-            ClimateVariable.min_temperature,
-        ],
-        source=ClimateDataset.nex_gddp,
-        date_from_utc=date(year=2045, month=3, day=1),
-        date_to_utc=date(year=2045, month=3, day=31),
-        settings=settings
+        location_coord=(args.lon, args.lat),
+        variables=variables,
+        source=source,
+        date_from_utc=date_from,
+        date_to_utc=date_to,
+        settings=settings,
+        model=args.model,
+        scenario=args.scenario
     )
 
-    start = time.time()
     climate_data = source_data.download()
-    end = time.time()
-    elapsed = end - start
-    print("time taken (secs):", elapsed)
-    print(climate_data)
-    
-# python .\climate_tookit\fetch_data\source_data\source_data.py
+
+    if args.output:
+        # Save as JSON to file
+        climate_data.to_json(args.output, orient='records', date_format='iso', indent=2)
+        print(f"Saved to {args.output}")
+    else:
+        print(climate_data.to_string())
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+ 
+# For nex_gddp with different models and scenarios    
+# python .\climate_tookit\fetch_data\source_data\source_data.py --source nex_gddp --variables precipitation,max_temperature,min_temperature --from 2050-01-01 --to 2050-01-10 --lon 36.817 --lat -1.286 --model GFDL-ESM4 --scenario ssp245
+
+# For other sources
+# python .\climate_tookit\fetch_data\source_data\source_data.py --source chirps --variables precipitation,max_temperature,min_temperature,soil_moisture,bulk_density,wind_speed,solar_radiation,humidity,ph,silt_content,clay_content --from 2020-01-01 --to 2020-01-10 --lon 36.817 --lat -1.286
