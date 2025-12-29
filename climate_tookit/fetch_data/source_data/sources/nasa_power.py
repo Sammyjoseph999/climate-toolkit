@@ -2,7 +2,7 @@
 This module provides functionality to download monthly climate data
 from the NASA POWER API.
 """
- 
+
 import logging
 import pandas as pd
 import requests
@@ -11,9 +11,9 @@ from typing import Optional
 from sources.utils import models
 from sources.utils.settings import Settings
 from collections import defaultdict
- 
+
 logger = logging.getLogger(__name__)
- 
+
 class DownloadData(models.DataDownloadBase):
     def __init__(
         self,
@@ -38,24 +38,24 @@ class DownloadData(models.DataDownloadBase):
         self.aggregation = aggregation
         self.settings = settings or Settings.load()
         self.source = source
- 
+
     def _get_parameter_codes(self) -> list[str]:
         params = []
- 
+
         if models.ClimateVariable.precipitation in self.variables:
             params.append("PRECTOTCORR")
         if models.ClimateVariable.max_temperature in self.variables or models.ClimateVariable.min_temperature in self.variables:
             params.append("T2M")
         if models.ClimateVariable.humidity in self.variables:
             params.append("RH2M")
- 
+
         return params
- 
+
     def _fetch_monthly_data(self) -> dict:
         params = self._get_parameter_codes()
         if not params:
             raise ValueError("No valid parameters to request from NASA POWER.")
- 
+
         lat, lon = self.location_coord
         url = (
             f"{self.settings.nasa_power.endpoint}/point"
@@ -66,7 +66,7 @@ class DownloadData(models.DataDownloadBase):
             f"&parameters={','.join(params)}"
             f"&format=JSON"
         )
- 
+
         try:
             resp = requests.get(url, timeout=30)
             resp.raise_for_status()
@@ -74,7 +74,7 @@ class DownloadData(models.DataDownloadBase):
         except Exception as e:
             print(f"Error fetching NASA POWER data: {e}")
             return {}
- 
+
     def download_variables(self) -> pd.DataFrame:
         if not self.variables:
             return pd.DataFrame()
@@ -85,14 +85,14 @@ class DownloadData(models.DataDownloadBase):
 
         data_by_date = defaultdict(dict)
         available_vars = set()
-        
+
         for var_code, values in raw_data.items():
             for dt_str, val in values.items():
                 if len(dt_str) == 6 and dt_str.isdigit():
                     year, month = dt_str[:4], dt_str[4:6]
                     if 1 <= int(month) <= 12:
                         dt = pd.to_datetime(f"{year}-{month}-01")
-                        
+
                         if var_code == "PRECTOTCORR":
                             data_by_date[dt]["precipitation"] = val
                             available_vars.add("precipitation")
@@ -110,7 +110,7 @@ class DownloadData(models.DataDownloadBase):
         ])
 
         requested_vars = [v.name for v in self.variables]
-        
+
         for var in requested_vars:
             if var not in available_vars:
                 logger.warning(f"NASA POWER does not have {var} data")
@@ -120,24 +120,24 @@ class DownloadData(models.DataDownloadBase):
 
         final_columns = ["date"] + [col for col in requested_vars if col in df.columns]
         return df[final_columns]
- 
+
     def download_precipitation(self):
         raise NotImplementedError
- 
+
     def download_temperature(self):
         raise NotImplementedError
- 
+
     def download_windspeed(self):
         raise NotImplementedError
- 
+
     def download_solar_radiation(self):
         raise NotImplementedError
- 
+
     def download_humidity(self):
         raise NotImplementedError
- 
+
     def download_rainfall(self):
         raise NotImplementedError
- 
+
     def download_soil_moisture(self):
         raise NotImplementedError
