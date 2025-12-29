@@ -64,8 +64,8 @@ def calculate_season_statistics(df: pd.DataFrame) -> Dict[str, float]:
         stats['total_precipitation_mm'] = precip_data.sum()
         stats['mean_daily_precipitation_mm'] = precip_data.mean()
         stats['max_daily_precipitation_mm'] = precip_data.max()
-        stats['rainy_days'] = (precip_data > 1.0).sum()
-        stats['dry_days'] = (precip_data <= 1.0).sum()
+        stats['rainy_days'] = (precip_data >= 1.0).sum()
+        stats['dry_days'] = (precip_data < 1.0).sum()
 
     tmax_col = None
     tmin_col = None
@@ -171,9 +171,9 @@ def print_hazard_results(result: Dict[str, Any]):
         print(f"  {'Total':<32} {stats['total_precipitation_mm']:>15.2f}  {'mm':<10}")
         print(f"  {'Daily Mean':<32} {stats['mean_daily_precipitation_mm']:>15.2f}  {'mm':<10}")
         print(f"  {'Daily Maximum':<32} {stats['max_daily_precipitation_mm']:>15.2f}  {'mm':<10}")
-        print(f"  {'Rainy Days (>1mm)':<32} {stats['rainy_days']:>15}  {'days':<10}")
+        print(f"  {'Rainy Days (≥1mm)':<32} {stats['rainy_days']:>15}  {'days':<10}")
         if 'dry_days' in stats:
-            print(f"  {'Dry Days (≤1mm)':<32} {stats['dry_days']:>15}  {'days':<10}")
+            print(f"  {'Dry Days (<1mm)':<32} {stats['dry_days']:>15}  {'days':<10}")
 
     if 'mean_temperature_c' in stats:
         print(f"\n  Temperature Statistics")
