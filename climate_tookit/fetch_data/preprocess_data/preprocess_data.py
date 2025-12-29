@@ -30,23 +30,25 @@ def clean_climate_data(df: pd.DataFrame) -> pd.DataFrame:
 
     numeric_columns = cleaned_df.select_dtypes(include=[np.number]).columns
 
+    # Handle missing values
     for col in numeric_columns:
         if col == 'precipitation':
             cleaned_df[col] = cleaned_df[col].fillna(0)
         else:
             cleaned_df[col] = cleaned_df[col].ffill().bfill()
 
-    for col in numeric_columns:
-        if col != 'date':
-            mean = cleaned_df[col].mean()
-            std = cleaned_df[col].std()
-            outlier_threshold = 3 * std
+    # Apply outlier detection ONLY to precipitation
+    # Temperature outliers are flagged (not replaced) by quality_control_checks
+    if 'precipitation' in cleaned_df.columns:
+        mean = cleaned_df['precipitation'].mean()
+        std = cleaned_df['precipitation'].std()
+        outlier_threshold = 3 * std
 
-            cleaned_df[col] = np.where(
-                abs(cleaned_df[col] - mean) > outlier_threshold,
-                mean,
-                cleaned_df[col]
-            )
+        cleaned_df['precipitation'] = np.where(
+            abs(cleaned_df['precipitation'] - mean) > outlier_threshold,
+            mean,
+            cleaned_df['precipitation']
+        )
 
     return cleaned_df
 
@@ -62,8 +64,9 @@ def apply_unit_conversions(df: pd.DataFrame, source: str) -> pd.DataFrame:
         temp_columns = ['max_temperature', 'min_temperature']
         for col in temp_columns:
             if col in converted_df.columns:
-                if converted_df[col].mean() > 200:
-                    converted_df[col] = converted_df[col] - 273.15
+                # Check if values are in Kelvin (> 100 is safer threshold)
+                if converted_df[col].mean() > 100:
+                    converted_df[col] = (converted_df[col] - 273.15).round(2)
                     print(f"Converted {col} from Kelvin to Celsius")
 
     # ERA5: Precipitation meters to millimeters
@@ -76,8 +79,7 @@ def apply_unit_conversions(df: pd.DataFrame, source: str) -> pd.DataFrame:
         temp_columns = ['max_temperature', 'min_temperature']
         for col in temp_columns:
             if col in converted_df.columns:
-                converted_df[col] = converted_df[col] - 273.15
-                converted_df[col] = converted_df[col].round(2)
+                converted_df[col] = (converted_df[col] - 273.15).round(2)
                 print(f"Converted {col} to Celsius (2 decimal places)")
         
         if 'precipitation' in converted_df.columns:
@@ -170,13 +172,15 @@ def preprocess_data(
     print("Performing quality control...")
     final_df = quality_control_checks(cleaned_df)
 
+    # Final rounding to ensure all numeric columns are 2 decimal places
     numeric_columns = final_df.select_dtypes(include=[np.number]).columns
     for col in numeric_columns:
         final_df[col] = final_df[col].round(2)
 
     print(f"Preprocessing complete: {len(final_df)} analysis-ready records")
     return final_df
-   
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -207,7 +211,7 @@ if __name__ == "__main__":
         print(f"\nAnalysis-ready dataset: {len(df)} records")
         print("\nColumns:", list(df.columns))
         print("\nFirst few rows:")
-        print(df)
+        print(df.head(10))
 
         if 'max_temperature' in df.columns:
             temp_range = f"{df['max_temperature'].min():.1f}°C to {df['max_temperature'].max():.1f}°C"
