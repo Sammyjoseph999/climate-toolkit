@@ -191,6 +191,11 @@ class DownloadData(models.DataDownloadBase):
 
         logger.info(f"Retrieving information from GEE Image: {image_name}")
 
+        # Warn if date range is very large
+        total_days = (to_date - from_date).days
+        if total_days > 3650:  # More than 10 years
+            logger.warning(f"Date range is large ({total_days} days). This may cause memory issues or timeouts.")
+
         dates = []
         current_date = from_date
         while current_date <= to_date:
@@ -206,25 +211,44 @@ class DownloadData(models.DataDownloadBase):
             dataset = ee.ImageCollection(image_name).filterDate(start_date, end_date)
             image = dataset.filterBounds(location).first()
 
-            expression = image.reduceRegion(
-                reducer=ee.Reducer.mean(),
-                geometry=location,
-                scale=scale,
-                maxPixels=max_pixels,
-                crs=crs,
-                bestEffort=True,
-                tileScale=tile_scale,
+            # Check if image exists before trying to reduce
+            def compute_if_exists(img):
+                expression = img.reduceRegion(
+                    reducer=ee.Reducer.mean(),
+                    geometry=location,
+                    scale=scale,
+                    maxPixels=max_pixels,
+                    crs=crs,
+                    bestEffort=True,
+                    tileScale=tile_scale,
+                )
+                return ee.Feature(None, {"date": start_date.format("YYYY-MM-dd")}).set(expression)
+            
+            def return_empty():
+                return ee.Feature(None, {"date": start_date.format("YYYY-MM-dd")})
+
+            return ee.Algorithms.If(
+                dataset.size().gt(0),
+                compute_if_exists(image),
+                return_empty()
             )
 
-            return ee.Feature(None, {"date": start_date.format("YYYY-MM-dd")}).set(
-                expression
-            )
+        try:
+            results = ee_dates.map(get_single_data)
+            features = results.getInfo()
 
-        results = ee_dates.map(get_single_data)
-        features = results.getInfo()
-
-        data_list = [feature["properties"] for feature in features]
-        return pd.DataFrame(data_list) if data_list else pd.DataFrame()
+            # Filter out empty features
+            data_list = []
+            for feature in features:
+                props = feature.get("properties", {})
+                if props and len(props) > 1:  # More than just 'date'
+                    data_list.append(props)
+            
+            return pd.DataFrame(data_list) if data_list else pd.DataFrame()
+        
+        except Exception as e:
+            logger.error(f"Error in get_gee_data_daily: {e}")
+            return pd.DataFrame()
 
     def get_gee_data_monthly(
         self,
@@ -292,27 +316,50 @@ class DownloadData(models.DataDownloadBase):
             )
             image = dataset.filterBounds(location).first()
 
-            expression = image.reduceRegion(
-                reducer=ee.Reducer.mean(),
-                geometry=location,
-                scale=scale,
-                maxPixels=max_pixels,
-                crs=crs,
-                bestEffort=True,
-                tileScale=tile_scale,
-            )
+            # Check if image exists
+            def compute_if_exists(img):
+                expression = img.reduceRegion(
+                    reducer=ee.Reducer.mean(),
+                    geometry=location,
+                    scale=scale,
+                    maxPixels=max_pixels,
+                    crs=crs,
+                    bestEffort=True,
+                    tileScale=tile_scale,
+                )
+                return ee.Feature(
+                    None, {"date": current_month_start.format("YYYY-MM-dd")}
+                ).set(expression)
+            
+            def return_empty():
+                return ee.Feature(
+                    None, {"date": current_month_start.format("YYYY-MM-dd")}
+                )
 
-            return ee.Feature(
-                None, {"date": current_month_start.format("YYYY-MM-dd")}
-            ).set(expression)
+            return ee.Algorithms.If(
+                dataset.size().gt(0),
+                compute_if_exists(image),
+                return_empty()
+            )
 
         logger.info(f"Retrieving information from GEE Image: {image_name}")
 
-        results = months.map(get_single_data)
-        features = results.getInfo()
+        try:
+            results = months.map(get_single_data)
+            features = results.getInfo()
 
-        data_list = [f["properties"] for f in features] if features else []
-        return pd.DataFrame(data_list) if data_list else pd.DataFrame()
+            # Filter out empty features
+            data_list = []
+            for f in features:
+                props = f.get("properties", {})
+                if props and len(props) > 1:  # More than just 'date'
+                    data_list.append(props)
+            
+            return pd.DataFrame(data_list) if data_list else pd.DataFrame()
+        
+        except Exception as e:
+            logger.error(f"Error in get_gee_data_monthly: {e}")
+            return pd.DataFrame()
 
     def _handle_soil_grid(self, data_settings) -> pd.DataFrame:
         """Handle soil_grid with multiple images.
