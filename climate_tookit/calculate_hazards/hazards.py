@@ -5,6 +5,7 @@ Retrieves crop hazard indices at a specific location by:
 1. Using season_analysis to detect growing seasons or accepting season dates
 2. Calculating total precipitation and average temperature for the season
 3. Evaluating crop-specific hazard thresholds
+4. Analyzing dry spell patterns
 
 Dependencies: pandas, season_analysis.seasons module
 """
@@ -22,7 +23,7 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.append(os.path.join(parent_dir, 'season_analysis'))
 
 try:
-    from seasons import analyze_season, get_climate_data, calculate_et0
+    from seasons import analyze_season, get_climate_data, calculate_et0, detect_seasons
     SEASON_ANALYSIS_AVAILABLE = True
 except ImportError:
     SEASON_ANALYSIS_AVAILABLE = False
@@ -50,6 +51,83 @@ def get_climate_data_for_season(lat: float, lon: float, start_date: str, end_dat
         raise Exception(f"No climate data returned")
     return df
 
+def detect_dry_spells(df: pd.DataFrame, min_dry_days: int = 7, precip_threshold: float = 1.0) -> List[Dict[str, Any]]:
+    """
+    Detect dry spells in climate data.
+
+    A dry spell is defined as a period of at least min_dry_days consecutive days
+    with precipitation < precip_threshold mm.
+    """
+    precip_col = None
+    for col in ['precipitation', 'precip', 'total_precipitation']:
+        if col in df.columns:
+            precip_col = col
+            break
+
+    if not precip_col or 'date' not in df.columns:
+        return []
+
+    df = df.sort_values('date').copy()
+    df['is_dry'] = df[precip_col] < precip_threshold
+
+    dry_spells = []
+    current_spell_start = None
+    current_spell_days = 0
+
+    for idx, row in df.iterrows():
+        if row['is_dry']:
+            if current_spell_start is None:
+                current_spell_start = row['date']
+                current_spell_days = 1
+            else:
+                current_spell_days += 1
+        else:
+            if current_spell_start is not None and current_spell_days >= min_dry_days:
+                prev_idx = df.index[df.index.get_loc(idx) - 1]
+                dry_spells.append({
+                    'start_date': current_spell_start,
+                    'end_date': df.loc[prev_idx, 'date'],
+                    'length_days': current_spell_days
+                })
+            current_spell_start = None
+            current_spell_days = 0
+
+    if current_spell_start is not None and current_spell_days >= min_dry_days:
+        dry_spells.append({
+            'start_date': current_spell_start,
+            'end_date': df.iloc[-1]['date'],
+            'length_days': current_spell_days
+        })
+
+    return dry_spells
+
+def calculate_dry_spell_statistics(dry_spells: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Calculate statistics for detected dry spells.
+    """
+    if not dry_spells:
+        return {
+            'number_of_dry_spells': 0,
+            'max_dry_spell_length_days': 0,
+            'mean_dry_spell_length_days': 0,
+            'dry_spells': []
+        }
+
+    spell_lengths = [spell['length_days'] for spell in dry_spells]
+
+    length_distribution = {}
+    for length in spell_lengths:
+        length_range = f"{(length // 10) * 10}-{(length // 10) * 10 + 9}"
+        length_distribution[length_range] = length_distribution.get(length_range, 0) + 1
+
+    return {
+        'number_of_dry_spells': len(dry_spells),
+        'max_dry_spell_length_days': max(spell_lengths),
+        'mean_dry_spell_length_days': round(sum(spell_lengths) / len(spell_lengths), 2),
+        'length_distribution': length_distribution,
+        'dry_spells': dry_spells
+    }
+
 def calculate_season_statistics(df: pd.DataFrame) -> Dict[str, float]:
     stats = {}
 
@@ -64,8 +142,12 @@ def calculate_season_statistics(df: pd.DataFrame) -> Dict[str, float]:
         stats['total_precipitation_mm'] = precip_data.sum()
         stats['mean_daily_precipitation_mm'] = precip_data.mean()
         stats['max_daily_precipitation_mm'] = precip_data.max()
-        stats['rainy_days'] = (precip_data >= 1.0).sum()
-        stats['dry_days'] = (precip_data < 1.0).sum()
+        stats['rainy_days'] = (precip_data > 1.0).sum()
+        stats['dry_days'] = (precip_data <= 1.0).sum()
+
+        dry_spells = detect_dry_spells(df, min_dry_days=7, precip_threshold=1.0)
+        dry_spell_stats = calculate_dry_spell_statistics(dry_spells)
+        stats['dry_spell_statistics'] = dry_spell_stats
 
     tmax_col = None
     tmin_col = None
@@ -171,9 +253,46 @@ def print_hazard_results(result: Dict[str, Any]):
         print(f"  {'Total':<32} {stats['total_precipitation_mm']:>15.2f}  {'mm':<10}")
         print(f"  {'Daily Mean':<32} {stats['mean_daily_precipitation_mm']:>15.2f}  {'mm':<10}")
         print(f"  {'Daily Maximum':<32} {stats['max_daily_precipitation_mm']:>15.2f}  {'mm':<10}")
-        print(f"  {'Rainy Days (≥1mm)':<32} {stats['rainy_days']:>15}  {'days':<10}")
+        print(f"  {'Rainy Days (>1mm)':<32} {stats['rainy_days']:>15}  {'days':<10}")
         if 'dry_days' in stats:
-            print(f"  {'Dry Days (<1mm)':<32} {stats['dry_days']:>15}  {'days':<10}")
+            print(f"  {'Dry Days (≤1mm)':<32} {stats['dry_days']:>15}  {'days':<10}")
+
+    if 'dry_spell_statistics' in stats:
+        dry_spell_stats = stats['dry_spell_statistics']
+        print(f"\n  Dry Spell Statistics (≥7 consecutive days with <1mm rain)")
+        print(f"  {'─'*66}")
+        print(f"  {'Metric':<32} {'Value':>15}  {'Unit':<10}")
+        print(f"  {'─'*32} {'─'*15}  {'─'*10}")
+        print(f"  {'Number of Dry Spells':<32} {dry_spell_stats['number_of_dry_spells']:>15}  {'spells':<10}")
+        print(f"  {'Max Dry Spell Length':<32} {dry_spell_stats['max_dry_spell_length_days']:>15}  {'days':<10}")
+        print(f"  {'Mean Dry Spell Length':<32} {dry_spell_stats['mean_dry_spell_length_days']:>15.2f}  {'days':<10}")
+
+        if dry_spell_stats['dry_spells']:
+            print(f"\n  Individual Dry Spells:")
+            print(f"  {'─'*66}")
+            print(f"  {'#':<4} {'Start Date':<13} {'End Date':<13} {'Length (days)':>15}")
+            print(f"  {'─'*4} {'─'*13} {'─'*13} {'─'*15}")
+            for i, spell in enumerate(dry_spell_stats['dry_spells'], 1):
+                start_date = spell['start_date']
+                end_date = spell['end_date']
+
+                if isinstance(start_date, (date, datetime)):
+                    start = start_date.strftime('%Y-%m-%d')
+                else:
+                    start = str(start_date)[:10]
+
+                if isinstance(end_date, (date, datetime)):
+                    end = end_date.strftime('%Y-%m-%d')
+                else:
+                    end = str(end_date)[:10]
+
+                print(f"  {i:<4} {start:<13} {end:<13} {spell['length_days']:>15}")
+
+        if 'length_distribution' in dry_spell_stats and dry_spell_stats['length_distribution']:
+            print(f"\n  Length Distribution:")
+            print(f"  {'─'*66}")
+            for length_range, count in sorted(dry_spell_stats['length_distribution'].items()):
+                print(f"  {length_range:<15} days: {count:>3} spell(s)")
 
     if 'mean_temperature_c' in stats:
         print(f"\n  Temperature Statistics")
