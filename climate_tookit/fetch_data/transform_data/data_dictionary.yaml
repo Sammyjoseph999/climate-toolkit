@@ -2,12 +2,9 @@
 
 source_mappings:
   agera_5:
-    Precipitation_Flux: precipitation
-    Temperature_Air_2m_Max_24h: max_temperature
-    Temperature_Air_2m_Min_24h: min_temperature
-    Solar_Radiation_Flux: solar_radiation
-    Wind_Speed_10m_Mean: wind_speed
-    Relative_Humidity_2m_06h: humidity
+    total_precipitation_sum: precipitation
+    temperature_2m_max: max_temperature
+    temperature_2m_min: min_temperature
   
   era_5:
     maximum_2m_air_temperature: max_temperature
