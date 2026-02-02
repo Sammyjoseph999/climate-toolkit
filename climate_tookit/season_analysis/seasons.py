@@ -5,15 +5,17 @@ Detects agricultural growing seasons based on daily precipitation and temperatur
 Uses ET0 calculations and precipitation thresholds to identify planting season onset
 and cessation dates.
 
-The module fetches climate data from Open-Meteo API (historical) and NEX-GDDP-CMIP6
-(future projections) and applies the Hargreaves method for evapotransporation
-calculations to determine when precipitation exceeds 50% of ET0, indicating favorable
-conditions for crop growth.
+The module fetches climate data from the climate toolkit (ERA5, AgERA5, NEX-GDDP, CHIRPS+CHIRTS)
+and applies the Hargreaves method for evapotransporation calculations to determine when
+precipitation exceeds 50% of ET0, indicating favorable conditions for crop growth.
 
-Dependencies: requests, pandas, ee (Google Earth Engine)
+Priority sources:
+- Historical: ERA5 → AgERA5 → CHIRPS+CHIRTS
+- Future: NEX-GDDP (climate projections)
+
+Dependencies: pandas, climate_toolkit
 """
 
-import requests
 import pandas as pd
 import math
 import json
@@ -22,23 +24,25 @@ import sys
 import os
 from datetime import datetime, timedelta, date
 from typing import Tuple, Dict, List, Any
-from dotenv import load_dotenv
+from pathlib import Path
 
-load_dotenv()
+current_dir = Path(__file__).parent
+toolkit_root = current_dir.parent
+sys.path.insert(0, str(toolkit_root))
 
-# Import NEX-GDDP for future projections
-try:
-    import ee
-    NEX_GDDP_AVAILABLE = True
-except ImportError:
-    NEX_GDDP_AVAILABLE = False
-    print("Warning: NEX-GDDP not available. Future projections will use Open-Meteo (limited accuracy).")
+from fetch_data.preprocess_data.preprocess_data import preprocess_data
+
+# Source priorities
+HISTORICAL_SOURCES = ['era_5', 'agera_5']
+FUTURE_SOURCE = 'nex_gddp' 
+FALLBACK_COMBO = ['chirps', 'chirts']
+
 
 def get_climate_data(lat: float, lon: float, start_date: str, end_date: str,
                      use_projections: bool = False, model: str = 'GFDL-ESM4',
-                     scenario: str = 'ssp245') -> pd.DataFrame:
+                     scenario: str = 'ssp245', force_source: str = None) -> pd.DataFrame:
     """
-    Fetch daily climate data from Open-Meteo (historical) or NEX-GDDP (projections).
+    Fetch daily climate data using climate toolkit.
 
     Args:
         lat (float): Latitude in decimal degrees
@@ -48,126 +52,114 @@ def get_climate_data(lat: float, lon: float, start_date: str, end_date: str,
         use_projections (bool): If True, use NEX-GDDP for future projections
         model (str): Climate model for NEX-GDDP (default: GFDL-ESM4)
         scenario (str): SSP scenario for NEX-GDDP (default: ssp245)
+        force_source (str): Force specific source ('era_5', 'agera_5', 'nex_gddp', 'chirps+chirts')
 
     Returns:
         pd.DataFrame: DataFrame with columns [date, tmax, tmin, precip]
 
     Raises:
-        Exception: If API request fails or returns non-200 status code
+        Exception: If data retrieval fails
     """
+    date_from = date.fromisoformat(start_date)
+    date_to = date.fromisoformat(end_date)
 
-    # Determine if we should use projections based on year
-    start_year = int(start_date.split('-')[0])
-
-    # Use NEX-GDDP for years >= 2015 if available
-    if use_projections and start_year >= 2015 and NEX_GDDP_AVAILABLE:
-        return _get_nex_gddp_data(lat, lon, start_date, end_date, model, scenario)
-    else:
-        return _get_open_meteo_data(lat, lon, start_date, end_date)
-
-def _get_open_meteo_data(lat: float, lon: float, start_date: str, end_date: str) -> pd.DataFrame:
-    """Fetch data from Open-Meteo Climate API."""
-    url = "https://climate-api.open-meteo.com/v1/climate"
-    params = {
-        "latitude": lat,
-        "longitude": lon,
-        "start_date": start_date,
-        "end_date": end_date,
-        "models": "MRI_AGCM3_2_S",
-        "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum",
-        "temperature_unit": "celsius",
-        "precipitation_unit": "mm",
-        "timeformat": "iso8601"
-    }
-
-    response = requests.get(url, params=params, timeout=30)
-    if response.status_code != 200:
-        raise Exception(f"API error {response.status_code}: {response.text}")
-
-    data = response.json()
-    return pd.DataFrame({
-        "date": pd.to_datetime(data['daily']['time']),
-        "tmax": data["daily"]["temperature_2m_max"],
-        "tmin": data["daily"]["temperature_2m_min"],
-        "precip": data["daily"]["precipitation_sum"]
-    })
-
-def _get_nex_gddp_data(lat: float, lon: float, start_date: str, end_date: str,
-                       model: str = 'GFDL-ESM4', scenario: str = 'ssp245') -> pd.DataFrame:
-    """Fetch data from NEX-GDDP-CMIP6 via Google Earth Engine."""
-
-    print(f"Fetching NEX-GDDP data: model={model}, scenario={scenario}")
-
-    # Authenticate GEE
-    try:
-        ee.Initialize(project=os.getenv("GCP_PROJECT_ID"))
-    except:
-        ee.Authenticate()
-        ee.Initialize(project=os.getenv("GCP_PROJECT_ID"))
-
-    location = ee.Geometry.Point([lon, lat])
-    collection_name = 'NASA/GDDP-CMIP6'
-
-    # Convert dates
-    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-    end_dt = datetime.strptime(end_date, '%Y-%m-%d')
-
-    # Generate date list
-    dates = []
-    current_date = start_dt
-    while current_date <= end_dt:
-        dates.append(current_date.strftime("%Y-%m-%d"))
-        current_date += timedelta(days=1)
-
-    ee_dates = ee.List(dates)
-
-    def get_single_data(date_str):
-        start = ee.Date(date_str)
-        end = start.advance(1, 'day')
-
-        # Filter collection
-        filtered = (ee.ImageCollection(collection_name)
-                   .filterDate(start, end)
-                   .filter(ee.Filter.eq('model', model))
-                   .filter(ee.Filter.eq('scenario', scenario))
-                   .filterBounds(location))
-
-        # Get first image and select variables
-        image = filtered.first().select(['pr', 'tasmax', 'tasmin'])
-
-        # Reduce region
-        result = image.reduceRegion(
-            reducer=ee.Reducer.mean(),
-            geometry=location,
-            scale=25000,
-            maxPixels=1e9,
-            bestEffort=True,
-            tileScale=1
+    # If source is forced, use only that source
+    if force_source:
+        if force_source == 'chirps+chirts':
+            print("Using CHIRPS (precip) + CHIRTS (temp) combination...")
+            df_precip = preprocess_data(
+                source='chirps',
+                location_coord=(lat, lon),
+                date_from=date_from,
+                date_to=date_to
+            )
+            df_temp = preprocess_data(
+                source='chirts',
+                location_coord=(lat, lon),
+                date_from=date_from,
+                date_to=date_to
+            )
+            df = pd.merge(df_precip, df_temp, on='date', how='inner')
+        elif force_source == 'nex_gddp':
+            print(f"Using NEX-GDDP: model={model}, scenario={scenario}")
+            df = preprocess_data(
+                source='nex_gddp',
+                location_coord=(lat, lon),
+                date_from=date_from,
+                date_to=date_to,
+                model=model,
+                scenario=scenario
+            )
+        else:
+            print(f"Using {force_source}...")
+            df = preprocess_data(
+                source=force_source,
+                location_coord=(lat, lon),
+                date_from=date_from,
+                date_to=date_to
+            )
+    # For future projections, use NEX-GDDP only
+    elif use_projections:
+        print(f"Fetching NEX-GDDP data: model={model}, scenario={scenario}")
+        df = preprocess_data(
+            source=FUTURE_SOURCE,
+            location_coord=(lat, lon),
+            date_from=date_from,
+            date_to=date_to,
+            model=model,
+            scenario=scenario
         )
+    else:
+        # For historical data, try sources in priority order
+        df = None
+        for source in HISTORICAL_SOURCES:
+            try:
+                print(f"Trying {source}...")
+                df = preprocess_data(
+                    source=source,
+                    location_coord=(lat, lon),
+                    date_from=date_from,
+                    date_to=date_to
+                )
+                if not df.empty and 'precipitation' in df.columns:
+                    print(f"✓ Using {source}")
+                    break
+            except Exception as e:
+                print(f"✗ {source} failed: {e}")
+                continue
 
-        return ee.Feature(None, {'date': date_str}).set(result)
+        # Fallback to CHIRPS + CHIRTS combination
+        if df is None or df.empty:
+            print("Using CHIRPS (precip) + CHIRTS (temp) combination...")
+            df_precip = preprocess_data(
+                source=FALLBACK_COMBO[0],
+                location_coord=(lat, lon),
+                date_from=date_from,
+                date_to=date_to
+            )
+            df_temp = preprocess_data(
+                source=FALLBACK_COMBO[1],
+                location_coord=(lat, lon),
+                date_from=date_from,
+                date_to=date_to
+            )
+            # Merge on date
+            df = pd.merge(df_precip, df_temp, on='date', how='inner')
 
-    # Map over dates and fetch
-    results = ee_dates.map(get_single_data)
-    features = results.getInfo()
+    if df is None or df.empty:
+        raise Exception("Failed to retrieve climate data from all sources")
 
-    data_list = [feature['properties'] for feature in features]
-    df = pd.DataFrame(data_list)
+    # Standardize column names
+    result = pd.DataFrame()
+    result['date'] = pd.to_datetime(df['date'])
+    result['tmax'] = df.get('max_temperature')
+    result['tmin'] = df.get('min_temperature')
+    result['precip'] = df.get('precipitation')
 
-    if df.empty:
-        raise Exception("No data retrieved from NEX-GDDP")
+    return result
 
-    # Convert units
-    # NEX-GDDP: pr (kg/m2/s) -> mm/day, tasmax/tasmin (K) -> Celsius
-    df['precip'] = df['pr'] * 86400  # Convert to mm/day
-    df['tmax'] = df['tasmax'] - 273.15  # Convert to Celsius
-    df['tmin'] = df['tasmin'] - 273.15  # Convert to Celsius
-    df['date'] = pd.to_datetime(df['date'])
 
-    # Select and reorder columns
-    return df[['date', 'tmax', 'tmin', 'precip']]
-
-def calculate_et0(tmin: float, tmax: float, lat: float, date: datetime) -> float:
+def calculate_et0(tmin: float, tmax: float, lat: float, date_val: datetime) -> float:
     """
     Calculate reference evapotranspiration using the Hargreaves method.
 
@@ -178,15 +170,15 @@ def calculate_et0(tmin: float, tmax: float, lat: float, date: datetime) -> float
         tmin (float): Minimum daily temperature in Celsius
         tmax (float): Maximum daily temperature in Celsius
         lat (float): Latitude in decimal degrees
-        date (datetime): Date for solar radiation calculation
+        date_val (datetime): Date for solar radiation calculation
 
     Returns:
         float: Reference evapotranspiration in mm/day, returns 0 if invalid inputs
     """
-    if tmax is None or tmin is None or tmax < tmin:
+    if tmax is None or tmin is None or pd.isna(tmax) or pd.isna(tmin) or tmax < tmin:
         return 0
 
-    J = date.timetuple().tm_yday
+    J = date_val.timetuple().tm_yday
     lat_rad = lat * math.pi / 180.0
     sol_decl = 0.409 * math.sin((2 * math.pi / 365) * J - 1.39)
     ird = 1 + 0.033 * math.cos((2 * math.pi / 365) * J)
@@ -202,6 +194,7 @@ def calculate_et0(tmin: float, tmax: float, lat: float, date: datetime) -> float
 
     Tmean = (tmax + tmin) / 2
     return 0.0023 * math.sqrt(tmax - tmin) * (Tmean + 17.8) * ra
+
 
 def detect_seasons(df: pd.DataFrame, gap_days: int = 30, min_season_days: int = 30) -> List[Dict]:
     """
@@ -220,7 +213,7 @@ def detect_seasons(df: pd.DataFrame, gap_days: int = 30, min_season_days: int = 
     """
     seasons = []
     df['threshold'] = df['et0'] * 0.5
-    df['rainy_day'] = df['precip'] >= df['threshold']
+    df['rainy_day'] = df['precip'] >= 1
 
     i, n = 0, len(df)
 
@@ -263,42 +256,6 @@ def detect_seasons(df: pd.DataFrame, gap_days: int = 30, min_season_days: int = 
 
     return seasons
 
-def calculate_average_season(seasons: List[Dict]) -> Dict[str, Any]:
-    """
-    Calculate average season characteristics from multiple seasons.
-
-    Args:
-        seasons: List of detected seasons
-
-    Returns:
-        Dict with average onset DOY, cessation DOY, and length
-    """
-    if not seasons:
-        return None
-
-    return {
-        'avg_onset_doy': sum(s['onset_doy'] for s in seasons) / len(seasons),
-        'avg_cessation_doy': sum(s['cessation_doy'] for s in seasons) / len(seasons),
-        'avg_length_days': sum(s['length_days'] for s in seasons) / len(seasons),
-        'season_count': len(seasons)
-    }
-
-def monthly_chunks(year: int) -> List[Tuple[str, str]]:
-    """
-    Generate monthly date ranges for a given year.
-
-    Args:
-        year (int): Year to generate chunks for
-
-    Returns:
-        List[Tuple[str, str]]: List of (start_date, end_date) tuples in YYYY-MM-DD format
-    """
-    chunks = []
-    for m in range(1, 13):
-        start = datetime(year, m, 1)
-        end = datetime(year, 12, 31) if m == 12 else datetime(year, m + 1, 1) - timedelta(days=1)
-        chunks.append((start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")))
-    return chunks
 
 def calculate_average_season(seasons: List[Dict]) -> Dict[str, Any]:
     """
@@ -319,6 +276,7 @@ def calculate_average_season(seasons: List[Dict]) -> Dict[str, Any]:
         'avg_length_days': sum(s['length_days'] for s in seasons) / len(seasons),
         'season_count': len(seasons)
     }
+
 
 def analyze_season(location_coord: Tuple[float, float],
                   date_range: Tuple[str, str],
@@ -327,7 +285,8 @@ def analyze_season(location_coord: Tuple[float, float],
                   baseline_years: Tuple[int, int] = None,
                   future_years: Tuple[int, int] = None,
                   climate_model: str = 'GFDL-ESM4',
-                  scenario: str = 'ssp245') -> Dict[str, Any]:
+                  scenario: str = 'ssp245',
+                  source: str = 'auto') -> Dict[str, Any]:
     """
     Analyze growing seasons for a specific date range with optional baseline and future averages.
 
@@ -348,8 +307,13 @@ def analyze_season(location_coord: Tuple[float, float],
     start_date, end_date = date_range
 
     try:
-        # Primary period analysis (always uses Open-Meteo)
-        df = _get_open_meteo_data(lat, lon, start_date, end_date)
+        # Determine source to use
+        force_source = None if source == 'auto' else source
+
+        # Primary period analysis (use historical sources or forced source)
+        df = get_climate_data(lat, lon, start_date, end_date,
+                             use_projections=False,
+                             force_source=force_source)
 
         et0_values = [calculate_et0(row['tmin'], row['tmax'], lat, row['date'])
                      for _, row in df.iterrows()]
@@ -364,7 +328,7 @@ def analyze_season(location_coord: Tuple[float, float],
             'seasons': seasons,
             'main_season': max(seasons, key=lambda x: x['length_days']) if seasons else None,
             'method': 'ET0_precipitation_threshold',
-            'data_source': 'Open-Meteo',
+            'data_source': 'Climate Toolkit (ERA5/AgERA5/CHIRPS+CHIRTS)',
             'analysis_date': datetime.now().isoformat()
         }
 
@@ -373,13 +337,12 @@ def analyze_season(location_coord: Tuple[float, float],
             baseline_start, baseline_end = baseline_years
             all_baseline_seasons = []
 
-            print(f"Calculating baseline average for {baseline_start}-{baseline_end}...")
+            print(f"\nCalculating baseline average for {baseline_start}-{baseline_end}...")
             for year in range(baseline_start, baseline_end + 1):
                 try:
                     year_start = f"{year}-01-01"
                     year_end = f"{year}-12-31"
-                    # Always use Open-Meteo for baseline (historical data)
-                    df_baseline = _get_open_meteo_data(lat, lon, year_start, year_end)
+                    df_baseline = get_climate_data(lat, lon, year_start, year_end, use_projections=False)
                     et0_baseline = [calculate_et0(row['tmin'], row['tmax'], lat, row['date'])
                                   for _, row in df_baseline.iterrows()]
                     df_baseline['et0'] = et0_baseline
@@ -392,21 +355,22 @@ def analyze_season(location_coord: Tuple[float, float],
 
             result['baseline_average'] = calculate_average_season(all_baseline_seasons)
             result['baseline_period'] = {'start': baseline_start, 'end': baseline_end}
-            result['baseline_data_source'] = 'Open-Meteo'
+            result['baseline_data_source'] = 'Climate Toolkit (ERA5/AgERA5)'
 
         # Calculate future average if requested (always use NEX-GDDP projections)
         if future_years:
             future_start, future_end = future_years
             all_future_seasons = []
 
-            print(f"Calculating future average for {future_start}-{future_end} using NEX-GDDP...")
+            print(f"\nCalculating future average for {future_start}-{future_end} using NEX-GDDP...")
             for year in range(future_start, future_end + 1):
                 try:
                     year_start = f"{year}-01-01"
                     year_end = f"{year}-12-31"
-                    # Always use NEX-GDDP for future projections
-                    df_future = _get_nex_gddp_data(lat, lon, year_start, year_end,
-                                                   model=climate_model, scenario=scenario)
+                    df_future = get_climate_data(lat, lon, year_start, year_end,
+                                                 use_projections=True,
+                                                 model=climate_model,
+                                                 scenario=scenario)
                     et0_future = [calculate_et0(row['tmin'], row['tmax'], lat, row['date'])
                                 for _, row in df_future.iterrows()]
                     df_future['et0'] = et0_future
@@ -432,69 +396,6 @@ def analyze_season(location_coord: Tuple[float, float],
             'actual_period': {'start': start_date, 'end': end_date}
         }
 
-def analyze_full_year(location_coord: Tuple[float, float],
-                     year: int,
-                     gap_days: int = 30,
-                     min_season_days: int = 30,
-                     climate_model: str = 'GFDL-ESM4',
-                     scenario: str = 'ssp245') -> Dict[str, Any]:
-    """
-    Analyze growing seasons for a complete year using monthly data chunks.
-
-    Args:
-        location_coord (Tuple[float, float]): (latitude, longitude) in decimal degrees
-        year (int): Year to analyze
-        gap_days (int): Consecutive dry days to end season. Default 30
-        min_season_days (int): Minimum season length in days. Default 30
-        climate_model (str): Climate model for projections. Default GFDL-ESM4
-        scenario (str): SSP scenario for projections. Default ssp245
-
-    Returns:
-        Dict[str, Any]: Analysis results including detected seasons and metadata
-    """
-    lat, lon = location_coord
-    use_projections = year >= 2015
-
-    try:
-        all_dfs = []
-        for start_date, end_date in monthly_chunks(year):
-            df_month = get_climate_data(lat, lon, start_date, end_date,
-                                       use_projections=use_projections,
-                                       model=climate_model, scenario=scenario)
-            all_dfs.append(df_month)
-
-        df = pd.concat(all_dfs).drop_duplicates(subset="date").reset_index(drop=True)
-        df = df.sort_values("date").reset_index(drop=True)
-
-        et0_values = [calculate_et0(row['tmin'], row['tmax'], lat, row['date'])
-                     for _, row in df.iterrows()]
-        df['et0'] = et0_values
-
-        seasons = detect_seasons(df, gap_days, min_season_days)
-
-        result = {
-            'location': {'lat': lat, 'lon': lon},
-            'year': year,
-            'seasons_detected': len(seasons),
-            'seasons': seasons,
-            'main_season': max(seasons, key=lambda x: x['length_days']) if seasons else None,
-            'method': 'ET0_precipitation_threshold',
-            'data_source': 'NEX-GDDP-CMIP6' if use_projections else 'Open-Meteo',
-            'analysis_date': datetime.now().isoformat()
-        }
-
-        if use_projections:
-            result['climate_model'] = climate_model
-            result['scenario'] = scenario
-
-        return result
-
-    except Exception as e:
-        return {
-            'error': str(e),
-            'location': {'lat': lat, 'lon': lon},
-            'year': year
-        }
 
 def main():
     """Command-line interface for season analysis."""
@@ -502,6 +403,10 @@ def main():
 
     parser.add_argument('--location', required=True,
                        help='Location as "lat,lon" (e.g., "-1.286,36.817")')
+    parser.add_argument('--source',
+                       choices=['era_5', 'agera_5', 'nex_gddp', 'chirps+chirts', 'auto'],
+                       default='auto',
+                       help='Data source: era_5, agera_5, nex_gddp, chirps+chirts, or auto (default: auto)')
     parser.add_argument('--date-from',
                        help='Start date in YYYY-MM-DD format')
     parser.add_argument('--date-to',
@@ -528,6 +433,8 @@ def main():
                        help='Minimum season length in days (default: 30)')
     parser.add_argument('--output',
                        help='Output JSON file path')
+    parser.add_argument('--download-data',
+                       help='Download climate data to CSV file')
     parser.add_argument('--show-data', action='store_true',
                        help='Show DataFrame with daily climate data')
 
@@ -549,16 +456,14 @@ def main():
         if not (args.baseline_start and args.baseline_end):
             print("Error: --baseline-only requires --baseline-start and --baseline-end")
             sys.exit(1)
-        # Use baseline period as dummy date range
         args.date_from = f"{args.baseline_start}-01-01"
         args.date_to = f"{args.baseline_start}-01-01"
     elif args.future_only:
-        if not (args.baseline_start and args.baseline_end):
-            print("Error: --future-only requires --baseline-start and --baseline-end (used as future period)")
+        if not (args.future_start and args.future_end):
+            print("Error: --future-only requires --future-start and --future-end")
             sys.exit(1)
-        # Use future period as dummy date range
-        args.date_from = f"{args.baseline_start}-01-01"
-        args.date_to = f"{args.baseline_start}-01-01"
+        args.date_from = f"{args.future_start}-01-01"
+        args.date_to = f"{args.future_start}-01-01"
     else:
         if not (args.date_from and args.date_to):
             print("Error: --date-from and --date-to are required (unless using --baseline-only or --future-only)")
@@ -570,7 +475,7 @@ def main():
     if args.baseline_only:
         baseline_years = (args.baseline_start, args.baseline_end)
     elif args.future_only:
-        future_years = (args.baseline_start, args.baseline_end)
+        future_years = (args.future_start, args.future_end)
     else:
         if args.baseline_start and args.baseline_end:
             baseline_years = (args.baseline_start, args.baseline_end)
@@ -585,8 +490,30 @@ def main():
         baseline_years=baseline_years,
         future_years=future_years,
         climate_model=args.climate_model,
-        scenario=args.scenario
+        scenario=args.scenario,
+        source=args.source
     )
+
+    # Download raw climate data if requested
+    if args.download_data and not args.baseline_only and not args.future_only:
+        try:
+            print(f"\nDownloading climate data to {args.download_data}...")
+            lat, lon = location
+            force_source = None if args.source == 'auto' else args.source
+            df_download = get_climate_data(lat, lon, args.date_from, args.date_to,
+                                          use_projections=False,
+                                          force_source=force_source)
+            # Add ET0 calculations
+            df_download['et0'] = [calculate_et0(row['tmin'], row['tmax'], lat, row['date'])
+                                 for _, row in df_download.iterrows()]
+            df_download['threshold'] = df_download['et0'] * 0.5
+            df_download['rainy_day'] = df_download['precip'] >= df_download['threshold']
+
+            # Save to CSV
+            df_download.to_csv(args.download_data, index=False)
+            print(f"✓ Data saved to {args.download_data}")
+        except Exception as e:
+            print(f"✗ Failed to download data: {e}")
 
     # Filter output if baseline-only or future-only mode
     if args.baseline_only:
@@ -611,10 +538,12 @@ def main():
         }
 
     if args.show_data and 'error' not in result and not args.baseline_only and not args.future_only:
-        print("=== DAILY CLIMATE DATA ===")
+        print("\n=== DAILY CLIMATE DATA ===")
         lat, lon = location
-        # Actual analysis always uses Open-Meteo
-        df = _get_open_meteo_data(lat, lon, args.date_from, args.date_to)
+        force_source = None if args.source == 'auto' else args.source
+        df = get_climate_data(lat, lon, args.date_from, args.date_to,
+                             use_projections=False,
+                             force_source=force_source)
         et0_values = [calculate_et0(row['tmin'], row['tmax'], lat, row['date'])
                      for _, row in df.iterrows()]
         df['et0'] = et0_values
@@ -624,22 +553,38 @@ def main():
         print("...")
         print(df.tail(10))
         print(f"Total records: {len(df)}")
-        print("=== SEASON ANALYSIS RESULTS ===")
+        print("\n=== SEASON ANALYSIS RESULTS ===")
 
     output = json.dumps(result, indent=2, default=str)
 
     if args.output:
         with open(args.output, 'w') as f:
             f.write(output)
-        print(f"Results saved to {args.output}")
+        print(f"\nResults saved to {args.output}")
     else:
         print(output)
+
 
 if __name__ == "__main__":
     main()
 
-# python -m climate_tookit.season_analysis.seasons --location="-1.286,36.817" --date-from 2020-01-01 --date-to 2020-12-31 --show-data
 
-# python -m climate_tookit.season_analysis.seasons --location="-1.286,36.817" --baseline-start 1991 --baseline-end 2020 --baseline-only
+# Auto-select source (tries ERA5 → AgERA5 → CHIRPS+CHIRTS)
+# python climate_tookit/season_analysis/seasons.py --location="-1.286,36.817" --date-from 2020-01-01 --date-to 2020-12-31
 
-# python -m climate_tookit.season_analysis.seasons --location="-1.286,36.817" --baseline-start 2021 --baseline-end 2045 --scenario ssp245 --future-only
+# Force specific source
+# python climate_tookit/season_analysis/seasons.py --location="-1.286,36.817" --date-from 2020-01-01 --date-to 2020-12-31 --source era_5
+# python climate_tookit/season_analysis/seasons.py --location="-1.286,36.817" --date-from 2020-01-01 --date-to 2020-12-31 --source agera_5
+# python climate_tookit/season_analysis/seasons.py --location="-1.286,36.817" --date-from 2016-01-01 --date-to 2016-12-31 --source chirps+chirts
+
+# Download climate data to CSV
+# python climate_tookit/season_analysis/seasons.py --location="-1.286,36.817" --date-from 2015-01-01 --date-to 2015-12-31 --source chirps+chirts --download-data chirps_chirts_nairobi_2015.csv 
+
+# Baseline analysis
+# python climate_tookit/season_analysis/seasons.py --location="-1.286,36.817" --baseline-start 1991 --baseline-end 2020 --baseline-only
+
+# Future projections (uses NEX-GDDP)
+# python climate_tookit/season_analysis/seasons.py --location="-1.286,36.817" --future-start 2040 --future-end 2050 --scenario ssp245 --future-only
+
+# Combined analysis with data download
+# python climate_tookit/season_analysis/seasons.py --location="-1.286,36.817" --date-from 2020-01-01 --date-to 2020-12-31 --source era_5 --download-data data.csv --output results.json --show-data
