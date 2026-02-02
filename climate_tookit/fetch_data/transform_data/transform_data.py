@@ -92,7 +92,6 @@ def transform_data(
 
 if __name__ == "__main__":
     import argparse
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", required=True)
     parser.add_argument("--lon", type=float)
@@ -102,11 +101,11 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, help="GCM model (for NEX-GDDP)")
     parser.add_argument("--scenario", type=str, help="Climate scenario (for NEX-GDDP)")
     args = parser.parse_args()
-
-    location_coord = (args.lon, args.lat) if args.lon and args.lat else None
+    
+    location_coord = (args.lat, args.lon) if args.lon and args.lat else None
     date_from = date.fromisoformat(args.start) if args.start else None
     date_to = date.fromisoformat(args.end) if args.end else None
-
+    
     df = transform_data(
         source=args.source,
         location_coord=location_coord,
@@ -115,7 +114,6 @@ if __name__ == "__main__":
         model=args.model,
         scenario=args.scenario
     )
-
     print(df)
     
-#python climate_tookit/fetch_data/transform_data/transform_data.py --source agera_5 --lon 36.817223 --lat -1.286389 --start 2020-01-01 --end 2020-03-05
+# python climate_tookit/fetch_data/transform_data/transform_data.py --source era_5 --lon 36.817223 --lat -1.286389 --start 2020-01-01 --end 2020-03-05

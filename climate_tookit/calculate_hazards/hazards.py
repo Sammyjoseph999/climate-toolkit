@@ -149,6 +149,10 @@ def calculate_season_statistics(df: pd.DataFrame) -> Dict[str, float]:
         dry_spell_stats = calculate_dry_spell_statistics(dry_spells)
         stats['dry_spell_statistics'] = dry_spell_stats
 
+        dry_spells = detect_dry_spells(df, min_dry_days=7, precip_threshold=1.0)
+        dry_spell_stats = calculate_dry_spell_statistics(dry_spells)
+        stats['dry_spell_statistics'] = dry_spell_stats
+
     tmax_col = None
     tmin_col = None
     for col in ['max_temperature', 'tmax', 'maximum_2m_air_temperature']:
@@ -256,6 +260,43 @@ def print_hazard_results(result: Dict[str, Any]):
         print(f"  {'Rainy Days (≥1mm)':<32} {stats['rainy_days']:>15}  {'days':<10}")
         if 'dry_days' in stats:
             print(f"  {'Dry Days (<1mm)':<32} {stats['dry_days']:>15}  {'days':<10}")
+
+    if 'dry_spell_statistics' in stats:
+        dry_spell_stats = stats['dry_spell_statistics']
+        print(f"\n  Dry Spell Statistics (≥7 consecutive days with <1mm rain)")
+        print(f"  {'─'*66}")
+        print(f"  {'Metric':<32} {'Value':>15}  {'Unit':<10}")
+        print(f"  {'─'*32} {'─'*15}  {'─'*10}")
+        print(f"  {'Number of Dry Spells':<32} {dry_spell_stats['number_of_dry_spells']:>15}  {'spells':<10}")
+        print(f"  {'Max Dry Spell Length':<32} {dry_spell_stats['max_dry_spell_length_days']:>15}  {'days':<10}")
+        print(f"  {'Mean Dry Spell Length':<32} {dry_spell_stats['mean_dry_spell_length_days']:>15.2f}  {'days':<10}")
+
+        if dry_spell_stats['dry_spells']:
+            print(f"\n  Individual Dry Spells:")
+            print(f"  {'─'*66}")
+            print(f"  {'#':<4} {'Start Date':<13} {'End Date':<13} {'Length (days)':>15}")
+            print(f"  {'─'*4} {'─'*13} {'─'*13} {'─'*15}")
+            for i, spell in enumerate(dry_spell_stats['dry_spells'], 1):
+                start_date = spell['start_date']
+                end_date = spell['end_date']
+
+                if isinstance(start_date, (date, datetime)):
+                    start = start_date.strftime('%Y-%m-%d')
+                else:
+                    start = str(start_date)[:10]
+
+                if isinstance(end_date, (date, datetime)):
+                    end = end_date.strftime('%Y-%m-%d')
+                else:
+                    end = str(end_date)[:10]
+
+                print(f"  {i:<4} {start:<13} {end:<13} {spell['length_days']:>15}")
+
+        if 'length_distribution' in dry_spell_stats and dry_spell_stats['length_distribution']:
+            print(f"\n  Length Distribution:")
+            print(f"  {'─'*66}")
+            for length_range, count in sorted(dry_spell_stats['length_distribution'].items()):
+                print(f"  {length_range:<15} days: {count:>3} spell(s)")
 
     if 'dry_spell_statistics' in stats:
         dry_spell_stats = stats['dry_spell_statistics']

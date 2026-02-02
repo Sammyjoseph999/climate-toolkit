@@ -108,10 +108,11 @@ class DownloadData(models.DataDownloadBase):
         ee.Authenticate()
         ee.Initialize(project=os.getenv("GCP_PROJECT_ID"))
 
+        lat, lon = location_coord
         location = (
-            ee.Geometry.Point(location_coord)
+            ee.Geometry.Point([lon, lat])
             if location_name is None
-            else ee.Geometry.Point(location_coord, {"location": location_name})
+            else ee.Geometry.Point([lon, lat], {"location": location_name})
         )
 
         logger.info(f"Retrieving information from GEE Image: {image_name}")
@@ -135,6 +136,83 @@ class DownloadData(models.DataDownloadBase):
             logger.error(f"Error retrieving static data from GEE: {e}")
             raise
 
+    def _get_gee_data_daily_single_range(
+        self,
+        image_name: str,
+        location_coord: tuple[float],
+        from_date: date,
+        to_date: date,
+        scale: Optional[float] = None,
+        crs: Optional[str] = None,
+        location_name: Optional[str] = None,
+        max_pixels: float = 1e9,
+        tile_scale: float = 1,
+    ) -> pd.DataFrame:
+        """Internal method to fetch data for a single date range without chunking."""
+        ee.Authenticate()
+        ee.Initialize(project=os.getenv("GCP_PROJECT_ID"))
+
+        # GEE expects [longitude, latitude], but location_coord is (lat, lon)
+        lat, lon = location_coord
+        location = ee.Geometry.Point([lon, lat])
+
+        logger.info(f"Fetching data for location: lat={lat}, lon={lon} (GEE Point: [{lon}, {lat}])")
+        logger.info(f"Using scale: {scale} meters")
+
+        # Fetch data day by day for maximum reliability
+        data_list = []
+        current_date = from_date
+
+        while current_date <= to_date:
+            try:
+                date_str = current_date.strftime("%Y-%m-%d")
+                start = ee.Date(date_str)
+                end = start.advance(1, "day")
+
+                # Get the image collection for this single day
+                collection = ee.ImageCollection(image_name).filterDate(start, end).filterBounds(location)
+
+                # Get the first (and likely only) image
+                img = collection.first()
+
+                # Use scale from config, fallback to 5000 if None
+                actual_scale = scale if scale is not None else 5000
+
+                # Get all band values using first() reducer
+                result = img.reduceRegion(
+                    reducer=ee.Reducer.first(),
+                    geometry=location,
+                    scale=actual_scale,
+                    maxPixels=max_pixels,
+                    bestEffort=True,
+                    tileScale=tile_scale,
+                ).getInfo()
+
+                # Add date to result
+                result['date'] = date_str
+
+                if result and any(v is not None for k, v in result.items() if k != 'date'):
+                    data_list.append(result)
+                else:
+                    logger.debug(f"No data values for {date_str}, adding empty record")
+                    data_list.append({'date': date_str})
+
+            except Exception as e:
+                logger.warning(f"Failed to fetch {date_str}: {e}")
+                data_list.append({'date': date_str})
+
+            current_date += timedelta(days=1)
+
+        df = pd.DataFrame(data_list) if data_list else pd.DataFrame()
+
+        # DIAGNOSTIC: Log what we actually got from GEE
+        if not df.empty:
+            logger.info(f"=== GEE RETURNED COLUMNS: {list(df.columns)}")
+            if len(df) > 0:
+                logger.info(f"=== SAMPLE ROW (first): {df.iloc[0].to_dict()}")
+
+        return df
+
     def get_gee_data_daily(
         self,
         image_name: str,
@@ -150,6 +228,8 @@ class DownloadData(models.DataDownloadBase):
     ) -> pd.DataFrame:
         """Uses the Google Earth Engine (GEE) API to retrieve weather information
         from a weather dataset. Used for dataset whose cadence is daily.
+
+        NOW WITH AUTOMATIC CHUNKING for large date ranges to avoid memory limits!
 
         API ref: https://developers.google.com/earth-engine/apidocs/
 
@@ -180,75 +260,166 @@ class DownloadData(models.DataDownloadBase):
         """
 
         logger.info("Authenticating to GEE...")
-        ee.Authenticate()
-        ee.Initialize(project=os.getenv("GCP_PROJECT_ID"))
-
-        location = (
-            ee.Geometry.Point(location_coord)
-            if location_name is None
-            else ee.Geometry.Point(location_coord, {"location": location_name})
-        )
-
         logger.info(f"Retrieving information from GEE Image: {image_name}")
 
-        # Warn if date range is very large
         total_days = (to_date - from_date).days
-        if total_days > 3650:  # More than 10 years
+
+        # Warn about large date ranges
+        if total_days > 5000:
             logger.warning(f"Date range is large ({total_days} days). This may cause memory issues or timeouts.")
 
-        dates = []
-        current_date = from_date
-        while current_date <= to_date:
-            dates.append(current_date.strftime("%Y-%m-%d"))
-            current_date += timedelta(days=1)
+        # Determine if chunking is needed based on dataset and date range
+        # High-memory datasets need smaller chunks
+        memory_intensive_datasets = [
+            'NASA/GPM_L3/IMERG',
+            'NASA/GDDP-CMIP6',
+        ]
 
-        ee_dates = ee.List(dates)
+        needs_chunking = False
+        chunk_years = 10  
 
-        def get_single_data(date):
-            start_date = ee.Date(date)
-            end_date = start_date.advance(1, "day")
+        # Check if this is a memory-intensive dataset
+        for dataset_pattern in memory_intensive_datasets:
+            if dataset_pattern in image_name:
+                needs_chunking = True
+                chunk_years = 2 
+                break
 
-            dataset = ee.ImageCollection(image_name).filterDate(start_date, end_date)
-            image = dataset.filterBounds(location).first()
+        # Also chunk if date range is very large (>10 years) regardless of dataset
+        if total_days > 3650:  
+            needs_chunking = True
+            if chunk_years == 10:  
+                chunk_years = 5
 
-            # Check if image exists before trying to reduce
-            def compute_if_exists(img):
-                expression = img.reduceRegion(
-                    reducer=ee.Reducer.mean(),
-                    geometry=location,
-                    scale=scale,
-                    maxPixels=max_pixels,
-                    crs=crs,
-                    bestEffort=True,
-                    tileScale=tile_scale,
-                )
-                return ee.Feature(None, {"date": start_date.format("YYYY-MM-dd")}).set(expression)
-            
-            def return_empty():
-                return ee.Feature(None, {"date": start_date.format("YYYY-MM-dd")})
+        # Use chunking if needed
+        if needs_chunking:
+            logger.info(f"Using chunked download with {chunk_years}-year chunks to avoid memory limits")
 
-            return ee.Algorithms.If(
-                dataset.size().gt(0),
-                compute_if_exists(image),
-                return_empty()
+            chunks = []
+            current_start = from_date
+            chunk_num = 1
+
+            while current_start < to_date:
+                # Calculate chunk end
+                try:
+                    chunk_end = date(
+                        current_start.year + chunk_years,
+                        current_start.month,
+                        current_start.day
+                    )
+                except ValueError:
+                    # Handle leap year edge case (Feb 29)
+                    chunk_end = date(
+                        current_start.year + chunk_years,
+                        current_start.month,
+                        28
+                    )
+
+                # Don't exceed final end date
+                if chunk_end > to_date:
+                    chunk_end = to_date
+
+                chunk_days = (chunk_end - current_start).days
+                logger.info(f"Fetching chunk {chunk_num}: {current_start} to {chunk_end} ({chunk_days} days)")
+
+                try:
+                    chunk_df = self._get_gee_data_daily_single_range(
+                        image_name=image_name,
+                        location_coord=location_coord,
+                        from_date=current_start,
+                        to_date=chunk_end,
+                        scale=scale,
+                        crs=crs,
+                        location_name=location_name,
+                        max_pixels=max_pixels,
+                        tile_scale=tile_scale,
+                    )
+
+                    if not chunk_df.empty:
+                        chunks.append(chunk_df)
+                        logger.info(f"Chunk {chunk_num} returned {len(chunk_df)} records")
+                    else:
+                        logger.warning(f"Chunk {chunk_num} returned no data")
+
+                except Exception as e:
+                    logger.error(f"Error fetching chunk {chunk_num}: {e}")
+
+                    # Try splitting this chunk further if it failed
+                    if chunk_years > 1:
+                        logger.info(f"Retrying chunk {chunk_num} with smaller sub-chunks...")
+                        smaller_chunk_years = max(1, chunk_years // 2)
+
+                        sub_start = current_start
+                        while sub_start < chunk_end:
+                            try:
+                                sub_end = date(
+                                    sub_start.year + smaller_chunk_years,
+                                    sub_start.month,
+                                    sub_start.day
+                                )
+                            except ValueError:
+                                sub_end = date(
+                                    sub_start.year + smaller_chunk_years,
+                                    sub_start.month,
+                                    28
+                                )
+
+                            if sub_end > chunk_end:
+                                sub_end = chunk_end
+
+                            try:
+                                sub_df = self._get_gee_data_daily_single_range(
+                                    image_name=image_name,
+                                    location_coord=location_coord,
+                                    from_date=sub_start,
+                                    to_date=sub_end,
+                                    scale=scale,
+                                    crs=crs,
+                                    location_name=location_name,
+                                    max_pixels=max_pixels,
+                                    tile_scale=tile_scale,
+                                )
+
+                                if not sub_df.empty:
+                                    chunks.append(sub_df)
+                                    logger.info(f"Sub-chunk {sub_start} to {sub_end} succeeded")
+                            except Exception as sub_e:
+                                logger.error(f"Sub-chunk {sub_start} to {sub_end} also failed: {sub_e}")
+
+                            sub_start = sub_end + timedelta(days=1)
+
+                # Move to next chunk
+                current_start = chunk_end + timedelta(days=1)
+                chunk_num += 1
+
+            # Combine all chunks
+            if not chunks:
+                logger.warning("No data retrieved from any chunk")
+                return pd.DataFrame()
+
+            combined_df = pd.concat(chunks, ignore_index=True)
+
+            # Sort by date and remove duplicates
+            if 'date' in combined_df.columns:
+                combined_df['date'] = pd.to_datetime(combined_df['date'])
+                combined_df = combined_df.sort_values('date').drop_duplicates(subset='date').reset_index(drop=True)
+
+            logger.info(f"Combined {len(chunks)} chunks into {len(combined_df)} total records")
+            return combined_df
+
+        else:
+            # Small date range - use original single-query method
+            return self._get_gee_data_daily_single_range(
+                image_name=image_name,
+                location_coord=location_coord,
+                from_date=from_date,
+                to_date=to_date,
+                scale=scale,
+                crs=crs,
+                location_name=location_name,
+                max_pixels=max_pixels,
+                tile_scale=tile_scale,
             )
-
-        try:
-            results = ee_dates.map(get_single_data)
-            features = results.getInfo()
-
-            # Filter out empty features
-            data_list = []
-            for feature in features:
-                props = feature.get("properties", {})
-                if props and len(props) > 1:  # More than just 'date'
-                    data_list.append(props)
-            
-            return pd.DataFrame(data_list) if data_list else pd.DataFrame()
-        
-        except Exception as e:
-            logger.error(f"Error in get_gee_data_daily: {e}")
-            return pd.DataFrame()
 
     def get_gee_data_monthly(
         self,
@@ -295,10 +466,11 @@ class DownloadData(models.DataDownloadBase):
         logger.info("Authenticating to GEE...")
         ee.Initialize(project=os.environ.get("GCP_PROJECT_ID"))
 
+        lat, lon = location_coord
         location = (
-            ee.Geometry.Point(location_coord)
+            ee.Geometry.Point([lon, lat])
             if location_name is None
-            else ee.Geometry.Point(location_coord, {"location": location_name})
+            else ee.Geometry.Point([lon, lat], {"location": location_name})
         )
 
         months = ee.List.sequence(
@@ -316,50 +488,29 @@ class DownloadData(models.DataDownloadBase):
             )
             image = dataset.filterBounds(location).first()
 
-            # Check if image exists
-            def compute_if_exists(img):
-                expression = img.reduceRegion(
-                    reducer=ee.Reducer.mean(),
-                    geometry=location,
-                    scale=scale,
-                    maxPixels=max_pixels,
-                    crs=crs,
-                    bestEffort=True,
-                    tileScale=tile_scale,
-                )
-                return ee.Feature(
-                    None, {"date": current_month_start.format("YYYY-MM-dd")}
-                ).set(expression)
-            
-            def return_empty():
-                return ee.Feature(
-                    None, {"date": current_month_start.format("YYYY-MM-dd")}
-                )
-
-            return ee.Algorithms.If(
-                dataset.size().gt(0),
-                compute_if_exists(image),
-                return_empty()
+            # Don't select bands - reduceRegion will get all bands automatically
+            expression = image.reduceRegion(
+                reducer=ee.Reducer.mean(),
+                geometry=location,
+                scale=scale,
+                maxPixels=max_pixels,
+                crs=crs,
+                bestEffort=True,
+                tileScale=tile_scale,
             )
+
+            return ee.Feature(
+                None, {"date": current_month_start.format("YYYY-MM-dd")}
+            ).set(expression)
 
         logger.info(f"Retrieving information from GEE Image: {image_name}")
 
-        try:
-            results = months.map(get_single_data)
-            features = results.getInfo()
+        # Process results and return DataFrame
+        results = months.map(get_single_data)
+        features = results.getInfo()
 
-            # Filter out empty features
-            data_list = []
-            for f in features:
-                props = f.get("properties", {})
-                if props and len(props) > 1:  # More than just 'date'
-                    data_list.append(props)
-            
-            return pd.DataFrame(data_list) if data_list else pd.DataFrame()
-        
-        except Exception as e:
-            logger.error(f"Error in get_gee_data_monthly: {e}")
-            return pd.DataFrame()
+        data_list = [f["properties"] for f in features] if features else []
+        return pd.DataFrame(data_list) if data_list else pd.DataFrame()
 
     def _handle_soil_grid(self, data_settings) -> pd.DataFrame:
         """Handle soil_grid with multiple images.

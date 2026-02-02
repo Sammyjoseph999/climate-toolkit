@@ -106,7 +106,7 @@ def main():
     settings = Settings.load()
 
     source_data = SourceData(
-        location_coord=(args.lon, args.lat),
+        location_coord=(args.lat, args.lon),
         variables=variables,
         source=source,
         date_from_utc=date_from,

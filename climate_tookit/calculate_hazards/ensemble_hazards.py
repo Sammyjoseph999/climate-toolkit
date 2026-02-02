@@ -14,7 +14,7 @@ parent_dir = os.path.dirname(current_dir)
 
 sys.path.insert(0, current_dir)
 
-from hazards import calculate_hazards, CROP_THRESHOLDS, calculate_season_statistics, evaluate_threshold
+from hazards import calculate_hazards, CROP_THRESHOLDS, evaluate_threshold, calculate_dry_spell_statistics
 HAZARDS_AVAILABLE = True
 
 PREPROCESS_AVAILABLE = False
@@ -39,6 +39,109 @@ AVAILABLE_GCMS = [
     'INM-CM5-0', 'KACE-1-0-G', 'MIROC6', 'MPI-ESM1-2-LR',
     'MRI-ESM2-0', 'NorESM2-LM', 'NorESM2-MM', 'TaiESM1'
 ]
+
+import pandas as pd
+from datetime import datetime, date
+
+def detect_dry_spells_enhanced(df: pd.DataFrame, min_dry_days: int = 7, precip_threshold: float = 1.0) -> List[Dict[str, Any]]:
+    """
+    Enhanced dry spell detection supporting NEX-GDDP and other data sources.
+    """
+ 
+    precip_col = None
+    for col in ['precipitation', 'precip', 'total_precipitation', 'pr', 'prcp', 'rainfall']:
+        if col in df.columns:
+            precip_col = col
+            break
+
+    if not precip_col or 'date' not in df.columns:
+        return []
+
+    df = df.sort_values('date').copy()
+    df['is_dry'] = df[precip_col] < precip_threshold
+
+    dry_spells = []
+    current_spell_start = None
+    current_spell_days = 0
+
+    for idx, row in df.iterrows():
+        if row['is_dry']:
+            if current_spell_start is None:
+                current_spell_start = row['date']
+                current_spell_days = 1
+            else:
+                current_spell_days += 1
+        else:
+            if current_spell_start is not None and current_spell_days >= min_dry_days:
+                prev_idx = df.index[df.index.get_loc(idx) - 1]
+                dry_spells.append({
+                    'start_date': current_spell_start,
+                    'end_date': df.loc[prev_idx, 'date'],
+                    'length_days': current_spell_days
+                })
+            current_spell_start = None
+            current_spell_days = 0
+
+    if current_spell_start is not None and current_spell_days >= min_dry_days:
+        dry_spells.append({
+            'start_date': current_spell_start,
+            'end_date': df.iloc[-1]['date'],
+            'length_days': current_spell_days
+        })
+
+    return dry_spells
+
+def calculate_season_statistics_enhanced(df: pd.DataFrame) -> Dict[str, float]:
+    """
+    Enhanced season statistics supporting NEX-GDDP and other data sources.
+    """
+    stats = {}
+
+    precip_col = None
+    for col in ['precipitation', 'precip', 'total_precipitation', 'pr', 'prcp', 'rainfall']:
+        if col in df.columns:
+            precip_col = col
+            break
+
+    if precip_col:
+        precip_data = df[precip_col].copy()
+        stats['total_precipitation_mm'] = precip_data.sum()
+        stats['mean_daily_precipitation_mm'] = precip_data.mean()
+        stats['max_daily_precipitation_mm'] = precip_data.max()
+        stats['rainy_days'] = (precip_data > 1.0).sum()
+        stats['dry_days'] = (precip_data <= 1.0).sum()
+
+        dry_spells = detect_dry_spells_enhanced(df, min_dry_days=7, precip_threshold=1.0)
+        dry_spell_stats = calculate_dry_spell_statistics(dry_spells)
+        stats['dry_spell_statistics'] = dry_spell_stats
+
+    tmax_col = None
+    tmin_col = None
+    for col in ['max_temperature', 'tmax', 'maximum_2m_air_temperature', 'tasmax', 'tmax_k']:
+        if col in df.columns:
+            tmax_col = col
+            break
+    for col in ['min_temperature', 'tmin', 'minimum_2m_air_temperature', 'tasmin', 'tmin_k']:
+        if col in df.columns:
+            tmin_col = col
+            break
+
+    if tmax_col and tmin_col:
+        tmax_data = df[tmax_col].copy()
+        tmin_data = df[tmin_col].copy()
+
+        if tmax_data.mean() > 100:
+            tmax_data = tmax_data - 273.15
+            tmin_data = tmin_data - 273.15
+
+        tavg = (tmax_data + tmin_data) / 2
+        stats['mean_temperature_c'] = tavg.mean()
+        stats['mean_tmax_c'] = tmax_data.mean()
+        stats['mean_tmin_c'] = tmin_data.mean()
+        stats['max_temperature_c'] = tmax_data.max()
+        stats['min_temperature_c'] = tmin_data.min()
+
+    return stats
 
 def calculate_single_projection(
     crop_name: str,
@@ -66,7 +169,7 @@ def calculate_single_projection(
                 )
 
                 if not df.empty and len(df.columns) > 1:
-                    stats = calculate_season_statistics(df)
+                    stats = calculate_season_statistics_enhanced(df)
 
                     if stats:  # If we got stats
                         crop_name_normalized = crop_name.capitalize()
@@ -129,6 +232,18 @@ def aggregate_ensemble_results(results: List[Dict[str, Any]], scenario: str) -> 
     precip_statuses = [r['hazard_evaluation']['precipitation']['status'] for r in results if 'hazard_evaluation' in r and 'precipitation' in r['hazard_evaluation']]
     temp_statuses = [r['hazard_evaluation']['temperature']['status'] for r in results if 'hazard_evaluation' in r and 'temperature' in r['hazard_evaluation']]
 
+    dry_spell_counts = []
+    max_dry_spell_lengths = []
+    mean_dry_spell_lengths = []
+    
+    for r in results:
+        if 'season_statistics' in r and 'dry_spell_statistics' in r['season_statistics']:
+            ds_stats = r['season_statistics']['dry_spell_statistics']
+            dry_spell_counts.append(ds_stats['number_of_dry_spells'])
+            max_dry_spell_lengths.append(ds_stats['max_dry_spell_length_days'])
+            if ds_stats['number_of_dry_spells'] > 0:
+                mean_dry_spell_lengths.append(ds_stats['mean_dry_spell_length_days'])
+
     ensemble = {
         'scenario': scenario,
         'n_models': len(results),
@@ -144,6 +259,17 @@ def aggregate_ensemble_results(results: List[Dict[str, Any]], scenario: str) -> 
                 'min_c': min(temp_values) if temp_values else 0,
                 'max_c': max(temp_values) if temp_values else 0,
                 'std_c': stdev(temp_values) if len(temp_values) > 1 else 0,
+            },
+            'dry_spells': {
+                'mean_count': round(mean(dry_spell_counts), 2) if dry_spell_counts else 0,
+                'min_count': min(dry_spell_counts) if dry_spell_counts else 0,
+                'max_count': max(dry_spell_counts) if dry_spell_counts else 0,
+                'std_count': round(stdev(dry_spell_counts), 2) if len(dry_spell_counts) > 1 else 0,
+                'mean_max_length_days': round(mean(max_dry_spell_lengths), 2) if max_dry_spell_lengths else 0,
+                'min_max_length_days': min(max_dry_spell_lengths) if max_dry_spell_lengths else 0,
+                'max_max_length_days': max(max_dry_spell_lengths) if max_dry_spell_lengths else 0,
+                'std_max_length_days': round(stdev(max_dry_spell_lengths), 2) if len(max_dry_spell_lengths) > 1 else 0,
+                'mean_of_mean_lengths_days': round(mean(mean_dry_spell_lengths), 2) if mean_dry_spell_lengths else 0,
             }
         },
         'consensus': {
@@ -243,7 +369,7 @@ def calculate_ensemble_hazards(
             future_precip = ensemble['ensemble_statistics']['precipitation']['mean_mm']
             future_temp = ensemble['ensemble_statistics']['temperature']['mean_c']
 
-            ensemble['change_from_baseline'] = {
+            change_from_baseline = {
                 'precipitation': {
                     'absolute_mm': future_precip - baseline_precip,
                     'percent': ((future_precip - baseline_precip) / baseline_precip * 100) if baseline_precip > 0 else 0
@@ -253,6 +379,26 @@ def calculate_ensemble_hazards(
                     'percent': ((future_temp - baseline_temp) / baseline_temp * 100) if baseline_temp > 0 else 0
                 }
             }
+
+            if 'season_statistics' in baseline_result and 'dry_spell_statistics' in baseline_result['season_statistics']:
+                baseline_ds = baseline_result['season_statistics']['dry_spell_statistics']
+                future_ds = ensemble['ensemble_statistics']['dry_spells']
+                
+                baseline_count = baseline_ds['number_of_dry_spells']
+                baseline_max_length = baseline_ds['max_dry_spell_length_days']
+                
+                change_from_baseline['dry_spells'] = {
+                    'count': {
+                        'absolute': future_ds['mean_count'] - baseline_count,
+                        'percent': ((future_ds['mean_count'] - baseline_count) / baseline_count * 100) if baseline_count > 0 else 0
+                    },
+                    'max_length_days': {
+                        'absolute': future_ds['mean_max_length_days'] - baseline_max_length,
+                        'percent': ((future_ds['mean_max_length_days'] - baseline_max_length) / baseline_max_length * 100) if baseline_max_length > 0 else 0
+                    }
+                }
+
+            ensemble['change_from_baseline'] = change_from_baseline
 
         scenario_ensembles[scenario] = ensemble
 
@@ -305,6 +451,13 @@ def print_ensemble_results(result: Dict[str, Any]):
         temp_sym = '✓' if 'no_stress' in b_hazards['temperature']['status'] else '⚠' if 'moderate' in b_hazards['temperature']['status'] else '✗'
         print(f"      Status: {temp_sym} {temp_status}")
 
+        if 'dry_spell_statistics' in b_stats:
+            ds_stats = b_stats['dry_spell_statistics']
+            print(f"    Dry Spells: {ds_stats['number_of_dry_spells']} spells")
+            if ds_stats['number_of_dry_spells'] > 0:
+                print(f"      Max Length: {ds_stats['max_dry_spell_length_days']} days")
+                print(f"      Mean Length: {ds_stats['mean_dry_spell_length_days']:.2f} days")
+
     print(f"\n  {'─'*66}")
     print(f"  FUTURE ({future_period['start']} to {future_period['end']})")
     print(f"  {'─'*66}\n")
@@ -350,6 +503,37 @@ def print_ensemble_results(result: Dict[str, Any]):
         print(f"      {'Range':<28} {stats['temperature']['min_c']:>12.2f}  ")
         print(f"      {'':<28} {stats['temperature']['max_c']:>12.2f}  ")
         print(f"      {'Std Deviation':<28} {stats['temperature']['std_c']:>12.2f}  ")
+
+        if 'dry_spells' in stats and stats['dry_spells']['mean_count'] > 0:
+            print(f"\n    Dry Spell Ensemble")
+            print(f"    {'-'*62}")
+            print(f"      {'Metric':<28} {'Value':>12}  {'Change':<12}")
+            print(f"      {'-'*28} {'-'*12}  {'-'*12}")
+
+            ds_change = changes.get('dry_spells', {})
+            
+            if 'count' in ds_change:
+                count_change = ds_change['count']['absolute']
+                change_str = f"+{count_change:.2f}" if count_change >= 0 else f"{count_change:.2f}"
+                pct_str = f"({ds_change['count']['percent']:+.1f}%)"
+                print(f"      {'Mean Spell Count':<28} {stats['dry_spells']['mean_count']:>12.2f}  {change_str} {pct_str}")
+            else:
+                print(f"      {'Mean Spell Count':<28} {stats['dry_spells']['mean_count']:>12.2f}  ")
+            
+            print(f"      {'Range':<28} {stats['dry_spells']['min_count']:>12}  ")
+            print(f"      {'':<28} {stats['dry_spells']['max_count']:>12}  ")
+            print(f"      {'Std Deviation':<28} {stats['dry_spells']['std_count']:>12.2f}  ")
+            
+            if 'max_length_days' in ds_change:
+                length_change = ds_change['max_length_days']['absolute']
+                change_str = f"+{length_change:.2f}d" if length_change >= 0 else f"{length_change:.2f}d"
+                pct_str = f"({ds_change['max_length_days']['percent']:+.1f}%)"
+                print(f"      {'Mean Max Length':<28} {stats['dry_spells']['mean_max_length_days']:>12.2f}  {change_str} {pct_str}")
+            else:
+                print(f"      {'Mean Max Length':<28} {stats['dry_spells']['mean_max_length_days']:>12.2f}  ")
+            
+            print(f"      {'Range':<28} {stats['dry_spells']['min_max_length_days']:>12}  ")
+            print(f"      {'':<28} {stats['dry_spells']['max_max_length_days']:>12}  ")
 
         print(f"\n    Consensus")
         print(f"    {'-'*62}")
