@@ -90,8 +90,18 @@ def transform_data(
     return raw_df.rename(columns=mapping)
 
 
+def save_output(data, output_path, fmt):
+    if fmt == "csv":
+        data.to_csv(output_path, index=False)
+    elif fmt == "json":
+        data.to_json(output_path, orient="records", date_format="iso", indent=2)
+    else:
+        raise ValueError(fmt)
+
+
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", required=True)
     parser.add_argument("--lon", type=float)
@@ -100,12 +110,19 @@ if __name__ == "__main__":
     parser.add_argument("--end", type=str)
     parser.add_argument("--model", type=str, help="GCM model (for NEX-GDDP)")
     parser.add_argument("--scenario", type=str, help="Climate scenario (for NEX-GDDP)")
+    parser.add_argument("-o", "--output", default=None)
+    parser.add_argument(
+        "--format",
+        choices=["csv", "json", "print"],
+        default="print"
+    )
+
     args = parser.parse_args()
-    
+
     location_coord = (args.lat, args.lon) if args.lon and args.lat else None
     date_from = date.fromisoformat(args.start) if args.start else None
     date_to = date.fromisoformat(args.end) if args.end else None
-    
+
     df = transform_data(
         source=args.source,
         location_coord=location_coord,
@@ -114,6 +131,15 @@ if __name__ == "__main__":
         model=args.model,
         scenario=args.scenario
     )
-    print(df)
+
+    if args.format == "print" or not args.output:
+        print(df)
+    else:
+        save_output(df, args.output, args.format)
+        print(f"Saved to {args.output}")
+
     
 # python climate_tookit/fetch_data/transform_data/transform_data.py --source era_5 --lon 36.817223 --lat -1.286389 --start 2020-01-01 --end 2020-03-05
+
+# Download data in csv
+# python climate_tookit/fetch_data/transform_data/transform_data.py --source era_5 --lon 36.817223 --lat -1.286389 --start 2020-01-01 --end 2020-03-05 --format csv --output era5_transformed.csv
