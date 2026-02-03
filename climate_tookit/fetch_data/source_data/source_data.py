@@ -6,7 +6,6 @@ different climate databases.
 import sys
 import os
 import argparse
-import json
 from datetime import datetime, date
 
 sys.path.append(os.path.dirname(__file__))
@@ -37,28 +36,49 @@ class SourceData:
 
         if source == ClimateDataset.nex_gddp:
             client = DownloadNEXGDDP(
-                variables=variables, location_coord=location_coord,
-                date_from_utc=date_from_utc, date_to_utc=date_to_utc,
-                settings=settings, source=source, model=model, scenario=scenario
+                variables=variables,
+                location_coord=location_coord,
+                date_from_utc=date_from_utc,
+                date_to_utc=date_to_utc,
+                settings=settings,
+                source=source,
+                model=model,
+                scenario=scenario
             )
-        elif source in (ClimateDataset.era_5, ClimateDataset.terraclimate,
-                       ClimateDataset.imerg, ClimateDataset.chirps, ClimateDataset.cmip_6,
-                       ClimateDataset.chirts, ClimateDataset.agera_5, ClimateDataset.soil_grid):
+        elif source in (
+            ClimateDataset.era_5,
+            ClimateDataset.terraclimate,
+            ClimateDataset.imerg,
+            ClimateDataset.chirps,
+            ClimateDataset.cmip_6,
+            ClimateDataset.chirts,
+            ClimateDataset.agera_5,
+            ClimateDataset.soil_grid,
+        ):
             client = DownloadGEE(
-                variables=variables, location_coord=location_coord,
-                date_from_utc=date_from_utc, date_to_utc=date_to_utc,
-                settings=settings, source=source
+                variables=variables,
+                location_coord=location_coord,
+                date_from_utc=date_from_utc,
+                date_to_utc=date_to_utc,
+                settings=settings,
+                source=source
             )
         elif source == ClimateDataset.tamsat:
             client = DownloadTAMSAT(
-                variables=variables, location_coord=location_coord,
-                aggregation=None, date_from_utc=date_from_utc, date_to_utc=date_to_utc
+                variables=variables,
+                location_coord=location_coord,
+                aggregation=None,
+                date_from_utc=date_from_utc,
+                date_to_utc=date_to_utc
             )
         elif source == ClimateDataset.nasa_power:
             client = DownloadNASA(
-                variables=variables, location_coord=location_coord,
-                date_from_utc=date_from_utc, date_to_utc=date_to_utc,
-                settings=settings, source=source
+                variables=variables,
+                location_coord=location_coord,
+                date_from_utc=date_from_utc,
+                date_to_utc=date_to_utc,
+                settings=settings,
+                source=source
             )
 
         if client is None:
@@ -69,6 +89,15 @@ class SourceData:
     def download(self):
         """Download climate data from the remote location."""
         return self.client.download_variables()
+
+
+def save_output(data, output_path, fmt):
+    if fmt == "csv":
+        data.to_csv(output_path, index=False)
+    elif fmt == "json":
+        data.to_json(output_path, orient="records", date_format="iso", indent=2)
+    else:
+        raise ValueError(fmt)
 
 
 def main():
@@ -82,6 +111,12 @@ def main():
     parser.add_argument('--model', default=None)
     parser.add_argument('--scenario', default=None)
     parser.add_argument('--output', '-o', default=None)
+    parser.add_argument(
+        '--format',
+        choices=['csv', 'json', 'print'],
+        default='print'
+    )
+
     args = parser.parse_args()
 
     variables = []
@@ -118,21 +153,28 @@ def main():
 
     climate_data = source_data.download()
 
-    if args.output:
-        # Save as JSON to file
-        climate_data.to_json(args.output, orient='records', date_format='iso', indent=2)
-        print(f"Saved to {args.output}")
-    else:
+    if args.format == "print" or not args.output:
         print(climate_data.to_string())
+    else:
+        save_output(climate_data, args.output, args.format)
+        print(f"Saved to {args.output}")
 
     return 0
 
 
 if __name__ == "__main__":
     sys.exit(main())
+
  
 # For nex_gddp with different models and scenarios    
 # python .\climate_tookit\fetch_data\source_data\source_data.py --source nex_gddp --variables precipitation,max_temperature,min_temperature --from 2050-01-01 --to 2050-01-10 --lon 36.817 --lat -1.286 --model GFDL-ESM4 --scenario ssp245
 
 # For other sources
 # python .\climate_tookit\fetch_data\source_data\source_data.py --source chirps --variables precipitation,max_temperature,min_temperature,soil_moisture,bulk_density,wind_speed,solar_radiation,humidity,ph,silt_content,clay_content --from 2020-01-01 --to 2020-01-10 --lon 36.817 --lat -1.286
+
+# Download data in csv
+# For nex_gddp with different models and scenarios
+# python .\climate_tookit\fetch_data\source_data\source_data.py --source nex_gddp --variables precipitation,max_temperature,min_temperature --from 2050-01-01 --to 2050-01-10 --lon 36.817 --lat -1.286 --model GFDL-ESM4 --scenario ssp245 --format csv --output nexgddp_2050.csv
+
+# For other sources
+# python .\climate_tookit\fetch_data\source_data\source_data.py --source chirts --variables precipitation,max_temperature,min_temperature --from 2016-01-01 --to 2016-01-10 --lon 36.817 --lat -1.286 --format csv --output chirts_2016.csv
