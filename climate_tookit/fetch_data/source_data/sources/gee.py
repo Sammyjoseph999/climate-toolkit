@@ -170,15 +170,22 @@ class DownloadData(models.DataDownloadBase):
                 end = start.advance(1, "day")
 
                 # Get the image collection for this single day
-                collection = ee.ImageCollection(image_name).filterDate(start, end).filterBounds(location)
+                collection = (
+                    ee.ImageCollection(image_name)
+                    .filterDate(start, end)
+                    .filterBounds(location)
+                )
 
-                # Get the first (and likely only) image
+
+                if collection.size().getInfo() == 0:
+                    data_list.append({'date': date_str})
+                    current_date += timedelta(days=1)
+                    continue
+
                 img = collection.first()
 
-                # Use scale from config, fallback to 5000 if None
                 actual_scale = scale if scale is not None else 5000
 
-                # Get all band values using first() reducer
                 result = img.reduceRegion(
                     reducer=ee.Reducer.first(),
                     geometry=location,
@@ -188,13 +195,11 @@ class DownloadData(models.DataDownloadBase):
                     tileScale=tile_scale,
                 ).getInfo()
 
-                # Add date to result
                 result['date'] = date_str
 
                 if result and any(v is not None for k, v in result.items() if k != 'date'):
                     data_list.append(result)
                 else:
-                    logger.debug(f"No data values for {date_str}, adding empty record")
                     data_list.append({'date': date_str})
 
             except Exception as e:
