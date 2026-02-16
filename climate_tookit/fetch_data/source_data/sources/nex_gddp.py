@@ -17,6 +17,7 @@ Generates synthetic climate projection data with realistic model/scenario variat
 For production, replace with real GEE implementation once authenticated.
 """
 
+import hashlib
 import logging
 import pandas as pd
 import numpy as np
@@ -54,14 +55,30 @@ class DownloadData(models.DataDownloadBase):
         self.variables = variables
         self.settings = settings
         self.source = source
-        self.model = model if model in AVAILABLE_MODELS else 'ACCESS-CM2'
+        if model is not None and model not in AVAILABLE_MODELS:
+            raise ValueError(
+                f"Invalid model '{model}'. Must be one of: {', '.join(AVAILABLE_MODELS)}"
+            )
+        self.model = model or 'ACCESS-CM2'
+
+        if scenario is not None and scenario not in SCENARIO_MAPPING:
+            raise ValueError(
+                f"Invalid scenario '{scenario}'. Must be one of: {', '.join(SCENARIO_MAPPING.keys())}"
+            )
         self.scenario = SCENARIO_MAPPING.get(scenario, 'ssp245')
+        
+        logger.info(
+            f"NEX-GDDP using model={self.model}, "
+            f"scenario={self.scenario}, "
+            f"coord={self.location_coord}"
+        )
 
     def download_variables(self) -> pd.DataFrame:
         lat, lon = self.location_coord
         dates = pd.date_range(self.date_from_utc, self.date_to_utc, freq='D')
-        seed = hash(f"{self.model}{self.scenario}{lat}{lon}") % (2**32)
-        np.random.seed(seed)
+        seed_str = f"{self.model}|{self.scenario}|{lat:.6f}|{lon:.6f}"
+        seed = int(hashlib.sha256(seed_str.encode("utf-8")).hexdigest()[:8], 16)
+        rng = np.random.default_rng(seed)
         model_idx = AVAILABLE_MODELS.index(self.model) if self.model in AVAILABLE_MODELS else 0
         model_factor = (model_idx - 7.5) / 7.5
         scenario_warming = {'historical': 0.0, 'ssp126': 1.2, 'ssp245': 1.8, 'ssp585': 2.5}
@@ -77,19 +94,19 @@ class DownloadData(models.DataDownloadBase):
             if 'precipitation' in var_name.lower():
                 base = 3.5
                 seasonal = np.sin(np.arange(len(dates)) * 2 * np.pi / 365) * 1.5
-                noise = np.random.normal(0, 1.2, len(dates))
+                noise = rng.normal(0, 1.2, len(dates))
                 model_var = model_factor * 0.3
                 data['pr'] = np.maximum(0, (base + seasonal + noise + model_var) * precip_factor)
             elif 'max' in var_name.lower() and 'temp' in var_name.lower():
                 base = 26.0 + warming
                 seasonal = np.sin(np.arange(len(dates)) * 2 * np.pi / 365) * 6
-                noise = np.random.normal(0, 2.5, len(dates))
+                noise = rng.normal(0, 2.5, len(dates))
                 model_var = model_factor * 1.5
                 data['tasmax'] = base + seasonal + noise + model_var
             elif 'min' in var_name.lower() and 'temp' in var_name.lower():
                 base = 16.0 + warming * 0.8
                 seasonal = np.sin(np.arange(len(dates)) * 2 * np.pi / 365) * 4.5
-                noise = np.random.normal(0, 1.8, len(dates))
+                noise = rng.normal(0, 1.8, len(dates))
                 model_var = model_factor * 1.2
                 data['tasmin'] = base + seasonal + noise + model_var
 

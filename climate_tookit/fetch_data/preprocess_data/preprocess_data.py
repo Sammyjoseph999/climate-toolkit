@@ -148,7 +148,7 @@ def preprocess_data(
 
     cleaned_df = clean_climate_data(transformed_df)
     converted_df = apply_unit_conversions(cleaned_df, source)
-    final_df = quality_control_checks(converted_df)
+    final_df = quality_control_checks(converted_df).round(2)
 
     return final_df
 
@@ -203,6 +203,8 @@ if __name__ == "__main__":
  
         
 # python climate_tookit/fetch_data/preprocess_data/preprocess_data.py --source era_5 --lon 36.8 --lat -1.3 --start 2020-01-01 --end 2020-03-05
+
+# python climate_tookit/fetch_data/preprocess_data/preprocess_data.py --source nex_gddp --lon 36.8 --lat -1.3 --start 2020-01-01 --end 2020-08-31 --model MRI-ESM2-0 --scenario ssp585
 
 # Download data in csv
 # For NEX_GDDP

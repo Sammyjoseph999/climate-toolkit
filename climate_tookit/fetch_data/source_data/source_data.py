@@ -118,6 +118,14 @@ def main():
     )
 
     args = parser.parse_args()
+    
+    if not (-180 <= args.lon <= 180):
+        print(f"Error: Longitude must be between -180 and 180, got {args.lon}")
+        return 1
+
+    if not (-90 <= args.lat <= 90):
+        print(f"Error: Latitude must be between -90 and 90, got {args.lat}")
+        return 1
 
     variables = []
     for v in args.variables.split(','):
