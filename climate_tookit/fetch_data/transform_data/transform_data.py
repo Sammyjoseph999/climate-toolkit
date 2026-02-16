@@ -141,6 +141,8 @@ if __name__ == "__main__":
     
 # python climate_tookit/fetch_data/transform_data/transform_data.py --source era_5 --lon 36.817223 --lat -1.286389 --start 2020-01-01 --end 2020-03-05
 
+# python climate_tookit/fetch_data/transform_data/transform_data.py --source nex_gddp --lon 36.817223 --lat -1.286389 --start 2020-01-01 --end 2020-08-31 --model MRI-ESM2-0 --scenario ssp585
+
 # Download data in csv
 # For nex_gddp
 # python climate_tookit/fetch_data/transform_data/transform_data.py --source nex_gddp --lon 36.817223 --lat -1.286389 --start 2020-01-01 --end 2020-08-31 --model MRI-ESM2-0 --scenario ssp585 --format csv --output nex_gddp_transformed_jan-aug_2020.csv
