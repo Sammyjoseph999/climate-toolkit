@@ -11,7 +11,7 @@ from datetime import datetime, date
 sys.path.append(os.path.dirname(__file__))
 
 from sources.gee import DownloadData as DownloadGEE
-from sources.tamsat import DownloadData as DownloadTAMSAT
+from sources.tamsat import DownloadTAMSAT
 from sources.nasa_power import DownloadData as DownloadNASA
 from sources.nex_gddp import DownloadData as DownloadNEXGDDP
 from sources.utils.models import ClimateDataset, ClimateVariable, SoilVariable, Location
