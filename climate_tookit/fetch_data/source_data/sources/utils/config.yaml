@@ -22,19 +22,43 @@ era_5:
     solar_radiation: null
     soil_moisture: null
 
+
 terraclimate:
   url: https://climate.northwestknowledge.net/TERRACLIMATE-DATA/
-  variable:
-    # https://developers.google.com/earth-engine/datasets/catalog/IDAHO_EPSCOR_TERRACLIMATE#bands
-    precipitation: pr
-    max_temperature: tmmx
-    min_temperature: tmmn
-    wind_speed: vs
-    solar_radiation: srad
-    soil_moisture: soil
   resolution: 4000
   gee_image: IDAHO_EPSCOR/TERRACLIMATE
   cadence: monthly
+
+  variable:
+    precipitation:
+      band: pr
+      units: mm/month
+      scale: 1
+
+    max_temperature:
+      band: tmmx
+      units: °C
+      scale: 0.1
+
+    min_temperature:
+      band: tmmn
+      units: °C
+      scale: 0.1
+
+    wind_speed:
+      band: vs
+      units: m/s
+      scale: 0.1
+
+    solar_radiation:
+      band: srad
+      units: W/m²
+      scale: 0.1
+
+    soil_moisture:
+      band: soil
+      units: mm
+      scale: 1
 
 imerg:
   version: "07"
@@ -118,19 +142,15 @@ nasa_power:
   cadence: "daily"
 
 tamsat:
-  rainfall_url: https://gws-access.jasmin.ac.uk/public/tamsat/rfe/data/v3.1/monthly/
-  soil_moisture_url: https://gws-access.jasmin.ac.uk/public/tamsat/soil_moisture/data/v2.3.1/monthly/
-  data_format: netcdf
-  download_format: http
-  cadence: monthly
-  resolution: 0.1
+  rainfall_url: "https://climate-data.jasmin.ac.uk/tamsat/rfe/data/v3.1/monthly"
+  soil_moisture_url: "https://climate-data.jasmin.ac.uk/tamsat/soil_moisture/data/v2.3.1/monthly"
+  data_format: "netcdf"
+  download_format: "daily"
+  cadence: "monthly"
+  resolution: 0.05
   variable:
-    precipitation: rfe
-    soil_moisture: smcl
-    max_temperature: null
-    min_temperature: null
-    wind_speed: null
-    solar_radiation: null
+    precipitation: "rfe"
+    soil_moisture: "smcl"
 
 soil_grid:
   gee_images:
