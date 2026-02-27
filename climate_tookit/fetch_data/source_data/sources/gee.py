@@ -206,6 +206,13 @@ class DownloadData(models.DataDownloadBase):
             logger.info(f"=== SAMPLE ROW (first): {df.iloc[0].to_dict()}")
 
             df = df.sort_values("date").reset_index(drop=True)
+            
+            # Deduplicate sub-daily data (e.g. IMERG half-hourly) → daily mean
+            if df.duplicated("date").any():
+                logger.info("Duplicate dates detected — aggregating sub-daily data to daily totals/means.")
+                numeric_cols = df.select_dtypes(include="number").columns.tolist()
+                agg_dict = {col: 'sum' if 'precipitation' in col.lower() else 'mean' for col in numeric_cols}
+                df = df.groupby("date", as_index=False).agg(agg_dict)
 
             # Ensure full daily index (GEE processing skips missing days, this refills them to match old output)
             full_range = pd.date_range(from_date, to_date, freq="D")
@@ -242,7 +249,7 @@ class DownloadData(models.DataDownloadBase):
         cadence: Cadence = Cadence.daily,
         tile_scale: float = 1,
     ) -> pd.DataFrame:
-        """Retrieve daily data from a GEE ImageCollection (optimized single-query version)."""
+        """Retrieve daily data from a GEE ImageCollection with automatic chunking for sub-daily datasets."""
 
         logger.info("Authenticating to GEE...")
         logger.info(f"Retrieving information from GEE Image: {image_name}")
@@ -258,23 +265,35 @@ class DownloadData(models.DataDownloadBase):
             logger.warning("from_date is after to_date. Returning empty DataFrame.")
             return pd.DataFrame()
 
-        if total_days > 5000:
-            logger.warning(
-                f"Large date range requested ({total_days} days). "
-                "Single-query extraction will be attempted."
+        # IMERG has 48 images/day × 100 days = 4800 elements, safely under GEE's 5000 limit
+        chunk_size = 100
+
+        chunks = []
+        chunk_start = from_date
+
+        while chunk_start <= to_date:
+            chunk_end = min(chunk_start + timedelta(days=chunk_size - 1), to_date)
+            logger.info(f"Fetching chunk: {chunk_start} → {chunk_end}")
+
+            chunk_df = self._get_gee_data_daily_single_range(
+                image_name=image_name,
+                location_coord=location_coord,
+                from_date=chunk_start,
+                to_date=chunk_end,
+                scale=scale,
+                crs=crs,
+                location_name=location_name,
+                max_pixels=max_pixels,
+                tile_scale=tile_scale,
             )
 
-        return self._get_gee_data_daily_single_range(
-            image_name=image_name,
-            location_coord=location_coord,
-            from_date=from_date,
-            to_date=to_date,
-            scale=scale,
-            crs=crs,
-            location_name=location_name,
-            max_pixels=max_pixels,
-            tile_scale=tile_scale,
-        )
+            chunks.append(chunk_df)
+            chunk_start = chunk_end + timedelta(days=1)
+
+        if not chunks:
+            return pd.DataFrame()
+
+        return pd.concat(chunks, ignore_index=True)
 
     def get_gee_data_monthly(
         self,
@@ -331,8 +350,8 @@ class DownloadData(models.DataDownloadBase):
         start_date = ee.Date.fromYMD(from_date.year, from_date.month, 1)
         end_date = ee.Date.fromYMD(to_date.year, to_date.month, 1).advance(1, "month")
 
-        nMonths = end_date.difference(start_date, "month");
-        months = ee.List.sequence(0, nMonths.subtract(1));
+        nMonths = end_date.difference(start_date, "month").ceil()
+        months = ee.List.sequence(0, nMonths.subtract(1))
 
         # Filter full range once
         collection = (
@@ -451,7 +470,7 @@ class DownloadData(models.DataDownloadBase):
     def download_variables(self) -> pd.DataFrame:
         """Download and process variables from the configured data source.
 
-        This method handles different types of climate datasets including:
+        Handles different types of climate datasets including:
         - Static datasets (like soil grids)
         - Daily time series datasets
         - Monthly time series datasets
@@ -459,7 +478,7 @@ class DownloadData(models.DataDownloadBase):
         Returns
         ---
         A pandas dataframe containing the requested variables, with proper
-        column mapping and date handling based on the dataset type.
+        column mapping, scaling, and date handling.
         """
 
         try:
@@ -470,10 +489,17 @@ class DownloadData(models.DataDownloadBase):
 
         # Handle soil_grid special case with multiple images
         if self.source.name == "soil_grid" and hasattr(data_settings, "gee_images"):
-            logger.info(
-                "Using enhanced soil variable download with multiple GEE images"
-            )
-            return self._handle_soil_grid(data_settings)
+            logger.info("Using enhanced soil variable download with multiple GEE images")
+            df_soil = self._handle_soil_grid(data_settings)
+            # Apply scaling if VariableMeta defines it
+            for v in self.variables:
+                mapped_col = data_settings.variable.get_band(v.name)
+                var_meta = getattr(data_settings.variable, v.name, None)
+                if mapped_col in df_soil.columns and var_meta is not None:
+                    scale = getattr(var_meta, "scale", 1.0)
+                    df_soil[mapped_col] = df_soil[mapped_col] * scale
+                    logger.info(f"Applied scaling to {mapped_col} (scale={scale})")
+            return df_soil
 
         # Standard climate data handling
         try:
@@ -507,7 +533,7 @@ class DownloadData(models.DataDownloadBase):
             logger.warning("No data retrieved from GEE")
             return pd.DataFrame()
 
-        # Map columns to variable names and log information
+        # Map columns to variable names
         dataset_cols = list(climate_data.columns)
         req_vars = [v.name for v in self.variables]
 
@@ -515,13 +541,11 @@ class DownloadData(models.DataDownloadBase):
         missing_vars = []
 
         for v in self.variables:
-            mapped_col = getattr(data_settings.variable, v.name, None)
+            mapped_col = data_settings.variable.get_band(v.name)
             if mapped_col and mapped_col in climate_data.columns:
                 available_cols.append(mapped_col)
             else:
-                logger.warning(
-                    f"{self.source.name.upper()} does not have {v.name} data"
-                )
+                logger.warning(f"{self.source.name.upper()} does not have {v.name} data")
                 missing_vars.append(v.name)
 
         logger.info(f"Available columns: {dataset_cols}")
@@ -529,6 +553,15 @@ class DownloadData(models.DataDownloadBase):
         logger.info(f"Mapped available columns: {available_cols}")
         if missing_vars:
             logger.info(f"Missing variables: {missing_vars}")
+
+        # Apply scaling for each variable that has a scale factor
+        for v in self.variables:
+            mapped_col = data_settings.variable.get_band(v.name)
+            var_meta = getattr(data_settings.variable, v.name, None)
+            if mapped_col in climate_data.columns and var_meta is not None:
+                scale = getattr(var_meta, "scale", 1.0)
+                climate_data[mapped_col] = climate_data[mapped_col] * scale
+                logger.info(f"Applied scaling to {mapped_col} (scale={scale})")
 
         base_cols = ["date"] if "date" in climate_data.columns else []
         return climate_data[base_cols + available_cols]
