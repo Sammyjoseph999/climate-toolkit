@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 BASE_DIR = Path(__file__).parent.parent.parent
 config_path = Path(__file__).parent / "config.yaml"
@@ -22,14 +22,30 @@ class Cadence(BaseModel):
     daily: str
     half_hourly: str
 
+class VariableMeta(BaseModel):
+    band: str
+    units: str | None = None
+    scale: float = 1.0
+
 
 class ClimateVariable(BaseModel):
-    precipitation: str | None = None
-    max_temperature: str | None = None
-    min_temperature: str | None = None
-    wind_speed: str | None = None
-    solar_radiation: str | None = None
-    soil_moisture: str | None = None
+    precipitation: VariableMeta | None = None
+    max_temperature: VariableMeta | None = None
+    min_temperature: VariableMeta | None = None
+    wind_speed: VariableMeta | None = None
+    solar_radiation: VariableMeta | None = None
+    soil_moisture: VariableMeta | None = None
+    
+    def get_band(self, var_name: str) -> str | None:
+        meta = getattr(self, var_name, None)
+        return meta.band if meta else None
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def allow_string(cls, v):
+        if isinstance(v, str):
+            return {"band": v}
+        return v
 
 class SoilVariable(BaseModel):
     bulk_density: str | None = None
