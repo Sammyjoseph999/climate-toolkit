@@ -9,6 +9,43 @@ from source_data import SourceData
 from sources.utils.models import ClimateVariable, ClimateDataset, SoilVariable
 from sources.utils.settings import Settings
 
+def validate_coordinates(lat, lon):
+    """Validate latitude and longitude ranges."""
+    errors = []
+    if lat is None or lon is None:
+        errors.append("Latitude and Longitude must both be provided.")
+        return errors
+    if not (-180 <= lon <= 180):
+        errors.append(f"Longitude must be between -180 and 180, got {lon}")
+    if not (-90 <= lat <= 90):
+        errors.append(f"Latitude must be between -90 and 90, got {lat}")
+    return errors
+
+def validate_inputs(source, lat, lon, date_from, date_to, model, scenario):
+    """Validate all user inputs and return a list of errors."""
+    errors = []
+    errors.extend(validate_coordinates(lat, lon))
+    valid_sources = [s.name for s in ClimateDataset]
+    if source not in valid_sources:
+        errors.append(
+            f"Invalid source '{source}'. Valid sources: {', '.join(valid_sources)}"
+        )
+    if date_from and date_to and date_from > date_to:
+        errors.append("Start date must be before end date")
+    if source == "nex_gddp":
+        valid_models = ['ACCESS-CM2','ACCESS-ESM1-5','CanESM5','CMCC-ESM2','EC-Earth3','EC-Earth3-Veg-LR','GFDL-ESM4','INM-CM4-8',
+                        'INM-CM5-0','KACE-1-0-G','MIROC6','MPI-ESM1-2-LR','MRI-ESM2-0','NorESM2-LM','NorESM2-MM','TaiESM1']
+        valid_scenarios = ["ssp126", "ssp245", "ssp585"]
+        if model and model not in valid_models:
+            errors.append(
+                f"Invalid model '{model}'. Valid models: {', '.join(valid_models)}"
+            )
+        if scenario and scenario not in valid_scenarios:
+            errors.append(
+                f"Invalid scenario '{scenario}'. Valid scenarios: {', '.join(valid_scenarios)}"
+            )
+    return errors
+
 
 def load_yaml(path: str):
     with open(path, "r") as f:
@@ -79,15 +116,27 @@ def transform_data(
     """Download and transform climate data using SourceData + variable mappings."""
 
     settings = settings or Settings.load()
-    location_coord = location_coord or (0.0, 0.0)
+    if location_coord is None:
+        raise ValueError("location_coord must be provided as (lat, lon)")
+    
+    lat, lon = location_coord
+    coord_errors = validate_coordinates(lat, lon)
+
+    if coord_errors:
+        raise ValueError(" | ".join(coord_errors))
     variables = variables or default_variables()
     date_from = date_from or date.today()
     date_to = date_to or date.today()
 
+    try:
+        dataset = ClimateDataset[source]
+    except KeyError:
+        raise ValueError(f"Unknown source '{source}'")
+
     src = SourceData(
         location_coord=location_coord,
         variables=variables,
-        source=ClimateDataset[source],
+        source=dataset,
         date_from_utc=date_from,
         date_to_utc=date_to,
         settings=settings,
@@ -132,7 +181,32 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    location_coord = (args.lat, args.lon) if args.lon and args.lat else None
+    if args.lat is None or args.lon is None:
+        print("Error: Both --lat and --lon must be provided")
+        sys.exit(1)
+
+    location_coord = (args.lat, args.lon)
+
+    date_from = date.fromisoformat(args.start) if args.start else None
+    date_to = date.fromisoformat(args.end) if args.end else None
+
+    errors = validate_inputs(
+        args.source,
+        args.lat,
+        args.lon,
+        date_from,
+        date_to,
+        args.model,
+        args.scenario,
+    )
+
+    if errors:
+        print("\nInput validation failed:\n")
+        for err in errors:
+            print(f" - {err}")
+        sys.exit(1)
+
+    location_coord = (args.lat, args.lon)
     date_from = date.fromisoformat(args.start) if args.start else None
     date_to = date.fromisoformat(args.end) if args.end else None
 
