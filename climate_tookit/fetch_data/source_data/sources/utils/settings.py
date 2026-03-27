@@ -58,6 +58,10 @@ class SoilVariable(BaseModel):
     soil_moisture: str | None = None
     cation_exchange_capacity: str | None = None
 
+    def get_band(self, var_name: str) -> str | None:
+        """Return the band name for a given soil variable."""
+        return getattr(self, var_name, None)
+
 class Agera5Settings(BaseModel):
     gee_image: str
     cadence: str
