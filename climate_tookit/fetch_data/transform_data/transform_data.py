@@ -99,7 +99,6 @@ def default_variables():
         SoilVariable.ph,
         SoilVariable.sand_content,
         SoilVariable.silt_content,
-        SoilVariable.soil_moisture,
     ]
 
 
@@ -145,9 +144,6 @@ def transform_data(
     )
 
     raw_df = src.download()
-
-    scaling_cfg = load_scaling_config(source, settings)
-    raw_df = apply_scaling(raw_df, scaling_cfg)
 
     mappings = load_variable_mappings().get(source, {})
     if not mappings:
