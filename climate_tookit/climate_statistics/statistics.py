@@ -39,7 +39,7 @@ except ImportError:
     print("Warning: Season analysis module not available")
 
 def get_climate_data(lat: float, lon: float, start_date: str, end_date: str,
-                   source: str) -> pd.DataFrame:
+                     source: str, model: str = None, scenario: str = None) -> pd.DataFrame:
     """
     Fetch daily climate data using preprocessing pipeline.
 
@@ -49,6 +49,8 @@ def get_climate_data(lat: float, lon: float, start_date: str, end_date: str,
         start_date (str): Start date in YYYY-MM-DD format
         end_date (str): End date in YYYY-MM-DD format
         source (str): Data source key
+        model (str): Climate model name (e.g. 'MIROC6'). Only used by NEX-GDDP source.
+        scenario (str): Emissions scenario (e.g. 'ssp585'). Only used by NEX-GDDP source.
 
     Returns:
         pd.DataFrame: DataFrame with columns [date, tmax, tmin, precip]
@@ -77,18 +79,18 @@ def get_climate_data(lat: float, lon: float, start_date: str, end_date: str,
         location_coord=(lat, lon),
         variables=variables,
         date_from=date_from,
-        date_to=date_to
+        date_to=date_to,
+        model=model,
+        scenario=scenario
     )
 
     print(f"Raw columns from preprocessing: {list(df.columns)}")
     print(f"Data shape: {df.shape}")
     print(f"Summary Statistics:\n{df.describe()}")
 
-    # Handle the case where preprocessing returns limited data
     if df.empty or len(df.columns) <= 1:
         raise Exception(f"No usable climate data returned from {source}. Check source configuration.")
 
-    # Map to expected column names with flexible handling
     column_mapping = {
         'max_temperature': 'tmax',
         'min_temperature': 'tmin',
@@ -100,7 +102,6 @@ def get_climate_data(lat: float, lon: float, start_date: str, end_date: str,
 
     precip_columns = ['precipitation', 'precip', 'rainfall', 'rain']
 
-    # Handle precipitation
     precip_found = False
     for col in precip_columns:
         if col in df.columns:
@@ -112,7 +113,6 @@ def get_climate_data(lat: float, lon: float, start_date: str, end_date: str,
         print(f"Warning: No precipitation data found in {source}. Setting default values.")
         df['precip'] = 0.0
 
-    # Handle temperature
     temp_found = {'tmax': False, 'tmin': False}
     for old_col, new_col in column_mapping.items():
         if old_col in df.columns:
@@ -120,14 +120,12 @@ def get_climate_data(lat: float, lon: float, start_date: str, end_date: str,
             temp_found[new_col] = True
 
     if not (temp_found['tmax'] and temp_found['tmin']):
-        # For precipitation-only sources like CHIRPS, use reasonable default temperatures
         if source.lower() == 'chirps' and precip_found:
             print(f"Warning: {source} provides precipitation only. Using default temperature values for ET0 calculation.")
-            df['tmax'] = 25.0  # Default max temperature for tropical location
-            df['tmin'] = 15.0  # Default min temperature
+            df['tmax'] = 25.0
+            df['tmin'] = 15.0
             temp_found = {'tmax': True, 'tmin': True}
         else:
-            # Available columns
             available_cols = [col for col in df.columns if col != 'date']
             raise Exception(f"Temperature data not available from {source}. Available columns: {available_cols}")
 
@@ -326,10 +324,12 @@ def calculate_season_statistics(df: pd.DataFrame, seasons: List[Dict]) -> Dict[s
     }
 
 def analyze_climate_statistics(location_coord: Tuple[float, float],
-                             date_range: Tuple[str, str],
-                             source: str,
-                             gap_days: int = 30,
-                             min_season_days: int = 30) -> Dict[str, Any]:
+                                date_range: Tuple[str, str],
+                                source: str,
+                                gap_days: int = 30,
+                                min_season_days: int = 30,
+                                model: str = None,
+                                scenario: str = None) -> Dict[str, Any]:
     """
     Main function to analyze climate statistics by season using season analysis module.
 
@@ -339,6 +339,10 @@ def analyze_climate_statistics(location_coord: Tuple[float, float],
         source (str): Data source key
         gap_days (int): Consecutive dry days to end season
         min_season_days (int): Minimum season length
+        model (str): Climate model name. Only applicable for NEX-GDDP source.
+                     Defaults to ACCESS-CM2 if not provided.
+        scenario (str): Emissions scenario. Only applicable for NEX-GDDP source.
+                        Defaults to ssp245 if not provided.
 
     Returns:
         Dict[str, Any]: Complete climate statistics analysis by detected seasons
@@ -347,14 +351,13 @@ def analyze_climate_statistics(location_coord: Tuple[float, float],
     start_date, end_date = date_range
 
     try:
-        df = get_climate_data(lat, lon, start_date, end_date,source)
+        df = get_climate_data(lat, lon, start_date, end_date, source,
+                              model=model, scenario=scenario)
 
-        # ET0 for season detection and water balance
         et0_values = [calculate_et0(row['tmin'], row['tmax'], lat, row['date'])
-                     for _, row in df.iterrows()]
+                      for _, row in df.iterrows()]
         df['et0'] = et0_values
 
-        # Daily water balance
         df = calculate_water_balance(df)
 
         if SEASON_ANALYSIS_AVAILABLE:
@@ -362,13 +365,14 @@ def analyze_climate_statistics(location_coord: Tuple[float, float],
         else:
             seasons = detect_seasons(df, gap_days, min_season_days)
 
-        # Calculate comprehensive statistics by season
         statistics = calculate_comprehensive_season_statistics(df, seasons)
 
         result = {
             'location': {'lat': lat, 'lon': lon},
             'date_range': {'start': start_date, 'end': end_date},
             'source': source,
+            'model': model or 'ACCESS-CM2',
+            'scenario': scenario or 'ssp245',
             'analysis_parameters': {
                 'gap_days': gap_days,
                 'min_season_days': min_season_days
@@ -386,7 +390,9 @@ def analyze_climate_statistics(location_coord: Tuple[float, float],
             'error': str(e),
             'location': {'lat': lat, 'lon': lon},
             'date_range': {'start': start_date, 'end': end_date},
-            'source': source
+            'source': source,
+            'model': model or 'ACCESS-CM2',
+            'scenario': scenario or 'ssp245'
         }
 
 def calculate_comprehensive_season_statistics(df: pd.DataFrame, seasons: List[Dict]) -> Dict[str, Any]:
@@ -400,7 +406,6 @@ def calculate_comprehensive_season_statistics(df: pd.DataFrame, seasons: List[Di
     Returns:
         Dict[str, Any]: Comprehensive statistics by season and overall
     """
-    # Overall statistics
     overall_stats = {
         'total_days': len(df),
         'precipitation': {
@@ -439,11 +444,9 @@ def calculate_comprehensive_season_statistics(df: pd.DataFrame, seasons: List[Di
         }
     }
 
-    # Enhanced season statistics with daily water balance analysis
     season_stats = []
 
     for i, season in enumerate(seasons, 1):
-        # Filter data for specific detected season
         season_df = df[
             (df['date'] >= season['onset_date']) &
             (df['date'] <= season['cessation_date'])
@@ -452,7 +455,6 @@ def calculate_comprehensive_season_statistics(df: pd.DataFrame, seasons: List[Di
         if len(season_df) == 0:
             continue
 
-        # Daily water balance season statistics
         daily_water_balance = []
         for _, row in season_df.iterrows():
             daily_wb = {
@@ -465,14 +467,11 @@ def calculate_comprehensive_season_statistics(df: pd.DataFrame, seasons: List[Di
             }
             daily_water_balance.append(daily_wb)
 
-        # Comprehensive season statistics
         season_stat = {
             'season_number': i,
             'onset_date': season['onset_date'].strftime('%Y-%m-%d'),
             'cessation_date': season['cessation_date'].strftime('%Y-%m-%d'),
             'length_days': season['length_days'],
-
-            # All climate variables statistics
             'precipitation': {
                 'total_mm': season_df['precip'].sum(),
                 'mean_daily': season_df['precip'].mean(),
@@ -513,8 +512,6 @@ def calculate_comprehensive_season_statistics(df: pd.DataFrame, seasons: List[Di
                 'cumulative_start': season_df['cumulative_balance'].iloc[0],
                 'cumulative_end': season_df['cumulative_balance'].iloc[-1]
             },
-
-            # Daily water balance for detailed analysis
             'daily_water_balance': daily_water_balance[:10] if len(daily_water_balance) > 10 else daily_water_balance,
             'daily_records_total': len(daily_water_balance)
         }
@@ -626,21 +623,35 @@ def main():
     parser = argparse.ArgumentParser(description='Climate statistics analysis by season')
 
     parser.add_argument('--location', required=True,
-                       help='Location as "lat,lon" (e.g., "-1.286,36.817")')
+                        help='Location as "lat,lon" (e.g., "-1.286,36.817")')
     parser.add_argument('--date-from', required=True,
-                       help='Start date in YYYY-MM-DD format')
+                        help='Start date in YYYY-MM-DD format')
     parser.add_argument('--date-to', required=True,
-                       help='End date in YYYY-MM-DD format')
+                        help='End date in YYYY-MM-DD format')
     parser.add_argument('--source', required=True,
-                       help='Data source key')
+                        help='Data source key')
     parser.add_argument('--gap-days', type=int, default=30,
-                       help='Consecutive dry days to end season (default: 30)')
+                        help='Consecutive dry days to end season (default: 30)')
     parser.add_argument('--min-season-days', type=int, default=30,
-                       help='Minimum season length in days (default: 30)')
+                        help='Minimum season length in days (default: 30)')
     parser.add_argument('--format', choices=['json', 'pandas'], default='json',
-                       help='Output format: json or pandas (default: json)')
+                        help='Output format: json or pandas (default: json)')
     parser.add_argument('--output',
-                       help='Output JSON file path (only for json format)')
+                        help='Output JSON file path (only for json format)')
+    parser.add_argument('--model', default=None,
+                        help=(
+                            'NEX-GDDP climate model (default: ACCESS-CM2). '
+                            'Options: ACCESS-CM2, ACCESS-ESM1-5, CanESM5, CMCC-ESM2, '
+                            'EC-Earth3, EC-Earth3-Veg-LR, GFDL-ESM4, INM-CM4-8, '
+                            'INM-CM5-0, KACE-1-0-G, MIROC6, MPI-ESM1-2-LR, '
+                            'MRI-ESM2-0, NorESM2-LM, NorESM2-MM, TaiESM1'
+                        ))
+    parser.add_argument('--scenario', default=None,
+                        help=(
+                            'Emissions scenario (default: ssp245). '
+                            'Options: historical, ssp126, ssp245, ssp585, '
+                            'SSP1-2.6, SSP2-4.5, SSP5-8.5'
+                        ))
 
     args = parser.parse_args()
 
@@ -656,7 +667,9 @@ def main():
         date_range=(args.date_from, args.date_to),
         source=args.source,
         gap_days=args.gap_days,
-        min_season_days=args.min_season_days
+        min_season_days=args.min_season_days,
+        model=args.model,
+        scenario=args.scenario
     )
 
     if args.format == 'pandas':
@@ -673,5 +686,11 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+# For NEX-GDDP-CMIP6
+# Compare SSP scenarios for the same location/year
+# python -m climate_tookit.climate_statistics.statistics --source nex_gddp --location="-1.286,36.817" --date-from 2012-01-01 --date-to 2012-12-31 --model ACCESS-ESM1-5 --scenario ssp245 --format pandas
 
-# python -m climate_tookit.climate_statistics.statistics --source nasa_power --location="-1.286,36.817" --date-from 2012-01-01 --date-to 2012-12-31 --format pandas
+
+# For other sources
+# # python -m climate_tookit.climate_statistics.statistics --source nasa_power --location="-1.286,36.817" --date-from 2012-01-01 --date-to 2012-12-31 --format pandas
