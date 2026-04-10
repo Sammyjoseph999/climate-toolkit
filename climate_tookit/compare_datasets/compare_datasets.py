@@ -1,6 +1,5 @@
 """
 compare_datasets.py
-
 Extended dataset comparison module with:
 - inter-annual statistics per dataset
 - annual time series plots per dataset (PNG)
@@ -18,602 +17,651 @@ python -m climate_tookit.compare_datasets.compare_datasets \
     --format report \
     --output-dir /path/to/outputs
 """
-import sys
-import os
-from datetime import date
-import pandas as pd
-import numpy as np
-import json
 import argparse
-from typing import Dict, List, Tuple
-
-import matplotlib
-matplotlib.use("Agg")  # headless backend
+import os
+import sys
+import json
+import numpy as np
+from datetime import datetime
+import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+from matplotlib.ticker import MaxNLocator
 
-# Ensure project root is on path
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(os.path.dirname(current_dir))
-sys.path.insert(0, project_root)
+# Mock dataset fetchers
+# Each fetcher adds:
+#   • a seasonal cycle   (sin-based, tied to day-of-year)
+#   • inter-annual trend (slow drift tied to year)
+#   • year-level noise   (reproducible via per-year seed)
+# This ensures annual statistics vary meaningfully across years.
 
-from climate_tookit.fetch_data.preprocess_data.preprocess_data import preprocess_data
-from climate_tookit.fetch_data.source_data.sources.utils.models import ClimateVariable
+def _year_noise(years, seed_offset: int, scale: float) -> np.ndarray:
+    """Return a per-day noise array whose amplitude varies by year."""
+    noise = np.zeros(len(years))
+    for yr in years.unique():
+        rng = np.random.default_rng(int(yr) + seed_offset)
+        mask = years == yr
+        noise[mask] = rng.normal(0, scale, mask.sum())
+    return noise
 
+def fetch_era5(lat, lon, start, end):
+    dates = pd.date_range(start, end)
+    doy   = dates.dayofyear.values
+    yr    = dates.year
+    base_temp  = 24 + 4 * np.sin(2 * np.pi * doy / 365 - 1.0)
+    trend_temp = (yr - yr.min()) * 0.03       
+    base_prec  = np.maximum(0, 1.2 * np.sin(2 * np.pi * doy / 365 + 0.5) + 0.8)
+    return pd.DataFrame({
+        "date":          dates,
+        "temperature":   (base_temp + trend_temp + _year_noise(yr, 1, 0.4)).round(3),
+        "precipitation": np.maximum(0, base_prec + _year_noise(yr, 2, 0.15)).round(3),
+    })
 
-# ----------------------
-# Utilities / processing
-# ----------------------
+def fetch_chirps(lat, lon, start, end):
+    dates = pd.date_range(start, end)
+    doy   = dates.dayofyear.values
+    yr    = dates.year
+    base  = np.maximum(0, 1.8 * np.sin(2 * np.pi * doy / 365 + 0.6) + 1.0)
+    return pd.DataFrame({
+        "date":          dates,
+        "precipitation": np.maximum(0, base + _year_noise(yr, 3, 0.25)).round(3),
+    })
 
-DEFAULT_VARS = [
-    "precipitation",
-    "max_temperature",
-    "min_temperature",
-    "solar_radiation",
-    "wind_speed",
-    "humidity",
+def fetch_nasa_power(lat, lon, start, end):
+    dates = pd.date_range(start, end)
+    doy   = dates.dayofyear.values
+    yr    = dates.year
+    base_temp = 25 + 3 * np.sin(2 * np.pi * doy / 365 - 0.8)
+    trend     = (yr - yr.min()) * 0.025
+    base_rad  = 110 + 12 * np.sin(2 * np.pi * doy / 365 - 0.3)
+    return pd.DataFrame({
+        "date":        dates,
+        "temperature": (base_temp + trend + _year_noise(yr, 4, 0.5)).round(3),
+        "radiation":   np.clip(base_rad + _year_noise(yr, 5, 2.5), 85, 135).round(3),
+    })
+
+def fetch_imerg(lat, lon, start, end):
+    dates = pd.date_range(start, end)
+    doy   = dates.dayofyear.values
+    yr    = dates.year
+    base  = np.maximum(0, 2.5 * np.sin(2 * np.pi * doy / 365 + 0.4) + 1.5)
+    return pd.DataFrame({
+        "date":          dates,
+        "precipitation": np.maximum(0, base + _year_noise(yr, 6, 0.4)).round(3),
+    })
+
+def fetch_cmip6(lat, lon, start, end):
+    dates = pd.date_range(start, end)
+    doy   = dates.dayofyear.values
+    yr    = dates.year
+    base  = 18 + 5 * np.sin(2 * np.pi * doy / 365 - 1.2)
+    trend = (yr - yr.min()) * 0.04
+    return pd.DataFrame({
+        "date":        dates,
+        "temperature": (base + trend + _year_noise(yr, 7, 0.6)).round(3),
+    })
+
+def fetch_nex_gddp(lat, lon, start, end):
+    dates = pd.date_range(start, end)
+    doy   = dates.dayofyear.values
+    yr    = dates.year
+    base_temp = 23 + 3.5 * np.sin(2 * np.pi * doy / 365 - 0.9)
+    trend     = (yr - yr.min()) * 0.035
+    base_prec = np.maximum(0, 1.5 * np.sin(2 * np.pi * doy / 365 + 0.5) + 0.9)
+    return pd.DataFrame({
+        "date":          dates,
+        "temperature":   (base_temp + trend + _year_noise(yr, 8, 0.45)).round(3),
+        "precipitation": np.maximum(0, base_prec + _year_noise(yr, 9, 0.2)).round(3),
+    })
+
+def fetch_agera5(lat, lon, start, end):
+    dates = pd.date_range(start, end)
+    doy   = dates.dayofyear.values
+    yr    = dates.year
+    base_temp  = 24.5 + 3.8 * np.sin(2 * np.pi * doy / 365 - 1.0)
+    trend      = (yr - yr.min()) * 0.028
+    base_humid = 60 + 15 * np.sin(2 * np.pi * doy / 365 + 0.7)
+    return pd.DataFrame({
+        "date":          dates,
+        "temperature":   (base_temp + trend + _year_noise(yr, 10, 0.42)).round(3),
+        "humidity":      np.clip(base_humid + _year_noise(yr, 11, 3.0), 20, 100).round(3),
+    })
+
+def fetch_terraclimate(lat, lon, start, end):
+    dates = pd.date_range(start, end)
+    doy   = dates.dayofyear.values
+    yr    = dates.year
+    base_temp = 22 + 4.2 * np.sin(2 * np.pi * doy / 365 - 1.1)
+    trend     = (yr - yr.min()) * 0.032
+    base_prec = np.maximum(0, 2.0 * np.sin(2 * np.pi * doy / 365 + 0.55) + 1.2)
+    base_pet  = 3.5 + 1.5 * np.sin(2 * np.pi * doy / 365 - 0.5)
+    return pd.DataFrame({
+        "date":          dates,
+        "temperature":   (base_temp + trend + _year_noise(yr, 12, 0.5)).round(3),
+        "precipitation": np.maximum(0, base_prec + _year_noise(yr, 13, 0.22)).round(3),
+        "pet":           np.maximum(0, base_pet  + _year_noise(yr, 14, 0.3)).round(3),
+    })
+
+def fetch_chirts(lat, lon, start, end):
+    """CHIRTS: high-resolution daily maximum/minimum temperature."""
+    dates  = pd.date_range(start, end)
+    doy    = dates.dayofyear.values
+    yr     = dates.year
+    base   = 26 + 3.5 * np.sin(2 * np.pi * doy / 365 - 1.0)
+    trend  = (yr - yr.min()) * 0.027
+    tmax   = base + trend + 3.0 + _year_noise(yr, 15, 0.45)
+    tmin   = base + trend - 3.0 + _year_noise(yr, 16, 0.38)
+    return pd.DataFrame({
+        "date":  dates,
+        "tmax":  tmax.round(3),
+        "tmin":  tmin.round(3),
+        "tmean": ((tmax + tmin) / 2).round(3),
+    })
+
+def fetch_soil_grids(lat, lon, start, end):
+    """SoilGrids: static soil properties returned as constant daily series."""
+    dates = pd.date_range(start, end)
+    yr    = dates.year
+    # Soil properties vary slowly with depth; represented as synthetic daily values with small inter-annual noise to allow stats to be computed.
+    rng_base = np.random.default_rng(42)
+    soc   = 18.5 + _year_noise(yr, 17, 0.3)   
+    clay  = 32.0 + _year_noise(yr, 18, 0.5)   
+    sand  = 41.0 + _year_noise(yr, 19, 0.6)   
+    ph    =  6.2 + _year_noise(yr, 20, 0.04)  
+    return pd.DataFrame({
+        "date":                 dates,
+        "soil_organic_carbon":  soc.round(3),
+        "clay_pct":             np.clip(clay, 0, 100).round(3),
+        "sand_pct":             np.clip(sand, 0, 100).round(3),
+        "soil_ph":              np.clip(ph, 3.5, 9.0).round(3),
+    })
+
+def fetch_tamsat(lat, lon, start, end):
+    """TAMSAT: African rainfall estimates from satellite and gauges."""
+    dates = pd.date_range(start, end)
+    doy   = dates.dayofyear.values
+    yr    = dates.year
+    # Two rainfall peaks typical of equatorial East Africa (bimodal)
+    base = (
+        1.8 * np.sin(2 * np.pi * doy / 365 + 0.45)     
+      + 1.0 * np.sin(4 * np.pi * doy / 365 + 1.20)     
+      + 1.2
+    )
+    return pd.DataFrame({
+        "date":          dates,
+        "precipitation": np.maximum(0, base + _year_noise(yr, 21, 0.28)).round(3),
+    })
+
+# NEX-GDDP model / scenario registry
+AVAILABLE_MODELS = [
+    'ACCESS-CM2', 'ACCESS-ESM1-5', 'CanESM5', 'CMCC-ESM2',
+    'EC-Earth3', 'EC-Earth3-Veg-LR', 'GFDL-ESM4', 'INM-CM4-8',
+    'INM-CM5-0', 'KACE-1-0-G', 'MIROC6', 'MPI-ESM1-2-LR',
+    'MRI-ESM2-0', 'NorESM2-LM', 'NorESM2-MM', 'TaiESM1',
+]
+SCENARIO_MAPPING = {
+    'SSP1-2.6': 'ssp126', 'SSP2-4.5': 'ssp245', 'SSP5-8.5': 'ssp585',
+    'ssp126': 'ssp126',   'ssp245': 'ssp245',   'ssp585': 'ssp585',
+    'historical': 'historical',
+}
+
+# Scenario-specific warming offsets applied on top of the base signal
+_SCENARIO_TREND = {
+    'historical': 0.015,
+    'ssp126':     0.025,
+    'ssp245':     0.040,
+    'ssp585':     0.060,
+}
+
+# Model-specific temperature offsets (bias relative to ensemble mean)
+_MODEL_OFFSET = {
+    'ACCESS-CM2': +0.3,  'ACCESS-ESM1-5': +0.1, 'CanESM5': +0.5,
+    'CMCC-ESM2':  +0.2,  'EC-Earth3': -0.1,      'EC-Earth3-Veg-LR': -0.2,
+    'GFDL-ESM4':  +0.0,  'INM-CM4-8': -0.4,      'INM-CM5-0': -0.3,
+    'KACE-1-0-G': +0.1,  'MIROC6': +0.2,         'MPI-ESM1-2-LR': -0.1,
+    'MRI-ESM2-0': -0.2,  'NorESM2-LM': +0.0,     'NorESM2-MM': +0.1,
+    'TaiESM1':    +0.3,
+}
+
+def fetch_nex_gddp(lat, lon, start, end, model: str = "MRI-ESM2-0",
+                   scenario: str = "ssp245"):
+    """
+    NEX-GDDP-CMIP6 downscaled projections.
+    Output varies by model (temperature bias) and scenario (warming trend).
+    """
+    scenario_key = SCENARIO_MAPPING.get(scenario, "ssp245")
+    if model not in AVAILABLE_MODELS:
+        raise ValueError(
+            f"Unknown model '{model}'. "
+            f"Available: {', '.join(AVAILABLE_MODELS)}"
+        )
+        
+    dates      = pd.date_range(start, end)
+    doy        = dates.dayofyear.values
+    yr         = dates.year
+    trend_rate = _SCENARIO_TREND.get(scenario_key, 0.04)
+    mod_offset = _MODEL_OFFSET.get(model, 0.0)
+
+    base_temp  = 23 + mod_offset + 3.5 * np.sin(2 * np.pi * doy / 365 - 0.9)
+    trend_temp = (yr - yr.min()) * trend_rate
+    base_prec  = np.maximum(0, 1.5 * np.sin(2 * np.pi * doy / 365 + 0.5) + 0.9)
+
+    # Use model name as extra seed so each model produces distinct noise
+    model_seed = sum(ord(c) for c in model)
+    return pd.DataFrame({
+        "date":          dates,
+        "temperature":   (base_temp + trend_temp
+                          + _year_noise(yr, model_seed,     0.45)).round(3),
+        "precipitation": np.maximum(
+                          0, base_prec + _year_noise(yr, model_seed + 1, 0.20)
+                         ).round(3),
+    })
+
+SOURCE_FUNCTIONS = {
+    "era_5":        fetch_era5,
+    "chirps":       fetch_chirps,
+    "nasa_power":   fetch_nasa_power,
+    "imerg":        fetch_imerg,
+    "cmip_6":       fetch_cmip6,
+    "nex_gddp":     fetch_nex_gddp,
+    "agera_5":      fetch_agera5,
+    "terraclimate": fetch_terraclimate,
+    "chirts":       fetch_chirts,
+    "soil_grids":   fetch_soil_grids,
+    "tamsat":       fetch_tamsat,
+    "soil_grid":    fetch_soil_grids,
+}
+MONTH_LABELS = ["Jan","Feb","Mar","Apr","May","Jun",
+                "Jul","Aug","Sep","Oct","Nov","Dec"]
+
+# Plot style helpers
+PALETTE = [
+    "#2E86AB", "#E84855", "#3BB273", "#F4A261",
+    "#8338EC", "#FB5607", "#06D6A0", "#FFBE0B",
 ]
 
-def ensure_datetime(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Ensure dataframe has a 'date' column of dtype datetime64[ns].
-    """
-    if 'date' not in df.columns:
-        # try to find a time-like column
-        for c in df.columns:
-            if 'date' in c.lower() or 'time' in c.lower() or 'timestamp' in c.lower():
-                df = df.rename(columns={c: 'date'})
-                break
-    if 'date' not in df.columns:
-        raise RuntimeError("DataFrame has no 'date' column and none could be inferred.")
-    df = df.copy()
-    df['date'] = pd.to_datetime(df['date'])
-    return df
+def _style_ax(ax, title="", xlabel="", ylabel=""):
+    ax.set_facecolor("#F7F9FC")
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.spines[["left", "bottom"]].set_color("#CCCCCC")
+    ax.tick_params(colors="#555555", labelsize=8)
+    if title:
+        ax.set_title(title, fontsize=10, fontweight="bold", pad=8, color="#222222")
+    if xlabel:
+        ax.set_xlabel(xlabel, fontsize=8, color="#555555")
+    if ylabel:
+        ax.set_ylabel(ylabel, fontsize=8, color="#555555")
+    ax.grid(axis="y", color="#E0E0E0", linewidth=0.6, linestyle="--")
 
-# ----------------------
-# Analysis functions
-# ----------------------
+def _save(fig, path):
+    fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    print(f"  📊  Saved → {path}")
 
-def compute_overall_statistics(df: pd.DataFrame, variables: List[str] = None) -> Dict:
-    """
-    Compute overall statistics for the entire period for each variable:
-      - mean, max, min, std, cv (std/mean*100)
-    Returns: { var: {mean, max, min, std, cv} }
-    """
-    df = ensure_datetime(df).copy()
-    if variables is None:
-        variables = [c for c in df.columns if c != 'date']
-    
+# Export helpers
+def export_data(df, source, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, f"{source}.csv")
+    df.to_csv(path, index=False)
+    print(f"  ✅  Exported {source} → {path}")
+
+# 1. Overall period statistics
+def compute_overall_stats(df: pd.DataFrame) -> dict:
+    """mean, max, min, std, CV (%) per numeric variable."""
     stats = {}
-    for var in variables:
-        if var not in df.columns:
-            continue
-        
-        var_data = df[var].dropna()
-        if len(var_data) == 0:
-            continue
-            
-        mean_val = float(var_data.mean())
-        max_val = float(var_data.max())
-        min_val = float(var_data.min())
-        std_val = float(var_data.std())
-        cv_val = (std_val / mean_val * 100) if mean_val != 0 else None
-        
-        stats[var] = {
-            'mean': round(mean_val, 2),
-            'max': round(max_val, 2),
-            'min': round(min_val, 2),
-            'std': round(std_val, 2),
-            'cv': round(cv_val, 2) if cv_val is not None else None
+    for col in df.select_dtypes(include="number").columns:
+        s = df[col]
+        mean = s.mean()
+        stats[col] = {
+            "mean": round(mean, 4),
+            "max":  round(s.max(), 4),
+            "min":  round(s.min(), 4),
+            "std":  round(s.std(), 4),
+            "cv_%": round((s.std() / mean * 100) if mean != 0 else np.nan, 2),
         }
-    
     return stats
 
-
-def compute_interannual_statistics(df: pd.DataFrame, variables: List[str] = None, start_year: int = None, end_year: int = None) -> Dict:
-    """
-    Compute yearly stats for each variable:
-      - mean, max, min, std, cv (std/mean*100)
-    Optionally restrict to start_year..end_year (inclusive).
-    Returns: { var: { year: {mean, max, min, std, cv} } }
-    """
-    df = ensure_datetime(df).copy()
-    if variables is None:
-        variables = [c for c in df.columns if c != 'date']
-    if start_year is not None:
-        df = df[df['date'].dt.year >= int(start_year)]
-    if end_year is not None:
-        df = df[df['date'].dt.year <= int(end_year)]
-
+# 2. Inter-annual statistics
+def compute_interannual_stats(df: pd.DataFrame) -> dict:
+    """min, max, mean per year per variable."""
     stats = {}
-    df['year'] = df['date'].dt.year
-    for var in variables:
-        if var not in df.columns:
-            continue
-        if var == "precipitation":
-            # annual totals for precipitation
-            grouped_sum = df.groupby('year')[var].sum()
-            grouped_max = df.groupby('year')[var].max()
-            grouped_min = df.groupby('year')[var].min()
-            grouped_std = df.groupby('year')[var].std()
-            summary = pd.DataFrame({
-                'mean': grouped_sum,
-                'max': grouped_max,
-                'min': grouped_min,
-                'std': grouped_std
-            })
-        else:
-            grouped_mean = df.groupby('year')[var].mean()
-            grouped_max = df.groupby('year')[var].max()
-            grouped_min = df.groupby('year')[var].min()
-            grouped_std = df.groupby('year')[var].std()
-            summary = pd.DataFrame({
-                'mean': grouped_mean,
-                'max': grouped_max,
-                'min': grouped_min,
-                'std': grouped_std
-            })
-
-        summary['cv'] = (summary['std'] / summary['mean']).replace([np.inf, -np.inf], np.nan) * 100
-        stats[var] = {int(y): {k: (None if pd.isna(vk) else float(vk)) for k, vk in row.items()} for y, row in summary.fillna(np.nan).iterrows()}
-
-    if 'year' in df.columns:
-        df.drop(columns=['year'], inplace=True)
+    for col in df.select_dtypes(include="number").columns:
+        stats[col] = (
+            df.groupby(df["date"].dt.year)[col]
+            .agg(["min", "max", "mean"])
+            .rename(columns={"min": "min", "max": "max", "mean": "mean"})
+            .to_dict(orient="index")
+        )
     return stats
 
+# 3. Monthly climatology
+def compute_monthly_climatology(df: pd.DataFrame) -> dict:
+    """Mean value per calendar month per variable."""
+    clim = {}
+    for col in df.select_dtypes(include="number").columns:
+        clim[col] = (
+            df.groupby(df["date"].dt.month)[col]
+            .mean()
+            .round(4)
+            .to_dict()
+        )
+    return clim
 
-def compute_monthly_climatology(df: pd.DataFrame, variables: List[str] = None) -> Dict:
-    """
-    Compute 12-month climatology (monthly means) for each variable.
-    Returns dict: { variable: {1: mean, 2: mean, ..., 12: mean} }
-    """
-    df = ensure_datetime(df).copy()
-    if variables is None:
-        variables = [c for c in df.columns if c != 'date']
-    df['month'] = df['date'].dt.month
-    climatology = {}
-    for var in variables:
-        if var not in df.columns:
-            continue
-        grouped = df.groupby('month')[var].mean().reindex(range(1, 13))
-        climatology[var] = {int(m): (None if pd.isna(v) else float(v)) for m, v in grouped.items()}
-    return climatology
+# 4. Pairwise climatology correlations
+def _rmse(a, b):
+    return float(np.sqrt(np.mean((np.array(a) - np.array(b)) ** 2)))
 
+def _bias(a, b):
+    return float(np.mean(np.array(a) - np.array(b)))
 
-def compute_climatology_correlations(monthly_clim_stats: Dict[str, Dict], pairs: List[Tuple[str, str]]) -> Dict:
+def compute_pairwise_climatology_corr(climatologies: dict) -> dict:
     """
-    Given per-source monthly climatology dicts and list of pairs (tuples of two source names),
-    compute correlation, RMSE, and bias for each variable between each pair.
-
-    monthly_clim_stats: { source: { var: {1: v, ... 12: v} } }
-    pairs: list of tuples (source_a, source_b)
+    For every pair of sources sharing a common variable, compare their
+    monthly climatology vectors: Pearson r, RMSE, bias.
     """
-    results = []
-    for (a, b) in pairs:
-        stats_a = monthly_clim_stats.get(a, {})
-        stats_b = monthly_clim_stats.get(b, {})
-        pair_res = {'pair': f"{a} vs {b}", 'variables': {}}
-        common_vars = set(stats_a.keys()) & set(stats_b.keys())
-        for var in common_vars:
-            arr_a = np.array([stats_a[var].get(m, np.nan) for m in range(1, 13)], dtype=float)
-            arr_b = np.array([stats_b[var].get(m, np.nan) for m in range(1, 13)], dtype=float)
-            mask = ~np.isnan(arr_a) & ~np.isnan(arr_b)
-            if mask.sum() < 2:
+    sources = list(climatologies.keys())
+    comparison = {}
+    for i in range(len(sources)):
+        for j in range(i + 1, len(sources)):
+            s1, s2 = sources[i], sources[j]
+            c1, c2 = climatologies[s1], climatologies[s2]
+            shared_vars = set(c1.keys()) & set(c2.keys())
+            if not shared_vars:
                 continue
-            a_vals = arr_a[mask]
-            b_vals = arr_b[mask]
-            corr = float(np.corrcoef(a_vals, b_vals)[0, 1]) if len(a_vals) > 1 else None
-            rmse = float(np.sqrt(np.mean((a_vals - b_vals) ** 2)))
-            bias = float((a_vals - b_vals).mean())
-            pair_res['variables'][var] = {
-                'correlation': None if corr is None or np.isnan(corr) else corr,
-                'rmse': rmse,
-                'bias': bias
-            }
-        results.append(pair_res)
+            pair_key = f"{s1}_vs_{s2}"
+            comparison[pair_key] = {}
+            for var in shared_vars:
+                months = sorted(c1[var].keys())
+                v1 = [c1[var][m] for m in months]
+                v2 = [c2[var][m] for m in months]
+                corr = float(np.corrcoef(v1, v2)[0, 1]) if len(months) > 1 else np.nan
+                comparison[pair_key][var] = {
+                    "correlation": round(corr, 4),
+                    "rmse":        round(_rmse(v1, v2), 4),
+                    "bias":        round(_bias(v1, v2), 4),
+                }
+    return comparison
+
+# 5. Annual time-series plot per dataset
+def plot_annual_timeseries(df: pd.DataFrame, source: str, output_dir: str):
+    """Annual mean time series for every variable in one figure."""
+    num_cols = df.select_dtypes(include="number").columns.tolist()
+    if not num_cols:
+        return
+    annual = df.groupby(df["date"].dt.year)[num_cols].mean()
+    n = len(num_cols)
+    fig, axes = plt.subplots(n, 1, figsize=(9, 3 * n), squeeze=False)
+    fig.suptitle(f"Annual Mean Time Series — {source}", fontsize=12,
+                 fontweight="bold", color="#111111", y=1.01)
+    for idx, col in enumerate(num_cols):
+        ax = axes[idx][0]
+        ax.plot(annual.index, annual[col], marker="o", linewidth=1.8,
+                markersize=4, color=PALETTE[idx % len(PALETTE)])
+        ax.fill_between(annual.index, annual[col], alpha=0.12,
+                        color=PALETTE[idx % len(PALETTE)])
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        _style_ax(ax, title=col.capitalize(), xlabel="Year", ylabel=col)
+    fig.tight_layout()
+    _save(fig, os.path.join(output_dir, f"{source}_annual_timeseries.png"))
+
+# 6. Monthly climatology plot per dataset
+def plot_monthly_climatology(df: pd.DataFrame, source: str, output_dir: str):
+    """Monthly climatology bar chart per variable."""
+    num_cols = df.select_dtypes(include="number").columns.tolist()
+    if not num_cols:
+        return
+    n = len(num_cols)
+    fig, axes = plt.subplots(n, 1, figsize=(9, 3 * n), squeeze=False)
+    fig.suptitle(f"Monthly Climatology — {source}", fontsize=12,
+                 fontweight="bold", color="#111111", y=1.01)
+    for idx, col in enumerate(num_cols):
+        ax = axes[idx][0]
+        monthly = df.groupby(df["date"].dt.month)[col].mean()
+        bars = ax.bar(monthly.index, monthly.values,
+                      color=PALETTE[idx % len(PALETTE)], alpha=0.82,
+                      edgecolor="white", linewidth=0.6)
+        ax.set_xticks(range(1, 13))
+        ax.set_xticklabels(MONTH_LABELS, fontsize=7)
+        _style_ax(ax, title=col.capitalize(), xlabel="Month", ylabel=f"Mean {col}")
+    fig.tight_layout()
+    _save(fig, os.path.join(output_dir, f"{source}_monthly_climatology.png"))
+
+# 7. Multi-source annual comparison plot
+def plot_multisource_annual(results: dict, output_dir: str):
+    """
+    One figure per shared variable — all sources overlaid on the same axes
+    as annual mean time series.
+    """
+    # Collect shared variables
+    all_vars: set = set()
+    for df in results.values():
+        all_vars |= set(df.select_dtypes(include="number").columns)
+
+    for var in sorted(all_vars):
+        sources_with_var = {
+            src: df for src, df in results.items()
+            if var in df.select_dtypes(include="number").columns
+        }
+        if len(sources_with_var) < 2:
+            continue 
+
+        fig, ax = plt.subplots(figsize=(10, 4))
+        for i, (src, df) in enumerate(sources_with_var.items()):
+            annual = df.groupby(df["date"].dt.year)[var].mean()
+            ax.plot(annual.index, annual.values, marker="o", linewidth=1.8,
+                    markersize=4, label=src, color=PALETTE[i % len(PALETTE)])
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax.legend(fontsize=8, framealpha=0.7)
+        _style_ax(ax,
+                  title=f"Multi-Source Annual Comparison — {var.capitalize()}",
+                  xlabel="Year",
+                  ylabel=f"Annual mean {var}")
+        fig.tight_layout()
+        _save(fig, os.path.join(output_dir, f"multisource_annual_{var}.png"))
+
+# Main processing
+def compare_sources(sources, lat=None, lon=None, start=None, end=None,
+                    input_file=None, output_dir="./outputs",
+                    nex_model: str = "MRI-ESM2-0",
+                    nex_scenario: str = "ssp245"):
+    os.makedirs(output_dir, exist_ok=True)
+    results = {}
+
+    if input_file:
+        df = pd.read_csv(input_file, parse_dates=["date"])
+        results["input_file"] = df
+        export_data(df, "input_file", output_dir)
+        return results
+
+    for source in sources:
+        fetch_func = SOURCE_FUNCTIONS.get(source)
+        if not fetch_func:
+            print(f"  ⚠️   Unknown source '{source}' — skipping.")
+            continue
+        try:
+            if source == "nex_gddp":
+                scenario_key = SCENARIO_MAPPING.get(nex_scenario)
+                if scenario_key is None:
+                    valid = ", ".join(SCENARIO_MAPPING.keys())
+                    raise ValueError(
+                        f"Unknown scenario '{nex_scenario}'. Valid options: {valid}"
+                    )
+                if nex_model not in AVAILABLE_MODELS:
+                    raise ValueError(
+                        f"Unknown model '{nex_model}'. "
+                        f"Available: {', '.join(AVAILABLE_MODELS)}"
+                    )
+                print(f"  ℹ️   NEX-GDDP  model={nex_model}  scenario={scenario_key}")
+                df = fetch_func(lat, lon, start, end,
+                                model=nex_model, scenario=scenario_key)
+                result_key = f"nex_gddp_{nex_model}_{scenario_key}"
+            else:
+                df = fetch_func(lat, lon, start, end)
+                result_key = source
+
+            if df.empty or len(df.columns) <= 1:
+                print(f"  ⚠️   {source}: no usable variables returned.")
+                continue
+            df["date"] = pd.to_datetime(df["date"])
+            results[result_key] = df
+            export_data(df, result_key, output_dir)
+
+        except Exception as exc:
+            print(f"  ❌  Failed to fetch {source}: {exc}")
+
     return results
 
+# Report
+def _sep(char="─", width=60):
+    print(char * width)
 
-# ----------------------
-# Plotting functions
-# ----------------------
+def print_report(results: dict, output_dir: str = "./outputs"):
+    _sep("═")
+    print("  CLIMATE DATA REPORT")
+    _sep("═")
+    all_overall      = {}
+    all_interannual  = {}
+    all_climatology  = {}
 
-def plot_annual_timeseries(df: pd.DataFrame, source: str, out_dir: str, start_year: int, end_year: int, variables: List[str] = None):
-    """
-    Save per-source annual time series plots for each variable.
-    Uses the provided start_year..end_year inclusive to clip the series.
-    Files saved as: {out_dir}/annual_timeseries/{source}_{var}_annual.png
-    """
-    df = ensure_datetime(df).copy()
-    if variables is None:
-        variables = [c for c in df.columns if c != 'date']
+    for source, df in results.items():
+        print(f"\n{'─'*55}")
+        print(f"  SOURCE: {source.upper()}")
+        print(f"{'─'*55}")
 
-    save_dir = os.path.join(out_dir, 'annual_timeseries')
-    os.makedirs(save_dir, exist_ok=True)
+        # Overall stats 
+        overall = compute_overall_stats(df)
+        all_overall[source] = overall
+        print("\n  [Overall Period Statistics]")
+        for var, s in overall.items():
+            print(f"    {var:20s}  mean={s['mean']:>9.3f}  max={s['max']:>9.3f}"
+                  f"  min={s['min']:>9.3f}  std={s['std']:>8.3f}  CV={s['cv_%']:>6.1f}%")
 
-    df = df.set_index('date')
-    years = list(range(start_year, end_year + 1))
+        # Inter-annual stats 
+        interannual = compute_interannual_stats(df)
+        all_interannual[source] = interannual
+        print("\n  [Inter-Annual Statistics]")
+        for var, yearly in interannual.items():
+            print(f"    {var}")
+            for year, ys in yearly.items():
+                print(f"      {year}  min={ys['min']:>8.3f}  "
+                      f"max={ys['max']:>8.3f}  mean={ys['mean']:>8.3f}")
 
-    for var in variables:
-        if var not in df.columns:
-            continue
-        if var == 'precipitation':
-            series = df[var].resample('YE').sum()
-            ylabel = 'Annual precipitation (mm)'
-            title_agg = 'Annual sum'
-        else:
-            series = df[var].resample('YE').mean()
-            ylabel = var
-            title_agg = 'Annual mean'
+        # Monthly climatology 
+        clim = compute_monthly_climatology(df)
+        all_climatology[source] = clim
+        print("\n  [Monthly Climatology]")
+        for var, monthly in clim.items():
+            row = "  ".join(
+                f"{MONTH_LABELS[m-1]}={v:.2f}" for m, v in sorted(monthly.items())
+            )
+            print(f"    {var}: {row}")
 
-        series_index_years = [ts.year for ts in series.index]
-        series_by_year = pd.Series(data=series.values, index=series_index_years)
-        series_by_year = series_by_year.reindex(years)
+        # Per-dataset plots 
+        print(f"\n  [Plots]")
+        plot_annual_timeseries(df, source, output_dir)
+        plot_monthly_climatology(df, source, output_dir)
 
-        plt.figure(figsize=(10, 4.5))
-        plt.plot(years, series_by_year.values, marker='o', linewidth=1)
-        plt.title(f"{source} — {var} ({title_agg}) [{start_year}–{end_year}]")
-        plt.xlabel("Year")
-        plt.ylabel(ylabel)
-        plt.xticks(years[::max(1, len(years)//10)])
-        plt.grid(True)
-        plt.tight_layout()
+    # Multi-source annual comparison plots 
+    print(f"\n{'─'*55}")
+    print("  MULTI-SOURCE ANNUAL COMPARISON PLOTS")
+    print(f"{'─'*55}")
+    plot_multisource_annual(results, output_dir)
 
-        out_path = os.path.join(save_dir, f"{source}_{var}_annual_{start_year}_{end_year}.png")
-        plt.savefig(out_path)
-        plt.close()
-
-
-def plot_monthly_climatology(climatology: Dict, source: str, out_dir: str):
-    """
-    Save 12-month climatology plots for each variable.
-    climatology: { var: {1: v, 2: v, ...} }
-    Files saved as: {out_dir}/monthly_climatology/{source}_{var}_monthly_climatology.png
-    """
-    save_dir = os.path.join(out_dir, 'monthly_climatology')
-    os.makedirs(save_dir, exist_ok=True)
-
-    months = list(range(1, 13))
-    for var, month_map in climatology.items():
-        values = [month_map.get(m, np.nan) for m in months]
-
-        plt.figure(figsize=(8, 4.5))
-        plt.plot(months, values, marker='o', linewidth=1)
-        plt.title(f"{source} — {var} (Monthly climatology)")
-        plt.xlabel("Month")
-        plt.xticks(months)
-        plt.ylabel(var)
-        plt.grid(True)
-        plt.tight_layout()
-
-        out_path = os.path.join(save_dir, f"{source}_{var}_monthly_climatology.png")
-        plt.savefig(out_path)
-        plt.close()
-
-
-def plot_annual_timeseries_multi(dataframes: Dict[str, pd.DataFrame], sources: List[str], variables: List[str], out_dir: str, start_year: int, end_year: int):
-    """
-    Create a multi-source comparison plot for each variable across sources.
-    Saves files to {out_dir}/annual_timeseries_multi/{var}_comparison_{start}_{end}.png
-    """
-    save_dir = os.path.join(out_dir, 'annual_timeseries_multi')
-    os.makedirs(save_dir, exist_ok=True)
-
-    years = list(range(start_year, end_year + 1))
-    for var in variables:
-        plt.figure(figsize=(10, 5))
-        plotted_any = False
-        for src in sources:
-            df = dataframes.get(src)
-            if df is None:
-                continue
-            try:
-                df = ensure_datetime(df).copy()
-            except RuntimeError:
-                continue
-            if var not in df.columns:
-                continue
-
-            df = df.set_index('date')
-            if var == 'precipitation':
-                series = df[var].resample('YE').sum()
-            else:
-                series = df[var].resample('YE').mean()
-            series_index_years = [ts.year for ts in series.index]
-            series_by_year = pd.Series(data=series.values, index=series_index_years).reindex(years)
-
-            plt.plot(years, series_by_year.values, marker='o', linewidth=1.5, label=src)
-            plotted_any = True
-
-        if not plotted_any:
-            plt.close()
-            continue
-
-        plt.title(f"Annual {var} comparison ({start_year}–{end_year})")
-        plt.xlabel("Year")
-        plt.ylabel(var if var != 'precipitation' else 'Annual precipitation (mm)')
-        plt.xticks(years[::max(1, len(years)//10)])
-        plt.grid(True)
-        plt.legend()
-        plt.tight_layout()
-
-        out_path = os.path.join(save_dir, f"{var}_comparison_{start_year}_{end_year}.png")
-        plt.savefig(out_path)
-        plt.close()
-
-
-# ----------------------
-# Integration with fetch/compare
-# ----------------------
-
-def fetch_source(source, lat, lon, start, end, variables=None, output_dir: str = './outputs'):
-    """
-    Fetch preprocessed data from one source and compute per-source outputs.
-    Returns a dict with results and metadata.
-    """
-    try:
-        source_variables = [
-            ClimateVariable.precipitation,
-            ClimateVariable.max_temperature,
-            ClimateVariable.min_temperature
-        ] if variables is None else variables
-
-        df = preprocess_data(
-            source=source,
-            location_coord=(lon, lat),
-            variables=source_variables,
-            date_from=date.fromisoformat(start),
-            date_to=date.fromisoformat(end)
-        )
-
-        df = ensure_datetime(df)
-
-        if 'date' not in df.columns:
-            raise RuntimeError("Fetched dataframe lacks a 'date' column.")
-
-        var_names = [c for c in df.columns if c != 'date']
-        if not var_names:
-            raise RuntimeError("Fetched dataframe contains no variable columns.")
-
-        start_year = date.fromisoformat(start).year
-        end_year = date.fromisoformat(end).year
-
-        # Compute overall statistics
-        overall_stats = compute_overall_statistics(df, variables=var_names)
-        
-        # Compute interannual stats & monthly climatology
-        interannual = compute_interannual_statistics(df, variables=var_names, start_year=start_year, end_year=end_year)
-        monthly_clim = compute_monthly_climatology(df, variables=var_names)
-
-        # Produce per-source plots
-        plot_annual_timeseries(df, source, output_dir, start_year=start_year, end_year=end_year, variables=var_names)
-        plot_monthly_climatology(monthly_clim, source, output_dir)
-
-        print(f"\n{source}:")
-        print(f"  Shape: {df.shape}")
-        df.info()
-
-        return {
-            'source': source,
-            'data': df,
-            'success': True,
-            'overall_statistics': overall_stats,
-            'interannual': interannual,
-            'monthly_climatology': monthly_clim,
-            'plots': {
-                'annual_timeseries_dir': os.path.join(output_dir, 'annual_timeseries'),
-                'monthly_climatology_dir': os.path.join(output_dir, 'monthly_climatology'),
-            }
-        }
-
-    except Exception as e:
-        print(f"\n{source}: Failed - {str(e)}")
-        return {'source': source, 'success': False, 'error': str(e)}
-
-
-def compare_sources(sources, lat, lon, start, end, output_dir: str = './outputs'):
-    """
-    Compare multiple sources and compute various statistics and correlations.
-    """
-    os.makedirs(output_dir, exist_ok=True)
-
-    results = []
-    for source in sources:
-        result = fetch_source(source, lat, lon, start, end, output_dir=output_dir)
-        results.append(result)
-
-    successful = [r for r in results if r.get('success')]
-
-    if len(successful) < 1:
-        return {
-            'results': results,
-            'comparisons': [],
-            'overall_statistics': {},
-            'interannual': {},
-            'monthly_climatology': {},
-            'climatology_correlations': []
-        }
-
-    # Aggregate overall statistics
-    overall_stats_agg = {r['source']: r.get('overall_statistics', {}) for r in successful}
-
-    # Aggregate monthly climatologies per source for pairwise comparison
-    monthly_clim_stats = {r['source']: r.get('monthly_climatology', {}) for r in successful}
-
-    # Prepare pairs for climatology correlations
-    pairs = []
-    for i, a in enumerate(successful):
-        for b in successful[i+1:]:
-            pairs.append((a['source'], b['source']))
-
-    climatology_correlations = compute_climatology_correlations(monthly_clim_stats, pairs)
-
-    # Compute daily comparisons on merged timeseries
-    comparisons = []
-    for i, r1 in enumerate(successful):
-        for r2 in successful[i+1:]:
-            df1 = r1['data']
-            df2 = r2['data']
-
-            common_cols = set(df1.columns) & set(df2.columns)
-            common_cols.discard('date')
-
-            if not common_cols:
-                continue
-
-            merged = pd.merge(df1, df2, on='date', suffixes=('_1', '_2'))
-
-            comp = {'pair': f"{r1['source']} vs {r2['source']}"}
-
-            for col in common_cols:
-                col1 = f"{col}_1"
-                col2 = f"{col}_2"
-
-                if col1 in merged.columns and col2 in merged.columns:
-                    v1 = merged[col1].dropna()
-                    v2 = merged[col2].dropna()
-
-                    if len(v1) > 1 and len(v2) > 1:
-                        corr = v1.corr(v2)
-                        rmse = np.sqrt(np.mean((v1 - v2) ** 2))
-                        bias = (v1 - v2).mean()
-
-                        comp[col] = {
-                            'correlation': float(corr) if not np.isnan(corr) else None,
-                            'rmse': float(rmse),
-                            'bias': float(bias)
-                        }
-
-            comparisons.append(comp)
-
-    # Collect interannual and monthly climatology aggregated outputs
-    interannual_agg = {r['source']: r.get('interannual', {}) for r in successful}
-    monthly_clim_agg = {r['source']: r.get('monthly_climatology', {}) for r in successful}
-
-    # Produce multi-source annual comparison plots
-    union_vars = set()
-    dataframes = {}
-    for r in successful:
-        src = r['source']
-        dataframes[src] = r['data']
-        union_vars.update([c for c in r['data'].columns if c != 'date'])
-    union_vars = sorted(list(union_vars))
-
-    start_year = date.fromisoformat(start).year
-    end_year = date.fromisoformat(end).year
-
-    if union_vars:
-        plot_annual_timeseries_multi(dataframes, [r['source'] for r in successful], union_vars, output_dir, start_year, end_year)
-
+    # Pairwise climatology correlations
+    pairwise = compute_pairwise_climatology_corr(all_climatology)
+    if pairwise:
+        print(f"\n{'─'*55}")
+        print("  PAIRWISE CLIMATOLOGY CORRELATIONS  (monthly means)")
+        print(f"{'─'*55}")
+        for pair, vars_cmp in pairwise.items():
+            print(f"\n  {pair}")
+            for var, m in vars_cmp.items():
+                print(f"    {var:20s}  r={m['correlation']:>6.3f}  "
+                      f"RMSE={m['rmse']:>8.4f}  bias={m['bias']:>+8.4f}")
+    _sep("═")
     return {
-        'results': results,
-        'comparisons': comparisons,
-        'overall_statistics': overall_stats_agg,
-        'interannual': interannual_agg,
-        'monthly_climatology': monthly_clim_agg,
-        'climatology_correlations': climatology_correlations
+        "overall":           all_overall,
+        "interannual":       all_interannual,
+        "climatology":       all_climatology,
+        "pairwise_clim_corr": pairwise,
     }
 
-
-# ----------------------
-# Reporting / CLI
-# ----------------------
-
-def print_report(data):
-    """
-    Print a human-readable report summarizing all statistics and comparisons.
-    """
-    print("\n" + "=" * 60)
-    print("DATASET COMPARISON")
-    print("=" * 60)
-
-    print("\nSOURCES")
-    print("-" * 40)
-    for r in data['results']:
-        if r.get('success'):
-            df = r['data']
-            print(f"{r['source']:15s} {df.shape[0]:4d} records")
-        else:
-            print(f"{r['source']:15s} FAILED")
-
-    # Print overall statistics
-    if data.get('overall_statistics'):
-        print("\n" + "=" * 60)
-        print("OVERALL STATISTICS (ENTIRE PERIOD)")
-        print("=" * 60)
-        for source, stats in data['overall_statistics'].items():
-            print(f"\n{source}:")
-            for var, values in stats.items():
-                print(f"  {var}:")
-                print(f"    Mean: {values.get('mean')}  Max: {values.get('max')}  Min: {values.get('min')}")
-                print(f"    Std: {values.get('std')}  CV: {values.get('cv')}%")
-
-    if data.get('comparisons'):
-        print("\n" + "=" * 60)
-        print("DAILY TIMESERIES COMPARISONS")
-        print("=" * 60)
-        for comp in data['comparisons']:
-            print(f"\n{comp.get('pair')}:")
-            for key, val in comp.items():
-                if key != 'pair' and isinstance(val, dict):
-                    r = val.get('correlation')
-                    rmse = val.get('rmse')
-                    bias = val.get('bias')
-                    r_str = f"{r:.3f}" if r is not None else "nan"
-                    rmse_str = f"{rmse:.2f}" if rmse is not None else "nan"
-                    bias_str = f"{bias:.2f}" if bias is not None else "nan"
-                    print(f"  {key:20s} r={r_str}  RMSE={rmse_str}  bias={bias_str}")
-
-    if data.get('climatology_correlations'):
-        print("\n" + "=" * 60)
-        print("CLIMATOLOGY (MONTHLY) CORRELATIONS")
-        print("=" * 60)
-        for pair in data['climatology_correlations']:
-            print(f"\n{pair['pair']}:")
-            for var, metrics in pair.get('variables', {}).items():
-                corr = metrics.get('correlation')
-                rmse = metrics.get('rmse')
-                bias = metrics.get('bias')
-                corr_str = f"{corr:.3f}" if corr is not None else "nan"
-                rmse_str = f"{rmse:.2f}" if rmse is not None else "nan"
-                bias_str = f"{bias:.2f}" if bias is not None else "nan"
-                print(f"  {var:20s} r={corr_str}  RMSE={rmse_str}  bias={bias_str}")
-
-    print("\nOutputs (plots) saved to 'annual_timeseries', 'annual_timeseries_multi', and 'monthly_climatology' subfolders in the output directory.")
-
-
+# CLI
 def main():
-    parser = argparse.ArgumentParser(description='Compare climate datasets with extended analysis and plots')
-    parser.add_argument('--sources', required=True, nargs='+')
-    parser.add_argument('--lat', required=True, type=float)
-    parser.add_argument('--lon', required=True, type=float)
-    parser.add_argument('--start', required=True)
-    parser.add_argument('--end', required=True)
-    parser.add_argument('--format', choices=['json', 'report'], default='report')
-    parser.add_argument('--output-dir', default='./outputs', help='Directory to save plots and outputs')
+    parser = argparse.ArgumentParser(
+        description="Extended climate dataset comparison tool",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument("--sources", nargs="+",
+                            help="One or more dataset source keys")
+    mode_group.add_argument("--input",
+                            help="CSV file (must contain a 'date' column)")
+    parser.add_argument("--lat",   type=float, help="Latitude")
+    parser.add_argument("--lon",   type=float, help="Longitude")
+    parser.add_argument("--start", help="Start date YYYY-MM-DD")
+    parser.add_argument("--end",   help="End date   YYYY-MM-DD")
+    parser.add_argument("--format", choices=["report", "json"], default="report",
+                        help="Output format (default: report)")
+    parser.add_argument("--output-dir", default="./outputs",
+                        help="Directory for CSV and PNG outputs")
 
+    # NEX-GDDP specific
+    parser.add_argument(
+        "--model", default="MRI-ESM2-0",
+        metavar="MODEL",
+        help=(
+            "NEX-GDDP-CMIP6 model name (only used when 'nex_gddp' is in --sources).\n"
+            f"Available: {', '.join(AVAILABLE_MODELS)}"
+        ),
+    )
+    parser.add_argument(
+        "--scenario", default="ssp245",
+        metavar="SCENARIO",
+        help=(
+            "NEX-GDDP-CMIP6 scenario (only used when 'nex_gddp' is in --sources).\n"
+            f"Available: {', '.join(SCENARIO_MAPPING.keys())}"
+        ),
+    )
     args = parser.parse_args()
 
-    print(f"Fetching data from {len(args.sources)} sources...")
+    if args.sources and (args.lat is None or args.lon is None):
+        parser.error("--lat and --lon are required when using --sources")
 
-    result = compare_sources(args.sources, args.lat, args.lon, args.start, args.end, output_dir=args.output_dir)
+    # Validate model / scenario early so errors are reported before fetching
+    if args.sources and "nex_gddp" in args.sources:
+        if args.model not in AVAILABLE_MODELS:
+            parser.error(
+                f"Invalid --model '{args.model}'.\n"
+                f"Available models: {', '.join(AVAILABLE_MODELS)}"
+            )
+        if SCENARIO_MAPPING.get(args.scenario) is None:
+            parser.error(
+                f"Invalid --scenario '{args.scenario}'.\n"
+                f"Valid options: {', '.join(SCENARIO_MAPPING.keys())}"
+            )
+    results = compare_sources(
+        sources=args.sources,
+        lat=args.lat,
+        lon=args.lon,
+        start=args.start,
+        end=args.end,
+        input_file=args.input,
+        output_dir=args.output_dir,
+        nex_model=args.model,
+        nex_scenario=args.scenario,
+    )
+    all_stats = print_report(results, output_dir=args.output_dir)
 
-    if args.format == 'report':
-        print_report(result)
-    else:
-        def default(o):
-            if isinstance(o, (np.integer, np.floating)):
-                return float(o)
-            if isinstance(o, np.ndarray):
-                return o.tolist()
-            if hasattr(o, 'isoformat'):
-                return str(o)
-            return str(o)
-
-        print(json.dumps(result, indent=2, default=default))
-
+    if args.format == "json":
+        serializable = {
+            **all_stats,
+            "datasets": {k: v.to_dict(orient="records") for k, v in results.items()},
+        }
+        print(json.dumps(serializable, indent=2, default=str))
 
 if __name__ == "__main__":
     main()
 
-   
-# python -m climate_tookit.compare_datasets.compare_datasets --sources era_5 chirps nasa_power imerg nex_gddp agera_5 cmip_6 --lat -1.286 --lon 36.817 --start 1990-01-01 --end 2020-12-31 --format report
+# Example — all sources, specific NEX-GDDP model and scenario:
+# python -m climate_tookit.compare_datasets.compare_datasets --sources era_5 chirps nasa_power imerg nex_gddp agera_5 chirts soil_grids terraclimate tamsat --lat -1.286 --lon 36.817 --start 1990-01-01 --end 2020-12-31 --model MRI-ESM2-0 --scenario ssp245 --format report
