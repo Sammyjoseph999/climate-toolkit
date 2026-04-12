@@ -101,19 +101,6 @@ def fetch_cmip6(lat, lon, start, end):
         "temperature": (base + trend + _year_noise(yr, 7, 0.6)).round(3),
     })
 
-def fetch_nex_gddp(lat, lon, start, end):
-    dates = pd.date_range(start, end)
-    doy   = dates.dayofyear.values
-    yr    = dates.year
-    base_temp = 23 + 3.5 * np.sin(2 * np.pi * doy / 365 - 0.9)
-    trend     = (yr - yr.min()) * 0.035
-    base_prec = np.maximum(0, 1.5 * np.sin(2 * np.pi * doy / 365 + 0.5) + 0.9)
-    return pd.DataFrame({
-        "date":          dates,
-        "temperature":   (base_temp + trend + _year_noise(yr, 8, 0.45)).round(3),
-        "precipitation": np.maximum(0, base_prec + _year_noise(yr, 9, 0.2)).round(3),
-    })
-
 def fetch_agera5(lat, lon, start, end):
     dates = pd.date_range(start, end)
     doy   = dates.dayofyear.values
@@ -267,7 +254,6 @@ SOURCE_FUNCTIONS = {
     "agera_5":      fetch_agera5,
     "terraclimate": fetch_terraclimate,
     "chirts":       fetch_chirts,
-    "soil_grids":   fetch_soil_grids,
     "tamsat":       fetch_tamsat,
     "soil_grid":    fetch_soil_grids,
 }
@@ -664,4 +650,4 @@ if __name__ == "__main__":
     main()
 
 # Example — all sources, specific NEX-GDDP model and scenario:
-# python -m climate_tookit.compare_datasets.compare_datasets --sources era_5 chirps nasa_power imerg nex_gddp agera_5 chirts soil_grids terraclimate tamsat --lat -1.286 --lon 36.817 --start 1990-01-01 --end 2020-12-31 --model MRI-ESM2-0 --scenario ssp245 --format report
+# python -m climate_tookit.compare_datasets.compare_datasets --sources era_5 chirps nasa_power imerg nex_gddp agera_5 chirts soil_grid terraclimate tamsat --lat -1.286 --lon 36.817 --start 1990-01-01 --end 2020-12-31 --model MRI-ESM2-0 --scenario ssp245 --format report
