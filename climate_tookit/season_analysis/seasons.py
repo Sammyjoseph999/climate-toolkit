@@ -20,6 +20,17 @@ Perhumid guard (Af climate protection):
         2. Months with total < 40 mm  <= 3
         3. Days with >= 1 mm precip    > 200
 
+Fixed-season mode (--fixed-season):
+    Bypasses all automatic detection. The user supplies one or two
+    season windows as "MM-DD:MM-DD" tokens separated by commas.
+    Each token is applied to every year in [start_year, end_year].
+
+    Single season  : --fixed-season "03-01:05-31"
+    Two seasons    : --fixed-season "03-01:05-31,10-01:12-15"
+
+    If the cessation month/day is earlier than the onset month/day the
+    season is treated as year-crossing (onset in year N, cessation in N+1).
+
 Dependencies: pandas, numpy, climate_toolkit
 """
 
@@ -47,6 +58,112 @@ PERHUMID_ANNUAL_MM      = 1500
 PERHUMID_LOW_MONTH_MM   = 40
 PERHUMID_MAX_LOW_MONTHS = 3
 PERHUMID_MIN_RAINY_DAYS = 200
+
+# Fixed-season helpers
+def _parse_fixed_season_token(token: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Parse a single "MM-DD:MM-DD" token.
+    Returns ((onset_month, onset_day), (cessation_month, cessation_day)).
+    Raises ValueError on bad format.
+    """
+    parts = token.strip().split(":")
+    if len(parts) != 2:
+        raise ValueError(
+            f"Fixed-season token must be 'MM-DD:MM-DD', got: {token!r}"
+        )
+    onset_str, cess_str = parts
+
+    def _parse_md(s):
+        try:
+            m, d = s.strip().split("-")
+            return int(m), int(d)
+        except Exception:
+            raise ValueError(f"Expected MM-DD, got: {s!r}")
+
+    return _parse_md(onset_str), _parse_md(cess_str)
+
+
+def parse_fixed_seasons(fixed_season_arg: str) -> List[Dict]:
+    """
+    Parse the full --fixed-season argument string.
+    Accepts one or two "MM-DD:MM-DD" tokens separated by a comma.
+
+    Returns a list of dicts:
+        [{'onset_md': (MM, DD), 'cessation_md': (MM, DD)}, ...]
+    """
+    tokens  = [t.strip() for t in fixed_season_arg.split(",") if t.strip()]
+    seasons = []
+    for token in tokens:
+        onset_md, cess_md = _parse_fixed_season_token(token)
+        seasons.append({"onset_md": onset_md, "cessation_md": cess_md})
+    if not seasons:
+        raise ValueError("--fixed-season produced no valid tokens.")
+    if len(seasons) > 2:
+        raise ValueError("At most two fixed seasons are supported.")
+    return seasons
+
+def build_fixed_season_results(
+    fixed_seasons: List[Dict],
+    start_year: int,
+    end_year: int,
+) -> Dict[int, List[Dict]]:
+    """
+    Construct a results dict identical in shape to the output of
+    fetch_and_analyze_years(), but using user-supplied fixed dates.
+
+    Year-crossing seasons (e.g. onset Nov, cessation Feb) are handled:
+    onset is placed in year N, cessation in year N+1.
+
+    Parameters
+    ----------
+    fixed_seasons : list of dicts from parse_fixed_seasons()
+    start_year    : first year
+    end_year      : last year (inclusive)
+
+    Returns
+    -------
+    Dict[int, List[Dict]]  — keyed by onset year
+    """
+    results: Dict[int, List[Dict]] = {y: [] for y in range(start_year, end_year + 1)}
+
+    for year in range(start_year, end_year + 1):
+        for season_def in fixed_seasons:
+            (o_m, o_d) = season_def["onset_md"]
+            (c_m, c_d) = season_def["cessation_md"]
+
+            try:
+                onset_date = date(year, o_m, o_d)
+            except ValueError as exc:
+                print(f"  [WARNING] Invalid onset date {year}-{o_m:02d}-{o_d:02d}: {exc}")
+                continue
+
+            # Year-crossing: cessation earlier in calendar than onset
+            cess_year = year + 1 if (c_m, c_d) < (o_m, o_d) else year
+            try:
+                cessation_date = date(cess_year, c_m, c_d)
+            except ValueError as exc:
+                print(
+                    f"  [WARNING] Invalid cessation date "
+                    f"{cess_year}-{c_m:02d}-{c_d:02d}: {exc}"
+                )
+                continue
+
+            length_days = (cessation_date - onset_date).days + 1
+
+            results[year].append({
+                "onset":          pd.Timestamp(onset_date),
+                "cessation":      pd.Timestamp(cessation_date),
+                "length_days":    length_days,
+                "regime":         "fixed",
+                "annual_rain_mm": None,
+                "params_used":    "fixed-season",
+            })
+            print(
+                f"  Fixed season applied: "
+                f"{onset_date.strftime('%Y-%m-%d')} → "
+                f"{cessation_date.strftime('%Y-%m-%d')} | {length_days}d"
+            )
+    return results
 
 # Data access
 def get_climate_data(
@@ -102,7 +219,7 @@ def _merge_chirps_chirts(coord, date_from, date_to) -> pd.DataFrame:
     return pd.merge(df_p, df_t, on='date', how='inner')
 
 
-# ET0 -- Hargreaves
+# ET0 — Hargreaves
 def deg2rad(deg):
     return deg * math.pi / 180.0
 
@@ -337,7 +454,6 @@ def detect_onset_cessation(df):
                 break
         else:
             i += 1
-
     return results
 
 # Reassignment & deduplication
@@ -346,7 +462,6 @@ def reassign_spillover_seasons(results_dict, lat=0, start_year=None,
     """Reassign seasons by onset year; keep only MAM/OND onsets for equatorial."""
     if 10 <= lat <= 20:
         return results_dict.copy()
-
     allowed_months = set(range(2, 6)) | set(range(10, 13))
 
     if start_year is None:
@@ -370,7 +485,6 @@ def reassign_spillover_seasons(results_dict, lat=0, start_year=None,
             else:
                 print(f"  Dropped {onset_year} off-season: "
                       f"{onset.strftime('%Y-%m-%d')} (month {onset_month})")
-
     for year in cleaned:
         cleaned[year] = sorted(cleaned[year], key=lambda s: pd.to_datetime(s['onset']))
     return cleaned
@@ -423,7 +537,6 @@ def fetch_and_analyze_years(lat, lon, start_year, end_year,
                 print(f"  Retrieved 0 days for {ref_year}")
                 results[ref_year] = []
                 continue
-
             print(f"  Retrieved {len(df_window)} days for ref year {ref_year}")
             seasons = detect_onset_cessation(df_window)
 
@@ -447,7 +560,6 @@ def fetch_and_analyze_years(lat, lon, start_year, end_year,
         except Exception as e:
             print(f"  ✗ Error analyzing {ref_year}: {e}")
             results[ref_year] = []
-
     temp_results  = reassign_spillover_seasons(
         results, lat=lat, start_year=start_year, end_year=end_year
     )
@@ -481,7 +593,6 @@ def print_summary(results: dict, save_path: Optional[str] = None):
                 'annual_rain_mm': s.get('annual_rain_mm', ''),
                 'params_used':    s.get('params_used', ''),
             })
-
     if save_path and rows:
         pd.DataFrame(rows).to_csv(save_path, index=False)
         print(f"\n✓ SAVED: {save_path}")
@@ -512,6 +623,24 @@ def main() -> None:
                         help='Directory for CSV output (default: current dir)')
     parser.add_argument('--no-save',      action='store_true',
                         help='Skip saving the seasons CSV')
+    parser.add_argument(
+        '--fixed-season',
+        default=None,
+        metavar='MM-DD:MM-DD[,MM-DD:MM-DD]',
+        help=(
+            "Bypass automatic detection and use fixed calendar dates.\n"
+            "Supply one or two 'onset:cessation' windows as MM-DD:MM-DD,\n"
+            "separated by a comma for two seasons.\n\n"
+            "Examples:\n"
+            "  Single season : --fixed-season '03-01:05-31'\n"
+            "  Two seasons   : --fixed-season '03-01:05-31,10-01:12-15'\n"
+            "  Year-crossing : --fixed-season '11-01:02-28'\n\n"
+            "Dates are applied to every year in [start-year, end-year].\n"
+            "Year-crossing windows (cessation MM-DD < onset MM-DD) are\n"
+            "automatically handled: cessation falls in year+1.\n"
+            "No climate data is fetched when this flag is used."
+        ),
+    )
     args = parser.parse_args()
 
     try:
@@ -520,32 +649,67 @@ def main() -> None:
         print("Error: --location must be in 'lat,lon' format.")
         sys.exit(1)
 
-    print(f"Analyzing {lat:.4f}N, {lon:.4f}E | "
-          f"{args.start_year}-{args.end_year} | source={args.source}")
+    # Fixed-season path (no data fetching needed) 
+    if args.fixed_season:
+        print(
+            f"Fixed-season mode | {lat:.4f}N, {lon:.4f}E | "
+            f"{args.start_year}-{args.end_year}"
+        )
+        try:
+            fixed_defs = parse_fixed_seasons(args.fixed_season)
+        except ValueError as exc:
+            print(f"Error parsing --fixed-season: {exc}")
+            sys.exit(1)
 
-    results = fetch_and_analyze_years(
-        lat, lon,
-        start_year=args.start_year,
-        end_year=args.end_year,
-        extra_months=args.extra_months,
-        source=args.source,
-    )
+        print(f"  Parsed {len(fixed_defs)} fixed season window(s):")
+        for fd in fixed_defs:
+            (o_m, o_d), (c_m, c_d) = fd["onset_md"], fd["cessation_md"]
+            cross = " (year-crossing)" if (c_m, c_d) < (o_m, o_d) else ""
+            print(f"    {o_m:02d}-{o_d:02d} → {c_m:02d}-{c_d:02d}{cross}")
+        results = build_fixed_season_results(
+            fixed_defs, args.start_year, args.end_year
+        )
 
+    # Automatic detection path 
+    else:
+        print(f"Analyzing {lat:.4f}N, {lon:.4f}E | "
+              f"{args.start_year}-{args.end_year} | source={args.source}")
+        results = fetch_and_analyze_years(
+            lat, lon,
+            start_year=args.start_year,
+            end_year=args.end_year,
+            extra_months=args.extra_months,
+            source=args.source,
+        )
+
+    # Save & print
     save_path = None
     if not args.no_save:
-        filename  = (f"seasons_{lat:.4f}_{lon:.4f}_"
-                     f"{args.start_year}_{args.end_year}.csv")
+        mode     = "fixed" if args.fixed_season else args.source
+        filename = (f"seasons_{lat:.4f}_{lon:.4f}_"
+                    f"{args.start_year}_{args.end_year}_{mode}.csv")
         save_path = str(Path(args.output_dir) / filename)
-
     print_summary(results, save_path=save_path)
     print("\nAnalysis complete!")
-
 
 if __name__ == '__main__':
     main()
 
-# Examples:
+
+# Automatic detection (unchanged behaviour):
 # python climate_tookit/season_analysis/seasons.py --location="-1.286,36.817" --start-year 2018 --end-year 2020 --source era_5
 # python climate_tookit/season_analysis/seasons.py --location="-1.286,36.817" --start-year 2018 --end-year 2020 --source agera_5
 # python climate_tookit/season_analysis/seasons.py --location="-1.286,36.817" --start-year 2015 --end-year 2016 --source chirps+chirts
 # python climate_tookit/season_analysis/seasons.py --location="-1.286,36.817" --start-year 2015 --end-year 2020 --source agera_5 --output-dir ./results
+
+# Fixed single season (MAM):
+# python climate_tookit/season_analysis/seasons.py --location="-1.286,36.817" --start-year 2015 --end-year 2020 --fixed-season "03-01:05-31"
+
+# Fixed two seasons (MAM + OND):
+# python climate_tookit/season_analysis/seasons.py --location="-1.286,36.817" --start-year 2015 --end-year 2020 --fixed-season "03-01:05-31,10-01:12-15"
+
+# Fixed year-crossing season:
+# python climate_tookit/season_analysis/seasons.py --location="-1.286,36.817" --start-year 2015 --end-year 2020 --fixed-season "11-01:02-28"
+
+# Fixed season, no CSV save:
+# python climate_tookit/season_analysis/seasons.py --location="-1.286,36.817" --start-year 2018 --end-year 2022 --fixed-season "04-15:07-10" --no-save
