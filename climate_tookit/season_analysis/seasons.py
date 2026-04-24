@@ -1,6 +1,5 @@
 """
 Season Analysis Module
-
 Detects agricultural growing seasons from daily precipitation and temperature data.
 Applies the Hargreaves ET0 method to identify planting season onset and cessation
 based on whether precipitation meets or exceeds 50% of reference evapotranspiration.
@@ -14,9 +13,9 @@ Detection strategy:
     MAM/OND onset windows for equatorial climates, removes duplicates.
 Perhumid guard (used internally during ETO detection):
     Raises ValueError for years where ALL three hold:
-        1. Annual rainfall  > 1500 mm
+        1. Annual rainfall  > 1400 mm
         2. Months with total < 40 mm  <= 3
-        3. Days with >= 1 mm precip    > 200
+        3. Days with >= 1 mm precip    > 1
 Humid test (displayed in output):
     A location/year is classified as "Humid" when BOTH hold:
         1. Annual rainfall > 1400 mm
@@ -58,10 +57,10 @@ HISTORICAL_SOURCES = ['era_5', 'agera_5']
 FALLBACK_COMBO     = ('chirps', 'chirts')
 
 # Internal perhumid guard thresholds (detection)
-PERHUMID_ANNUAL_MM      = 1500
+PERHUMID_ANNUAL_MM      = 1400
 PERHUMID_LOW_MONTH_MM   = 40
 PERHUMID_MAX_LOW_MONTHS = 3
-PERHUMID_MIN_RAINY_DAYS = 200
+PERHUMID_MIN_RAINY_DAYS = 1
 
 # Display humid-test thresholds
 HUMID_ANNUAL_MM_THRESHOLD   = 1400
@@ -168,7 +167,7 @@ def compute_season_stats(df: pd.DataFrame, onset, cessation) -> Dict[str, Any]:
         dry_days          = dry_days,
         dry_spells        = dry_spells,
     )
-# ETO analysis within a fixed window
+# Season analysis within a fixed window
 def run_eto_in_window(df_with_et0: pd.DataFrame, onset, cessation) -> List[Dict]:
     """
     Slice df to [onset, cessation] and run the full ETO-based detection.
@@ -285,7 +284,7 @@ def add_et0(df: pd.DataFrame, lat: float) -> pd.DataFrame:
     return df
 
 # Perhumid guard (internal — used by detect_onset_cessation)
-def is_perhumid_location(annual_rain, df, threshold_rain=1500,
+def is_perhumid_location(annual_rain, df, threshold_rain=1400,
                          threshold_low_rain_months=40, max_low_rain_months=3,
                          reference_year=None):
     if reference_year is None:
@@ -301,7 +300,7 @@ def is_perhumid_location(annual_rain, df, threshold_rain=1500,
     is_perhumid = (
         annual_rain > threshold_rain and
         num_low_rain_months <= max_low_rain_months and
-        rainy_days_yr > 200
+        rainy_days_yr > 1
     )
     return is_perhumid, num_low_rain_months, rainy_days_yr, monthly_precip
 
@@ -381,7 +380,7 @@ def detect_onset_cessation(df):
         min_wet_confirm    = 2
         base_cess_days     = 18
         regime_multipliers = {'unimodal': 0.9, 'bimodal': 1.1, 'year_crossing': 0.8, 'erratic': 1.0}
-    elif annual_rain > 1500:
+    elif annual_rain > 1400:
         min_rainy_days     = max(90, int(annual_rain * 0.06))
         min_wet_confirm    = 3
         base_cess_days     = 15
@@ -389,7 +388,7 @@ def detect_onset_cessation(df):
     else:
         min_rainy_days     = 45
         min_wet_confirm    = 3
-        base_cess_days     = 22
+        base_cess_days     = 15
         regime_multipliers = {'unimodal': 1.0, 'bimodal': 1.15, 'year_crossing': 0.85, 'erratic': 1.0}
 
     print(f"  ✓ Adaptive params: min_days={min_rainy_days} | "
@@ -463,9 +462,9 @@ def detect_onset_cessation(df):
 # Reassignment & deduplication
 def reassign_spillover_seasons(results_dict, lat=0, start_year=None,
                                 end_year=None, hemisphere="NH"):
-    if 10 <= lat <= 20:
+    if 8 <= lat <= 20:
         return results_dict.copy()
-    allowed_months = set(range(2, 6)) | set(range(10, 13))
+    allowed_months = set(range(1, 6)) | set(range(8, 13))
     if start_year is None: start_year = min(results_dict.keys()) if results_dict else None
     if end_year   is None: end_year   = max(results_dict.keys()) if results_dict else None
     if start_year is None or end_year is None: return {}
@@ -671,8 +670,8 @@ def fetch_and_analyze_years_fixed(
                 stats = dict(total_rainfall_mm=None, rainy_days=None,
                              dry_days=None, dry_spells=None)
 
-            # ETO analysis within the fixed window
-            print(f"  Running ETO analysis within "
+            # Season analysis within the fixed window
+            print(f"  Running Season analysis within "
                   f"{onset_date.strftime('%Y-%m-%d')} → "
                   f"{cessation_date.strftime('%Y-%m-%d')}{cross_note} ...")
             if df is not None and not df.empty:
@@ -764,7 +763,7 @@ def print_summary(
             eto_seasons = s.get('eto_seasons')
             if eto_seasons is not None:
                 print(f"    {'─' * 50}")
-                print(f"    ETO analysis within fixed window:")
+                print(f"    Season analysis within fixed window:")
                 if not eto_seasons:
                     print(f"      No ETO-based season detected within window")
                 else:
@@ -803,7 +802,6 @@ def print_summary(
                 'eto_seasons_summary': eto_summary if eto_summary else "",
                 'params_used':         s.get('params_used', ''),
             })
-        # Year footer
         print(f"\n  {'─' * 48}")
         print(f"  Annual total rainfall : {_fmt(ann_rain, ' mm')}")
         print(f"  Humid test            : {humid_str if humid_str else 'n/a'}")
