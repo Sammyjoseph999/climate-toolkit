@@ -7,11 +7,10 @@ Extended dataset comparison module with:
 - monthly climatology per dataset
 - monthly climatology plots per dataset (PNG)
 - pairwise climatology correlations (monthly means: correlation, RMSE, bias)
-- overall period statistics (mean, max, min, std, CV) per dataset
 State variables   (temperature, humidity, radiation, soil props, tmax/tmin, pet):
     reported as mean / min / max / std / CV
 Accumulation vars (precipitation):
-    reported as total (overall), annual total (inter-annual),
+    reported as annual total (inter-annual),
     mean monthly total (climatology)
 Usage (example):
 python -m climate_tookit.compare_datasets.compare_datasets \
@@ -275,29 +274,7 @@ def export_data(df, source, output_dir):
     df.to_csv(path, index=False)
     print(f"  ✅  Exported {source} → {path}")
 
-# 1. Overall period statistics
-def compute_overall_stats(df: pd.DataFrame) -> dict:
-    """
-    State variables : mean, max, min, std, CV (%).
-    Accumulation vars: mean (daily rate), max, min, std, CV (%), total.
-    """
-    stats = {}
-    for col in df.select_dtypes(include="number").columns:
-        s    = df[col]
-        mean = s.mean()
-        entry = {
-            "mean": round(mean, 4),
-            "max":  round(s.max(), 4),
-            "min":  round(s.min(), 4),
-            "std":  round(s.std(), 4),
-            "cv_%": round((s.std() / mean * 100) if mean != 0 else np.nan, 2),
-        }
-        if _is_accum(col):
-            entry["total"] = round(s.sum(), 4)
-        stats[col] = entry
-    return stats
-
-# 2. Inter-annual statistics
+# 1. Inter-annual statistics
 def compute_interannual_stats(df: pd.DataFrame) -> dict:
     """
     State variables : min, max, mean per year.
@@ -322,7 +299,7 @@ def compute_interannual_stats(df: pd.DataFrame) -> dict:
             )
     return stats
 
-# 3. Monthly climatology
+# 2. Monthly climatology
 def compute_monthly_climatology(df: pd.DataFrame) -> dict:
     """
     State variables : mean value per calendar month (mean of daily values).
@@ -348,7 +325,7 @@ def compute_monthly_climatology(df: pd.DataFrame) -> dict:
             )
     return clim
 
-# 4. Pairwise climatology correlations
+# 3. Pairwise climatology correlations
 def _rmse(a, b):
     return float(np.sqrt(np.mean((np.array(a) - np.array(b)) ** 2)))
 
@@ -385,7 +362,7 @@ def compute_pairwise_climatology_corr(climatologies: dict) -> dict:
                 }
     return comparison
 
-# 5. Annual time-series plot per dataset
+# 4. Annual time-series plot per dataset
 def plot_annual_timeseries(df: pd.DataFrame, source: str, output_dir: str):
     """
     Annual aggregation per variable:
@@ -416,7 +393,7 @@ def plot_annual_timeseries(df: pd.DataFrame, source: str, output_dir: str):
     fig.tight_layout()
     _save(fig, os.path.join(output_dir, f"{source}_annual_timeseries.png"))
 
-# 6. Monthly climatology plot per dataset
+# 5. Monthly climatology plot per dataset
 def plot_monthly_climatology(df: pd.DataFrame, source: str, output_dir: str):
     """
     Monthly climatology bar chart per variable:
@@ -451,7 +428,7 @@ def plot_monthly_climatology(df: pd.DataFrame, source: str, output_dir: str):
     fig.tight_layout()
     _save(fig, os.path.join(output_dir, f"{source}_monthly_climatology.png"))
 
-# 7. Multi-source annual comparison plot
+# 6. Multi-source annual comparison plot
 def plot_multisource_annual(results: dict, output_dir: str):
     """
     One figure per shared variable — all sources overlaid on the same axes
@@ -546,7 +523,6 @@ def print_report(results: dict, output_dir: str = "./outputs"):
     _sep("═")
     print("  CLIMATE DATA REPORT")
     _sep("═")
-    all_overall      = {}
     all_interannual  = {}
     all_climatology  = {}
 
@@ -555,20 +531,7 @@ def print_report(results: dict, output_dir: str = "./outputs"):
         print(f"  SOURCE: {source.upper()}")
         print(f"{'─'*55}")
 
-        # Overall stats
-        overall = compute_overall_stats(df)
-        all_overall[source] = overall
-        print("\n  [Overall Period Statistics]")
-        for var, s in overall.items():
-            line = (
-                f"    {var:22s}  mean={s['mean']:>10.3f}  max={s['max']:>10.3f}"
-                f"  min={s['min']:>10.3f}  std={s['std']:>9.3f}  CV={s['cv_%']:>6.1f}%"
-            )
-            if "total" in s:
-                line += f"  total={s['total']:>12.3f}"
-            print(line)
-
-        # Inter-annual stats 
+        # Inter-annual stats
         interannual = compute_interannual_stats(df)
         all_interannual[source] = interannual
         print("\n  [Inter-Annual Statistics]")
@@ -582,7 +545,7 @@ def print_report(results: dict, output_dir: str = "./outputs"):
                     print(f"      {year}  min={ys['min']:>8.3f}  "
                           f"max={ys['max']:>8.3f}  mean={ys['mean']:>8.3f}")
 
-        # Monthly climatology 
+        # Monthly climatology
         clim = compute_monthly_climatology(df)
         all_climatology[source] = clim
         print("\n  [Monthly Climatology]")
@@ -618,7 +581,6 @@ def print_report(results: dict, output_dir: str = "./outputs"):
                       f"RMSE={m['rmse']:>8.4f}  bias={m['bias']:>+8.4f}")
     _sep("═")
     return {
-        "overall":            all_overall,
         "interannual":        all_interannual,
         "climatology":        all_climatology,
         "pairwise_clim_corr": pairwise,
