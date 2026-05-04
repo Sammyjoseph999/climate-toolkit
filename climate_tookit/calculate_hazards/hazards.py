@@ -231,6 +231,7 @@ def calculate_hazards(
     # Branch A: explicit --season-start / --season-end
     if season_start and season_end:
         print(f"Using provided season dates: {season_start} to {season_end}")
+        print(f"Climate data source: {source}")
         df = get_climate_data_for_season(lat, lon, season_start, season_end)
         season_info = {
             'season_detected': True,
@@ -238,6 +239,7 @@ def calculate_hazards(
             'cessation_date':  season_end,
             'length_days':     (datetime.fromisoformat(season_end) - datetime.fromisoformat(season_start)).days,
             'method':          'user_provided',
+            'source':          source,          # FIX 1: record dataset used
         }
         all_results = [{'season_info': season_info, 'df': df}]
 
@@ -261,21 +263,25 @@ def calculate_hazards(
             end_year=end_year,
             source=source,
         )
+        num_seasons_per_year = len(fixed_defs)   # FIX 2: know how many seasons were defined
         all_results = []
         for year, seasons in sorted(seasons_dict.items()):
-            for s in seasons:
+            for season_idx, s in enumerate(seasons):   # FIX 2: enumerate for season number
                 s_start = pd.to_datetime(s['onset']).strftime('%Y-%m-%d')
                 s_end   = (
                     pd.to_datetime(s['cessation']).strftime('%Y-%m-%d')
                     if s.get('cessation') else date_to
                 )
                 season_info = {
-                    'season_detected': True,
-                    'onset_date':      s_start,
-                    'cessation_date':  s_end,
-                    'length_days':     s['length_days'],
-                    'method':          'fixed_season',
-                    'year':            year,
+                    'season_detected':        True,
+                    'onset_date':             s_start,
+                    'cessation_date':         s_end,
+                    'length_days':            s['length_days'],
+                    'method':                 'fixed_season',
+                    'year':                   year,
+                    'season_number':          season_idx + 1,           # FIX 2: 1-based index
+                    'total_seasons_per_year': num_seasons_per_year,     # FIX 2: for labelling
+                    'source':                 source,                   # FIX 1: record dataset
                 }
                 df = get_climate_data_for_season(lat, lon, s_start, s_end)
                 all_results.append({'season_info': season_info, 'df': df})
@@ -283,12 +289,17 @@ def calculate_hazards(
             return {'error': 'No seasons produced by fixed-season mode for the given date range.'}
 
     # Branch C: auto-detect via fetch_and_analyze_years
+    # FIX 3: always use chirps+chirts for auto-detection – the adaptive onset/cessation
+    # parameters are calibrated for this dataset; ERA5 gives systematically different
+    # daily totals that can shift detected onset/cessation dates.
     elif SEASON_ANALYSIS_AVAILABLE:
+        auto_source = 'chirps+chirts'
         print(f"Detecting growing season for {crop_name} at ({lat}, {lon})")
+        print(f"Climate data source: {auto_source} (fixed for auto-detection accuracy)")
         start_year = datetime.fromisoformat(date_from).year
         end_year   = datetime.fromisoformat(date_to).year
         seasons_dict, _ = fetch_and_analyze_years(
-            lat, lon, start_year=start_year, end_year=end_year, source=source
+            lat, lon, start_year=start_year, end_year=end_year, source=auto_source
         )
         flat = [s for seasons in seasons_dict.values() for s in seasons]
         if not flat:
@@ -310,6 +321,7 @@ def calculate_hazards(
             'cessation_date':  s_end,
             'length_days':     first['length_days'],
             'method':          'rainfall_based',
+            'source':          auto_source,     # FIX 1 + FIX 3: record the forced dataset
         }
         df = get_climate_data_for_season(lat, lon, s_start, s_end)
         all_results = [{'season_info': season_info, 'df': df}]
@@ -357,10 +369,22 @@ def _fmt_date(d) -> str:
 
 def print_hazard_results(result: Dict[str, Any]) -> None:
     # Multi-season wrapper
+    # FIX 2: label each block as "Year YYYY – Season X of Y" when available
     if 'assessments' in result:
+        total = len(result['assessments'])
         for i, a in enumerate(result['assessments'], 1):
             print(f"\n{'─'*70}")
-            print(f"  Assessment {i} of {len(result['assessments'])}")
+            season = a.get('season_info', {})
+            year   = season.get('year', '')
+            snum   = season.get('season_number', i)
+            spyr   = season.get('total_seasons_per_year', '')
+            if year and spyr and spyr > 1:
+                label = f"Year {year}  –  Season {snum} of {spyr}"
+            elif year:
+                label = f"Year {year}"
+            else:
+                label = f"Assessment {i} of {total}"
+            print(f"  {label}")
             print_hazard_results(a)
         return
 
@@ -380,6 +404,9 @@ def print_hazard_results(result: Dict[str, Any]) -> None:
     print(f"  {'─'*66}")
     print(f"  Onset:  {season['onset_date']:<20} End: {season['cessation_date']}")
     print(f"  Length: {season['length_days']} days{'':15} Method: {season.get('method', 'unknown')}")
+    # FIX 1: always display the dataset that was used
+    if season.get('source'):
+        print(f"  Source: {season['source']}")
 
     stats = result['season_statistics']
 
@@ -495,7 +522,9 @@ if __name__ == "__main__":
             "  era_5         -- ERA5 reanalysis\n"
             "  agera_5       -- AgERA5 / ERA5-Land\n"
             "  chirps+chirts -- CHIRPS precipitation + CHIRTS temperature\n"
-            "  auto          -- tries era_5 -> agera_5 -> chirps+chirts"
+            "  auto          -- tries era_5 -> agera_5 -> chirps+chirts\n"
+            "Note: auto-detection (no --season-* flag) always uses chirps+chirts\n"
+            "      regardless of this setting, as thresholds are calibrated for it."
         ),
     )
     parser.add_argument('--gap-days',        type=int, default=30,
@@ -538,8 +567,8 @@ if __name__ == "__main__":
             with open(args.output, 'w') as f:
                 f.write(json.dumps(result, indent=2, default=str))
 
-# Explicit season dates (single season):
-# python -m climate_tookit.calculate_hazards.hazards maize --location="-1.286,36.817" --date-from 2020-01-01 --date-to 2020-12-31 --season-start 2020-03-01 --season-end 2020-06-30
+# Auto-detect season (no season flag supplied -- always uses chirps+chirts internally):
+# python -m climate_tookit.calculate_hazards.hazards maize --location="-1.286,36.817" --date-from 2016-01-01 --date-to 2016-12-31 --season-start 2016-03-01 --season-end 2016-06-30
 
 # Fixed single season:
 # python -m climate_tookit.calculate_hazards.hazards maize --location="-1.286,36.817" --date-from 2018-01-01 --date-to 2022-12-31 --fixed-season "03-01:06-30" --source era_5
@@ -550,8 +579,8 @@ if __name__ == "__main__":
 # Fixed year-crossing season:
 # python -m climate_tookit.calculate_hazards.hazards sorghum --location="-1.286,36.817" --date-from 2012-01-01 --date-to 2016-12-31 --fixed-season "11-01:02-28" --source chirps+chirts
 
-# Auto-detect season (no season flag supplied):
-# python -m climate_tookit.calculate_hazards.hazards maize --location="-1.286,36.817" --date-from 2020-01-01 --date-to 2020-12-31 --source auto
+# Explicit season dates (single season):
+# python -m climate_tookit.calculate_hazards.hazards maize --location="-1.286,36.817" --date-from 2020-01-01 --date-to 2020-12-31 --season-start 2020-03-01 --season-end 2020-06-30
 
 # JSON output to file:
 # python -m climate_tookit.calculate_hazards.hazards rice --location="-1.286,36.817" --date-from 2019-01-01 --date-to 2021-12-31 --fixed-season "04-15:07-10" --source auto --format json --output results.json
