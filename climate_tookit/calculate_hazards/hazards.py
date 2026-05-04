@@ -239,11 +239,11 @@ def calculate_hazards(
             'cessation_date':  season_end,
             'length_days':     (datetime.fromisoformat(season_end) - datetime.fromisoformat(season_start)).days,
             'method':          'user_provided',
-            'source':          source,          # FIX 1: record dataset used
+            'source':          source,          # record dataset used
         }
         all_results = [{'season_info': season_info, 'df': df}]
 
-    # Branch B: --fixed-season  (mirrors seasons.py fixed-season mode)
+    # fixed-season (mirrors seasons.py fixed-season mode)
     elif fixed_season:
         if not SEASON_ANALYSIS_AVAILABLE:
             return {'error': f'Season analysis module not available -- {_IMPORT_ERROR}'}
@@ -263,10 +263,10 @@ def calculate_hazards(
             end_year=end_year,
             source=source,
         )
-        num_seasons_per_year = len(fixed_defs)   # FIX 2: know how many seasons were defined
+        num_seasons_per_year = len(fixed_defs)   # know how many seasons were defined
         all_results = []
         for year, seasons in sorted(seasons_dict.items()):
-            for season_idx, s in enumerate(seasons):   # FIX 2: enumerate for season number
+            for season_idx, s in enumerate(seasons):   # enumerate for season number
                 s_start = pd.to_datetime(s['onset']).strftime('%Y-%m-%d')
                 s_end   = (
                     pd.to_datetime(s['cessation']).strftime('%Y-%m-%d')
@@ -279,19 +279,16 @@ def calculate_hazards(
                     'length_days':            s['length_days'],
                     'method':                 'fixed_season',
                     'year':                   year,
-                    'season_number':          season_idx + 1,           # FIX 2: 1-based index
-                    'total_seasons_per_year': num_seasons_per_year,     # FIX 2: for labelling
-                    'source':                 source,                   # FIX 1: record dataset
+                    'season_number':          season_idx + 1,           
+                    'total_seasons_per_year': num_seasons_per_year,     
+                    'source':                 source,                   
                 }
                 df = get_climate_data_for_season(lat, lon, s_start, s_end)
                 all_results.append({'season_info': season_info, 'df': df})
         if not all_results:
             return {'error': 'No seasons produced by fixed-season mode for the given date range.'}
 
-    # Branch C: auto-detect via fetch_and_analyze_years
-    # FIX 3: always use chirps+chirts for auto-detection – the adaptive onset/cessation
-    # parameters are calibrated for this dataset; ERA5 gives systematically different
-    # daily totals that can shift detected onset/cessation dates.
+    # auto-detect via fetch_and_analyze_years, always use chirps+chirts for auto-detection 
     elif SEASON_ANALYSIS_AVAILABLE:
         auto_source = 'chirps+chirts'
         print(f"Detecting growing season for {crop_name} at ({lat}, {lon})")
@@ -321,7 +318,7 @@ def calculate_hazards(
             'cessation_date':  s_end,
             'length_days':     first['length_days'],
             'method':          'rainfall_based',
-            'source':          auto_source,     # FIX 1 + FIX 3: record the forced dataset
+            'source':          auto_source,     
         }
         df = get_climate_data_for_season(lat, lon, s_start, s_end)
         all_results = [{'season_info': season_info, 'df': df}]
@@ -368,8 +365,7 @@ def _fmt_date(d) -> str:
     return str(d)[:10]
 
 def print_hazard_results(result: Dict[str, Any]) -> None:
-    # Multi-season wrapper
-    # FIX 2: label each block as "Year YYYY – Season X of Y" when available
+    # Multi-season wrapper, label each block as "Year YYYY – Season X of Y" when available
     if 'assessments' in result:
         total = len(result['assessments'])
         for i, a in enumerate(result['assessments'], 1):
@@ -404,7 +400,7 @@ def print_hazard_results(result: Dict[str, Any]) -> None:
     print(f"  {'─'*66}")
     print(f"  Onset:  {season['onset_date']:<20} End: {season['cessation_date']}")
     print(f"  Length: {season['length_days']} days{'':15} Method: {season.get('method', 'unknown')}")
-    # FIX 1: always display the dataset that was used
+    # always display the dataset that was used
     if season.get('source'):
         print(f"  Source: {season['source']}")
 
