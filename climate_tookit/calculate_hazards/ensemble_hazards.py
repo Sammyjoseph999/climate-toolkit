@@ -1,603 +1,515 @@
 """
-Ensemble Hazards Module with NEX-GDDP Integration
+Ensemble of hazards.py across NEX-GDDP models x scenarios.
+
+For each (model, scenario) combination, runs the same hazard assessment that hazards.py produces, but with NEX-GDDP daily data. 
+Results are bucketed by (year, season_number) and averaged. No baseline. No CHIRPS. No CHIRTS.
+Modes:
+  - default        : auto-detect seasons per (model, scenario) using NEX-GDDP.
+  - --fixed-season : single, two, or year-crossing windows applied to each year.
 """
-import sys
+
 import os
-from datetime import datetime, date
-from typing import Dict, List, Any, Tuple, Optional
+import sys
 import json
 import argparse
-from statistics import mean, stdev
+from collections import defaultdict
+from datetime import datetime, date
+from statistics import mean
+from typing import Dict, List, Tuple, Optional
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
+import pandas as pd
 
-sys.path.insert(0, current_dir)
+HERE   = os.path.dirname(os.path.abspath(__file__))
+PARENT = os.path.dirname(HERE)
+ROOT   = os.path.dirname(PARENT)
+for p in (HERE, ROOT):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
-from hazards import calculate_hazards, CROP_THRESHOLDS, evaluate_threshold, calculate_dry_spell_statistics
-HAZARDS_AVAILABLE = True
+from hazards import CROP_THRESHOLDS, evaluate_threshold, calculate_season_statistics
 
-PREPROCESS_AVAILABLE = False
+sys.path.insert(0, os.path.join(PARENT, 'fetch_data', 'preprocess_data'))
+sys.path.insert(0, os.path.join(PARENT, 'fetch_data', 'source_data', 'sources'))
+from preprocess_data import preprocess_data
+from utils.models      import ClimateVariable
+
+# Optional: only used by auto-detect
 try:
-    preprocess_path = os.path.join(parent_dir, 'fetch_data', 'preprocess_data')
-    sys.path.insert(0, preprocess_path)
-    from preprocess_data import preprocess_data
+    from climate_tookit.season_analysis.seasons import fetch_and_analyze_years
+    HAS_FAY = True
+except Exception as _e:
+    HAS_FAY = False
+    _FAY_ERR = str(_e)
 
-    sources_path = os.path.join(parent_dir, 'fetch_data', 'source_data', 'sources')
-    sys.path.insert(0, sources_path)
-    from utils.models import ClimateVariable
-
-    PREPROCESS_AVAILABLE = True
-    print("✓ NEX-GDDP pipeline available")
-except Exception as e:
-    print(f"✗ NEX-GDDP pipeline not available: {e}")
-
-AVAILABLE_SCENARIOS = ['SSP1-2.6', 'SSP2-4.5', 'SSP5-8.5']
-AVAILABLE_GCMS = [
+SCENARIOS = ['ssp126', 'ssp245', 'ssp370', 'ssp585']
+MODELS = [
     'ACCESS-CM2', 'ACCESS-ESM1-5', 'CanESM5', 'CMCC-ESM2',
     'EC-Earth3', 'EC-Earth3-Veg-LR', 'GFDL-ESM4', 'INM-CM4-8',
     'INM-CM5-0', 'KACE-1-0-G', 'MIROC6', 'MPI-ESM1-2-LR',
-    'MRI-ESM2-0', 'NorESM2-LM', 'NorESM2-MM', 'TaiESM1'
+    'MRI-ESM2-0', 'NorESM2-LM', 'NorESM2-MM', 'TaiESM1',
 ]
 
-import pandas as pd
-from datetime import datetime, date
+_VARS   = [ClimateVariable.precipitation,
+           ClimateVariable.max_temperature,
+           ClimateVariable.min_temperature]
+_COLMAP = {'pr': 'precipitation', 'prcp': 'precipitation',
+           'tasmax': 'max_temperature', 'tasmin': 'min_temperature'}
 
-def detect_dry_spells_enhanced(df: pd.DataFrame, min_dry_days: int = 7, precip_threshold: float = 1.0) -> List[Dict[str, Any]]:
-    """
-    Enhanced dry spell detection supporting NEX-GDDP and other data sources.
-    """
- 
-    precip_col = None
-    for col in ['precipitation', 'precip', 'total_precipitation', 'pr', 'prcp', 'rainfall']:
-        if col in df.columns:
-            precip_col = col
-            break
+# Fixed-season parsing & expansion
+def _parse_fixed(spec: str) -> List[Tuple[str, str]]:
+    """'MM-DD:MM-DD[,MM-DD:MM-DD]' -> [(onset, cessation), ...]"""
+    out = []
+    for token in spec.split(','):
+        token = token.strip()
+        if not token:
+            continue
+        if ':' not in token:
+            raise ValueError(f"fixed-season token missing ':' -- {token!r}")
+        onset, cessation = (s.strip() for s in token.split(':', 1))
+        datetime.strptime(onset,     '%m-%d')   # validate
+        datetime.strptime(cessation, '%m-%d')
+        out.append((onset, cessation))
+    if not out:
+        raise ValueError("empty fixed-season specification")
+    return out
 
-    if not precip_col or 'date' not in df.columns:
-        return []
+def _yearcross(o: str, c: str) -> bool:
+    return (datetime.strptime(c, '%m-%d').replace(year=2001)
+          < datetime.strptime(o, '%m-%d').replace(year=2001))
 
-    df = df.sort_values('date').copy()
-    df['is_dry'] = df[precip_col] < precip_threshold
+def _isleap(y: int) -> bool:
+    return y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)
 
-    dry_spells = []
-    current_spell_start = None
-    current_spell_days = 0
+def _iso(year: int, mmdd: str) -> str:
+    m, d = (int(x) for x in mmdd.split('-'))
+    if m == 2 and d == 29 and not _isleap(year):
+        d = 28
+    return f"{year:04d}-{m:02d}-{d:02d}"
 
-    for idx, row in df.iterrows():
-        if row['is_dry']:
-            if current_spell_start is None:
-                current_spell_start = row['date']
-                current_spell_days = 1
-            else:
-                current_spell_days += 1
-        else:
-            if current_spell_start is not None and current_spell_days >= min_dry_days:
-                prev_idx = df.index[df.index.get_loc(idx) - 1]
-                dry_spells.append({
-                    'start_date': current_spell_start,
-                    'end_date': df.loc[prev_idx, 'date'],
-                    'length_days': current_spell_days
-                })
-            current_spell_start = None
-            current_spell_days = 0
+def _expand_windows(sy: int, ey: int,
+                    defs: List[Tuple[str, str]]) -> List[Dict]:
+    out = []
+    for y in range(sy, ey + 1):
+        for i, (o, c) in enumerate(defs, 1):
+            out.append({
+                'start':         _iso(y, o),
+                'end':           _iso(y + 1 if _yearcross(o, c) else y, c),
+                'season_number': i,
+                'year':          y,
+                'total':         len(defs),
+            })
+    return out
 
-    if current_spell_start is not None and current_spell_days >= min_dry_days:
-        dry_spells.append({
-            'start_date': current_spell_start,
-            'end_date': df.iloc[-1]['date'],
-            'length_days': current_spell_days
+# NEX-GDDP fetching & per-window assessment
+def _fetch(lat: float, lon: float, start: str, end: str,
+           model: str, scenario: str) -> pd.DataFrame:
+    df = preprocess_data(
+        source='nex_gddp',
+        location_coord=(lat, lon),
+        variables=_VARS,
+        date_from=date.fromisoformat(start),
+        date_to=date.fromisoformat(end),
+        model=model, scenario=scenario,
+    )
+    if df is None or df.empty:
+        raise RuntimeError(f"no data for {model}/{scenario} {start}->{end}")
+    rename = {c: _COLMAP[c] for c in df.columns if c in _COLMAP}
+    return df.rename(columns=rename) if rename else df
+
+def _detect_windows(lat: float, lon: float, sy: int, ey: int,
+                    model: str, scenario: str) -> List[Dict]:
+    """Auto-detect via fetch_and_analyze_years with NEX-GDDP source."""
+    if not HAS_FAY:
+        raise RuntimeError(f"auto-detect needs seasons.py -- {_FAY_ERR}")
+    try:
+        seasons_dict, _ = fetch_and_analyze_years(
+            lat, lon, start_year=sy, end_year=ey,
+            source='nex_gddp', model=model, scenario=scenario,
+        )
+    except TypeError as e:
+        raise RuntimeError(
+            "fetch_and_analyze_years did not accept NEX-GDDP arguments. "
+            "Either add a NEX-GDDP branch to seasons.py or use --fixed-season. "
+            f"({e})"
+        )
+    out = []
+    for y, seasons in sorted(seasons_dict.items()):
+        for i, s in enumerate(seasons, 1):
+            if not s.get('cessation'):
+                continue
+            out.append({
+                'start':         pd.to_datetime(s['onset']).strftime('%Y-%m-%d'),
+                'end':           pd.to_datetime(s['cessation']).strftime('%Y-%m-%d'),
+                'season_number': i,
+                'year':          y,
+                'total':         len(seasons),
+            })
+    return out
+
+def _evaluate(crop: str, lat: float, lon: float,
+              w: Dict, model: str, scenario: str) -> Dict:
+    """hazards.py-style assessment for a single window using NEX-GDDP."""
+    df    = _fetch(lat, lon, w['start'], w['end'], model, scenario)
+    stats = calculate_season_statistics(df)
+    th    = CROP_THRESHOLDS.get(crop.capitalize(), {})
+
+    hazards = {}
+    if 'Total Precip' in th and 'total_precipitation_mm' in stats:
+        v = stats['total_precipitation_mm']
+        hazards['precipitation'] = {'value_mm': round(v, 2),
+                                    'status':   evaluate_threshold(v, th['Total Precip'])}
+    if 'TAVG' in th and 'mean_temperature_c' in stats:
+        v = stats['mean_temperature_c']
+        hazards['temperature'] = {'value_c': round(v, 2),
+                                  'status':  evaluate_threshold(v, th['TAVG'])}
+    length = (datetime.fromisoformat(w['end'])
+              - datetime.fromisoformat(w['start'])).days
+    return {
+        'season_info': {**w, 'length_days': length},
+        'season_statistics': stats,
+        'hazard_evaluation': hazards,
+        'projection': {'model': model, 'scenario': scenario},
+    }
+
+# Aggregation -- ensemble means
+_SCALAR_KEYS = ['total_precipitation_mm', 'mean_daily_precipitation_mm',
+                'max_daily_precipitation_mm', 'rainy_days', 'dry_days',
+                'mean_temperature_c', 'mean_tmax_c', 'mean_tmin_c',
+                'max_temperature_c', 'min_temperature_c']
+
+def _avg_stats(rs: List[Dict]) -> Dict:
+    out = {}
+    if not rs:
+        return out
+    for k in _SCALAR_KEYS:
+        vs = [r['season_statistics'][k]
+              for r in rs if k in r.get('season_statistics', {})]
+        if vs:
+            out[k] = round(mean(vs), 2)
+
+    counts, max_l, mean_l = [], [], []
+    bucket_sums: Dict[str, float] = defaultdict(float)
+    for r in rs:
+        ds = r.get('season_statistics', {}).get('dry_spell_statistics')
+        if not ds:
+            continue
+        counts.append(ds['number_of_dry_spells'])
+        max_l.append(ds['max_dry_spell_length_days'])
+        if ds['number_of_dry_spells'] > 0:
+            mean_l.append(ds['mean_dry_spell_length_days'])
+        for bucket, n in (ds.get('length_distribution') or {}).items():
+            bucket_sums[bucket] += n   # missing buckets count as 0
+
+    if counts:
+        ds_out = {
+            'number_of_dry_spells':       round(mean(counts), 2),
+            'max_dry_spell_length_days':  round(mean(max_l), 2)  if max_l  else 0,
+            'mean_dry_spell_length_days': round(mean(mean_l), 2) if mean_l else 0,
+        }
+        if bucket_sums:
+            n_total = len(rs)
+            ds_out['length_distribution'] = {
+                b: round(total / n_total, 2) for b, total in bucket_sums.items()
+            }
+        out['dry_spell_statistics'] = ds_out
+    return out
+
+def _avg_hazards(crop: str, agg: Dict) -> Dict:
+    th  = CROP_THRESHOLDS.get(crop.capitalize(), {})
+    out = {}
+    if 'Total Precip' in th and 'total_precipitation_mm' in agg:
+        v = agg['total_precipitation_mm']
+        out['precipitation'] = {'value_mm': v,
+                                'status': evaluate_threshold(v, th['Total Precip'])}
+    if 'TAVG' in th and 'mean_temperature_c' in agg:
+        v = agg['mean_temperature_c']
+        out['temperature'] = {'value_c': v,
+                              'status': evaluate_threshold(v, th['TAVG'])}
+    return out
+
+# Driver
+def calculate_ensemble(crop: str, lat: float, lon: float,
+                       start_year: int, end_year: int,
+                       models: List[str], scenarios: List[str],
+                       fixed_season: Optional[str] = None) -> Dict:
+    mode = 'fixed_season' if fixed_season else 'auto_detect'
+    fixed_w = (_expand_windows(start_year, end_year, _parse_fixed(fixed_season))
+               if fixed_season else None)
+
+    print(f"\nNEX-GDDP ensemble: {crop} at ({lat:.4f}, {lon:.4f})  "
+          f"{start_year}-{end_year}")
+    print(f"  Mode: {mode}" + (f"  ({fixed_season})" if fixed_season else ""))
+    print(f"  Models: {len(models)}   Scenarios: {len(scenarios)}\n")
+
+    results: List[Dict] = []
+    for sc in scenarios:
+        for i, m in enumerate(models, 1):
+            print(f"  [{sc}] [{i}/{len(models)}] {m}")
+            try:
+                windows = (fixed_w if fixed_w is not None
+                           else _detect_windows(lat, lon, start_year, end_year, m, sc))
+            except Exception as e:
+                print(f"      ! detection failed: {e}")
+                continue
+            for w in windows:
+                tag = f"y{w['year']} s{w['season_number']}/{w['total']} {w['start']}->{w['end']}"
+                try:
+                    results.append(_evaluate(crop, lat, lon, w, m, sc))
+                    print(f"      {tag}  ✓")
+                except Exception as e:
+                    print(f"      {tag}  ✗ {e}")
+    if not results:
+        return {'error': 'No projections succeeded.'}
+
+    # Bucket by (year, season_number)
+    buckets: Dict[Tuple[int, int], List[Dict]] = defaultdict(list)
+    for r in results:
+        si = r['season_info']
+        buckets[(si['year'], si['season_number'])].append(r)
+
+    assessments = []
+    for (y, sn), bucket in sorted(buckets.items()):
+        agg     = _avg_stats(bucket)
+        onsets  = sorted(pd.to_datetime(r['season_info']['start']) for r in bucket)
+        ends    = sorted(pd.to_datetime(r['season_info']['end'])   for r in bucket)
+        lengths = [r['season_info']['length_days'] for r in bucket]
+        total   = max(r['season_info']['total'] for r in bucket)
+        assessments.append({
+            'year':                   y,
+            'season_number':          sn,
+            'total_seasons_per_year': total,
+            'n_projections':          len(bucket),
+            'window': {
+                'start_median':     onsets[len(onsets) // 2].strftime('%Y-%m-%d'),
+                'end_median':       ends[len(ends)     // 2].strftime('%Y-%m-%d'),
+                'length_days_mean': round(mean(lengths), 1),
+            },
+            'season_statistics': agg,
+            'hazard_evaluation': _avg_hazards(crop, agg),
         })
 
-    return dry_spells
-
-def calculate_season_statistics_enhanced(df: pd.DataFrame) -> Dict[str, float]:
-    """
-    Enhanced season statistics supporting NEX-GDDP and other data sources.
-    """
-    stats = {}
-
-    precip_col = None
-    for col in ['precipitation', 'precip', 'total_precipitation', 'pr', 'prcp', 'rainfall']:
-        if col in df.columns:
-            precip_col = col
-            break
-
-    if precip_col:
-        precip_data = df[precip_col].copy()
-        stats['total_precipitation_mm'] = precip_data.sum()
-        stats['mean_daily_precipitation_mm'] = precip_data.mean()
-        stats['max_daily_precipitation_mm'] = precip_data.max()
-        stats['rainy_days'] = (precip_data > 1.0).sum()
-        stats['dry_days'] = (precip_data <= 1.0).sum()
-
-        dry_spells = detect_dry_spells_enhanced(df, min_dry_days=7, precip_threshold=1.0)
-        dry_spell_stats = calculate_dry_spell_statistics(dry_spells)
-        stats['dry_spell_statistics'] = dry_spell_stats
-
-    tmax_col = None
-    tmin_col = None
-    for col in ['max_temperature', 'tmax', 'maximum_2m_air_temperature', 'tasmax', 'tmax_k']:
-        if col in df.columns:
-            tmax_col = col
-            break
-    for col in ['min_temperature', 'tmin', 'minimum_2m_air_temperature', 'tasmin', 'tmin_k']:
-        if col in df.columns:
-            tmin_col = col
-            break
-
-    if tmax_col and tmin_col:
-        tmax_data = df[tmax_col].copy()
-        tmin_data = df[tmin_col].copy()
-
-        if tmax_data.mean() > 100:
-            tmax_data = tmax_data - 273.15
-            tmin_data = tmin_data - 273.15
-
-        tavg = (tmax_data + tmin_data) / 2
-        stats['mean_temperature_c'] = tavg.mean()
-        stats['mean_tmax_c'] = tmax_data.mean()
-        stats['mean_tmin_c'] = tmin_data.mean()
-        stats['max_temperature_c'] = tmax_data.max()
-        stats['min_temperature_c'] = tmin_data.min()
-
-    return stats
-
-def calculate_single_projection(
-    crop_name: str,
-    location_coord: Tuple[float, float],
-    season_start: str,
-    season_end: str,
-    scenario: str,
-    model: str
-) -> Optional[Dict[str, Any]]:
-
-    try:
-        lat, lon = location_coord
-
-        # Using NEX-GDDP for future scenarios
-        if scenario != 'Historical' and PREPROCESS_AVAILABLE:
-            try:
-                df = preprocess_data(
-                    source='nex_gddp',
-                    location_coord=(lat, lon),
-                    variables=[ClimateVariable.precipitation, ClimateVariable.max_temperature, ClimateVariable.min_temperature],
-                    date_from=date.fromisoformat(season_start),
-                    date_to=date.fromisoformat(season_end),
-                    model=model,
-                    scenario=scenario
-                )
-
-                if not df.empty and len(df.columns) > 1:
-                    stats = calculate_season_statistics_enhanced(df)
-
-                    if stats:  # If we got stats
-                        crop_name_normalized = crop_name.capitalize()
-                        thresholds = CROP_THRESHOLDS.get(crop_name_normalized, {})
-
-                        hazard_eval = {}
-                        if 'Total Precip' in thresholds and 'total_precipitation_mm' in stats:
-                            precip_value = stats['total_precipitation_mm']
-                            precip_status = evaluate_threshold(precip_value, thresholds['Total Precip'])
-                            hazard_eval['precipitation'] = {'value_mm': round(precip_value, 2), 'status': precip_status}
-
-                        if 'TAVG' in thresholds and 'mean_temperature_c' in stats:
-                            temp_value = stats['mean_temperature_c']
-                            temp_status = evaluate_threshold(temp_value, thresholds['TAVG'])
-                            hazard_eval['temperature'] = {'value_c': round(temp_value, 2), 'status': temp_status}
-
-                        result = {
-                            'crop': crop_name,
-                            'location': {'latitude': lat, 'longitude': lon},
-                            'season_info': {
-                                'season_detected': True,
-                                'onset_date': season_start,
-                                'cessation_date': season_end,
-                                'length_days': (datetime.strptime(season_end, '%Y-%m-%d') - datetime.strptime(season_start, '%Y-%m-%d')).days,
-                                'method': 'nex_gddp'
-                            },
-                            'season_statistics': stats,
-                            'hazard_evaluation': hazard_eval,
-                            'projection': {'scenario': scenario, 'model': model}
-                        }
-                        return result
-            except Exception as e:
-                print(f"NEX-GDDP error: {e}")
-
-        # Fallback to regular hazards calculation
-        result = calculate_hazards(
-            crop_name=crop_name,
-            location_coord=location_coord,
-            date_from=season_start,
-            date_to=season_end,
-            season_start=season_start,
-            season_end=season_end
-        )
-
-        if 'error' not in result:
-            result['projection'] = {'scenario': scenario, 'model': model}
-
-        return result
-
-    except Exception as e:
-        print(f"Error: {e}")
-        return None
-
-def aggregate_ensemble_results(results: List[Dict[str, Any]], scenario: str) -> Dict[str, Any]:
-    if not results:
-        return {'error': f'No valid projections for {scenario}'}
-
-    precip_values = [r['season_statistics']['total_precipitation_mm'] for r in results if 'season_statistics' in r]
-    temp_values = [r['season_statistics']['mean_temperature_c'] for r in results if 'season_statistics' in r]
-    precip_statuses = [r['hazard_evaluation']['precipitation']['status'] for r in results if 'hazard_evaluation' in r and 'precipitation' in r['hazard_evaluation']]
-    temp_statuses = [r['hazard_evaluation']['temperature']['status'] for r in results if 'hazard_evaluation' in r and 'temperature' in r['hazard_evaluation']]
-
-    dry_spell_counts = []
-    max_dry_spell_lengths = []
-    mean_dry_spell_lengths = []
-    
-    for r in results:
-        if 'season_statistics' in r and 'dry_spell_statistics' in r['season_statistics']:
-            ds_stats = r['season_statistics']['dry_spell_statistics']
-            dry_spell_counts.append(ds_stats['number_of_dry_spells'])
-            max_dry_spell_lengths.append(ds_stats['max_dry_spell_length_days'])
-            if ds_stats['number_of_dry_spells'] > 0:
-                mean_dry_spell_lengths.append(ds_stats['mean_dry_spell_length_days'])
-
-    ensemble = {
-        'scenario': scenario,
-        'n_models': len(results),
-        'ensemble_statistics': {
-            'precipitation': {
-                'mean_mm': mean(precip_values) if precip_values else 0,
-                'min_mm': min(precip_values) if precip_values else 0,
-                'max_mm': max(precip_values) if precip_values else 0,
-                'std_mm': stdev(precip_values) if len(precip_values) > 1 else 0,
-            },
-            'temperature': {
-                'mean_c': mean(temp_values) if temp_values else 0,
-                'min_c': min(temp_values) if temp_values else 0,
-                'max_c': max(temp_values) if temp_values else 0,
-                'std_c': stdev(temp_values) if len(temp_values) > 1 else 0,
-            },
-            'dry_spells': {
-                'mean_count': round(mean(dry_spell_counts), 2) if dry_spell_counts else 0,
-                'min_count': min(dry_spell_counts) if dry_spell_counts else 0,
-                'max_count': max(dry_spell_counts) if dry_spell_counts else 0,
-                'std_count': round(stdev(dry_spell_counts), 2) if len(dry_spell_counts) > 1 else 0,
-                'mean_max_length_days': round(mean(max_dry_spell_lengths), 2) if max_dry_spell_lengths else 0,
-                'min_max_length_days': min(max_dry_spell_lengths) if max_dry_spell_lengths else 0,
-                'max_max_length_days': max(max_dry_spell_lengths) if max_dry_spell_lengths else 0,
-                'std_max_length_days': round(stdev(max_dry_spell_lengths), 2) if len(max_dry_spell_lengths) > 1 else 0,
-                'mean_of_mean_lengths_days': round(mean(mean_dry_spell_lengths), 2) if mean_dry_spell_lengths else 0,
-            }
-        },
-        'consensus': {
-            'precipitation': {
-                'status_distribution': {status: precip_statuses.count(status) for status in set(precip_statuses)},
-                'most_common': max(set(precip_statuses), key=precip_statuses.count) if precip_statuses else 'unknown',
-                'agreement_pct': (precip_statuses.count(max(set(precip_statuses), key=precip_statuses.count)) / len(precip_statuses) * 100) if precip_statuses else 0
-            },
-            'temperature': {
-                'status_distribution': {status: temp_statuses.count(status) for status in set(temp_statuses)},
-                'most_common': max(set(temp_statuses), key=temp_statuses.count) if temp_statuses else 'unknown',
-                'agreement_pct': (temp_statuses.count(max(set(temp_statuses), key=temp_statuses.count)) / len(temp_statuses) * 100) if temp_statuses else 0
-            }
-        },
-        'model_projections': results
-    }
-    return ensemble
-
-def calculate_ensemble_hazards(
-    crop_name: str,
-    location_coord: Tuple[float, float],
-    baseline_start: str,
-    baseline_end: str,
-    future_start: str,
-    future_end: str,
-    scenarios: List[str],
-    models: List[str]
-) -> Dict[str, Any]:
-
-    lat, lon = location_coord
-
-    print(f"\nCalculating ensemble for {crop_name}")
-    print(f"Location: ({lat:.4f}, {lon:.4f})")
-    print(f"Baseline: {baseline_start} to {baseline_end}")
-    print(f"Future:   {future_start} to {future_end}")
-    print(f"Scenarios: {len(scenarios)} SSPs")
-    print(f"Models: {len(models)} GCMs per scenario")
-    print(f"{'='*70}\n")
-
-    print(f"{'='*70}")
-    print(f"  BASELINE PERIOD (Historical)")
-    print(f"{'='*70}\n")
-
-    print(f"  Calculating baseline...", end=' ')
-    baseline_result = calculate_single_projection(
-        crop_name=crop_name,
-        location_coord=location_coord,
-        season_start=baseline_start,
-        season_end=baseline_end,
-        scenario='Historical',
-        model='Observed'
-    )
-
-    if baseline_result and 'error' not in baseline_result:
-        print("✓\n")
-    else:
-        print("✗\n")
-        return {'error': 'Baseline calculation failed'}
-
-    print(f"{'='*70}")
-    print(f"  FUTURE PERIOD (2031-2060)")
-    print(f"{'='*70}\n")
-
-    scenario_ensembles = {}
-
-    for scenario in scenarios:
-        print(f"\n  {'─'*66}")
-        print(f"  Scenario: {scenario}")
-        print(f"  {'─'*66}\n")
-
-        results = []
-        for i, model in enumerate(models, 1):
-            print(f"  [{i}/{len(models)}] {model}...", end=' ')
-
-            result = calculate_single_projection(
-                crop_name=crop_name,
-                location_coord=location_coord,
-                season_start=future_start,
-                season_end=future_end,
-                scenario=scenario,
-                model=model
-            )
-
-            if result and 'error' not in result:
-                results.append(result)
-                print("✓")
-            else:
-                print("✗")
-
-        print(f"\n  Complete: {len(results)}/{len(models)} models\n")
-
-        ensemble = aggregate_ensemble_results(results, scenario)
-
-        if baseline_result:
-            baseline_precip = baseline_result['season_statistics']['total_precipitation_mm']
-            baseline_temp = baseline_result['season_statistics']['mean_temperature_c']
-            future_precip = ensemble['ensemble_statistics']['precipitation']['mean_mm']
-            future_temp = ensemble['ensemble_statistics']['temperature']['mean_c']
-
-            change_from_baseline = {
-                'precipitation': {
-                    'absolute_mm': future_precip - baseline_precip,
-                    'percent': ((future_precip - baseline_precip) / baseline_precip * 100) if baseline_precip > 0 else 0
-                },
-                'temperature': {
-                    'absolute_c': future_temp - baseline_temp,
-                    'percent': ((future_temp - baseline_temp) / baseline_temp * 100) if baseline_temp > 0 else 0
-                }
-            }
-
-            if 'season_statistics' in baseline_result and 'dry_spell_statistics' in baseline_result['season_statistics']:
-                baseline_ds = baseline_result['season_statistics']['dry_spell_statistics']
-                future_ds = ensemble['ensemble_statistics']['dry_spells']
-                
-                baseline_count = baseline_ds['number_of_dry_spells']
-                baseline_max_length = baseline_ds['max_dry_spell_length_days']
-                
-                change_from_baseline['dry_spells'] = {
-                    'count': {
-                        'absolute': future_ds['mean_count'] - baseline_count,
-                        'percent': ((future_ds['mean_count'] - baseline_count) / baseline_count * 100) if baseline_count > 0 else 0
-                    },
-                    'max_length_days': {
-                        'absolute': future_ds['mean_max_length_days'] - baseline_max_length,
-                        'percent': ((future_ds['mean_max_length_days'] - baseline_max_length) / baseline_max_length * 100) if baseline_max_length > 0 else 0
-                    }
-                }
-
-            ensemble['change_from_baseline'] = change_from_baseline
-
-        scenario_ensembles[scenario] = ensemble
-
+    overall = _avg_stats(results)
     return {
-        'crop': crop_name,
-        'location': {'latitude': lat, 'longitude': lon},
-        'baseline': {
-            'period': {'start': baseline_start, 'end': baseline_end},
-            'results': baseline_result
+        'crop':              crop,
+        'location':          {'latitude': lat, 'longitude': lon},
+        'data_source':       'nex_gddp',
+        'period':            {'start_year': start_year, 'end_year': end_year},
+        'season_mode':       mode,
+        'season_definition': fixed_season,
+        'models':            models,
+        'scenarios':         scenarios,
+        'n_total_projections': len(results),
+        'assessments':       assessments,
+        'overall_ensemble': {
+            'n_projections':     len(results),
+            'season_statistics': overall,
+            'hazard_evaluation': _avg_hazards(crop, overall),
         },
-        'future': {
-            'period': {'start': future_start, 'end': future_end},
-            'ensembles': scenario_ensembles
-        },
-        'scenarios': scenarios,
-        'models': models
     }
 
-def print_ensemble_results(result: Dict[str, Any]):
-    if 'error' in result:
-        print(f"\nError: {result['error']}")
+# Pretty printer (mirrors hazards.py year/season blocks)
+def _sym(status: str) -> str:
+    return 'OK' if 'no_stress' in status else '!!' if 'moderate' in status else 'XX'
+
+def _bucket_key(b: str) -> int:
+    try:
+        return int(b.split('-')[0])
+    except (ValueError, IndexError):
+        return 999
+
+def _print_block(a: Dict, crop: str, lat: float, lon: float,
+                 mode: str, n_models: int, n_scenarios: int) -> None:
+    y, sn, t = a['year'], a['season_number'], a['total_seasons_per_year']
+    label = f"Year {y}  -  Season {sn} of {t}" if t > 1 else f"Year {y}"
+
+    print(f"\n{'─'*70}")
+    print(f"  {label}   (ensemble of {a['n_projections']} projections)")
+    print(f"\n{'='*70}")
+    print(f"  CROP HAZARD ASSESSMENT (ENSEMBLE): {crop.upper()}")
+    print(f"{'='*70}")
+    print(f"  Location: {lat:.4f}, {lon:.4f}")
+
+    w = a['window']
+    print(f"\n  Season Information")
+    print(f"  {'─'*66}")
+    print(f"  Onset (median):  {w['start_median']:<20} End (median): {w['end_median']}")
+    print(f"  Length (mean):   {w['length_days_mean']} days{'':10} Method: {mode}")
+    print(f"  Source:          nex_gddp ({n_models} models × {n_scenarios} scenarios)")
+
+    s = a['season_statistics']
+    if 'total_precipitation_mm' in s:
+        print(f"\n  Precipitation Statistics  (ensemble means)")
+        print(f"  {'─'*66}")
+        print(f"  {'Metric':<32} {'Value':>15}  Unit")
+        print(f"  {'─'*32} {'─'*15}  {'─'*10}")
+        print(f"  {'Total':<32} {s['total_precipitation_mm']:>15.2f}  mm")
+        print(f"  {'Daily Mean':<32} {s.get('mean_daily_precipitation_mm', 0):>15.2f}  mm")
+        print(f"  {'Daily Maximum':<32} {s.get('max_daily_precipitation_mm', 0):>15.2f}  mm")
+        print(f"  {'Rainy Days (>=1mm)':<32} {s.get('rainy_days', 0):>15.2f}  days")
+        print(f"  {'Dry Days (<1mm)':<32} {s.get('dry_days', 0):>15.2f}  days")
+
+    if 'dry_spell_statistics' in s:
+        ds = s['dry_spell_statistics']
+        print(f"\n  Dry Spell Statistics  (ensemble means; >=7 consecutive days <1mm)")
+        print(f"  {'─'*66}")
+        print(f"  {'Number of Dry Spells':<32} {ds['number_of_dry_spells']:>15.2f}  spells")
+        print(f"  {'Max Dry Spell Length':<32} {ds['max_dry_spell_length_days']:>15.2f}  days")
+        print(f"  {'Mean Dry Spell Length':<32} {ds['mean_dry_spell_length_days']:>15.2f}  days")
+
+        if ds.get('length_distribution'):
+            print(f"\n  Length Distribution  (mean spell count per bucket)")
+            print(f"  {'─'*66}")
+            for rng in sorted(ds['length_distribution'].keys(), key=_bucket_key):
+                cnt = ds['length_distribution'][rng]
+                print(f"  {rng:<15} days: {cnt:>6.2f} spell(s)")
+
+    if 'mean_temperature_c' in s:
+        print(f"\n  Temperature Statistics  (ensemble means)")
+        print(f"  {'─'*66}")
+        print(f"  {'Metric':<32} {'Value':>15}  Unit")
+        print(f"  {'─'*32} {'─'*15}  {'─'*10}")
+        print(f"  {'Mean Temperature':<32} {s['mean_temperature_c']:>15.2f}  deg C")
+        print(f"  {'Mean Tmax':<32} {s.get('mean_tmax_c', 0):>15.2f}  deg C")
+        print(f"  {'Mean Tmin':<32} {s.get('mean_tmin_c', 0):>15.2f}  deg C")
+        print(f"  {'Maximum Recorded':<32} {s.get('max_temperature_c', 0):>15.2f}  deg C")
+        print(f"  {'Minimum Recorded':<32} {s.get('min_temperature_c', 0):>15.2f}  deg C")
+
+    h = a['hazard_evaluation']
+    print(f"\n  Hazard Assessment  (based on ensemble means)")
+    print(f"  {'─'*66}")
+    print(f"  {'Indicator':<25} {'Value':>18}  Status")
+    print(f"  {'─'*25} {'─'*18}  {'─'*20}")
+    if 'precipitation' in h:
+        p = h['precipitation']
+        print(f"  {'Precipitation':<25} {p['value_mm']:>16.2f} mm  "
+              f"[{_sym(p['status'])}] {p['status'].replace('_', ' ').upper()}")
+    if 'temperature' in h:
+        t_ = h['temperature']
+        print(f"  {'Temperature':<25} {t_['value_c']:>16.2f} degC "
+              f"[{_sym(t_['status'])}] {t_['status'].replace('_', ' ').upper()}")
+    print(f"\n{'='*70}")
+
+def print_results(r: Dict) -> None:
+    if 'error' in r:
+        print(f"\nError: {r['error']}")
         return
 
+    crop = r['crop']
+    lat, lon = r['location']['latitude'], r['location']['longitude']
+    mode = r['season_mode'] + (f" ({r['season_definition']})" if r.get('season_definition') else '')
+    nm, ns = len(r['models']), len(r['scenarios'])
+
     print(f"\n{'='*70}")
-    print(f"  ENSEMBLE HAZARD ASSESSMENT: {result['crop'].upper()}")
+    print(f"  ENSEMBLE HAZARD ASSESSMENT (NEX-GDDP)")
     print(f"{'='*70}")
-    print(f"  Location: {result['location']['latitude']:.4f}, {result['location']['longitude']:.4f}")
-    print(f"  Models: {len(result['models'])} GCMs per scenario")
-    print(f"{'='*70}\n")
+    print(f"  Crop:              {crop}")
+    print(f"  Location:          {lat:.4f}, {lon:.4f}")
+    print(f"  Period:            {r['period']['start_year']} -> {r['period']['end_year']}")
+    print(f"  Mode:              {mode}")
+    print(f"  Models:            {nm}")
+    print(f"  Scenarios:         {', '.join(r['scenarios'])}")
+    print(f"  Total projections: {r['n_total_projections']}")
 
-    baseline = result['baseline']['results']
-    baseline_period = result['baseline']['period']
-    future_period = result['future']['period']
+    for a in r['assessments']:
+        _print_block(a, crop, lat, lon, mode, nm, ns)
 
+    o = r['overall_ensemble']
+    s, h = o['season_statistics'], o['hazard_evaluation']
+    print(f"\n{'─'*70}")
+    print(f"  OVERALL ENSEMBLE  (across all year × season × model × scenario)")
+    print(f"  n = {o['n_projections']} projections")
     print(f"  {'─'*66}")
-    print(f"  BASELINE ({baseline_period['start']} to {baseline_period['end']})")
-    print(f"  {'─'*66}")
-
-    if baseline:
-        b_stats = baseline['season_statistics']
-        b_hazards = baseline['hazard_evaluation']
-
-        print(f"    Precipitation: {b_stats['total_precipitation_mm']:.2f} mm")
-        precip_status = b_hazards['precipitation']['status'].replace('_', ' ').upper()
-        precip_sym = '✓' if 'no_stress' in b_hazards['precipitation']['status'] else '⚠' if 'moderate' in b_hazards['precipitation']['status'] else '✗'
-        print(f"      Status: {precip_sym} {precip_status}")
-
-        print(f"    Temperature: {b_stats['mean_temperature_c']:.2f} °C")
-        temp_status = b_hazards['temperature']['status'].replace('_', ' ').upper()
-        temp_sym = '✓' if 'no_stress' in b_hazards['temperature']['status'] else '⚠' if 'moderate' in b_hazards['temperature']['status'] else '✗'
-        print(f"      Status: {temp_sym} {temp_status}")
-
-        if 'dry_spell_statistics' in b_stats:
-            ds_stats = b_stats['dry_spell_statistics']
-            print(f"    Dry Spells: {ds_stats['number_of_dry_spells']} spells")
-            if ds_stats['number_of_dry_spells'] > 0:
-                print(f"      Max Length: {ds_stats['max_dry_spell_length_days']} days")
-                print(f"      Mean Length: {ds_stats['mean_dry_spell_length_days']:.2f} days")
-
-    print(f"\n  {'─'*66}")
-    print(f"  FUTURE ({future_period['start']} to {future_period['end']})")
-    print(f"  {'─'*66}\n")
-
-    for scenario, ensemble in result['future']['ensembles'].items():
-        if 'error' in ensemble:
-            print(f"\n  {scenario}: {ensemble['error']}")
-            continue
-
-        stats = ensemble['ensemble_statistics']
-        consensus = ensemble['consensus']
-        changes = ensemble.get('change_from_baseline', {})
-
-        print(f"\n  {'─'*66}")
-        print(f"  SCENARIO: {scenario}")
-        print(f"  {'─'*66}")
-        print(f"    Models: {ensemble['n_models']}")
-
-        print(f"\n    Precipitation Ensemble")
-        print(f"    {'-'*62}")
-        print(f"      {'Metric':<28} {'Value':>12}  {'Change':<12}")
-        print(f"      {'-'*28} {'-'*12}  {'-'*12}")
-
-        precip_change = changes.get('precipitation', {})
-        change_str = f"+{precip_change.get('absolute_mm', 0):.1f}mm" if precip_change.get('absolute_mm', 0) >= 0 else f"{precip_change.get('absolute_mm', 0):.1f}mm"
-        pct_str = f"({precip_change.get('percent', 0):+.1f}%)" if precip_change else ""
-
-        print(f"      {'Mean':<28} {stats['precipitation']['mean_mm']:>12.2f}  {change_str} {pct_str}")
-        print(f"      {'Range':<28} {stats['precipitation']['min_mm']:>12.2f}  ")
-        print(f"      {'':<28} {stats['precipitation']['max_mm']:>12.2f}  ")
-        print(f"      {'Std Deviation':<28} {stats['precipitation']['std_mm']:>12.2f}  ")
-
-        print(f"\n    Temperature Ensemble")
-        print(f"    {'-'*62}")
-        print(f"      {'Metric':<28} {'Value':>12}  {'Change':<12}")
-        print(f"      {'-'*28} {'-'*12}  {'-'*12}")
-
-        temp_change = changes.get('temperature', {})
-        change_str = f"+{temp_change.get('absolute_c', 0):.2f}°C" if temp_change.get('absolute_c', 0) >= 0 else f"{temp_change.get('absolute_c', 0):.2f}°C"
-        pct_str = f"({temp_change.get('percent', 0):+.1f}%)" if temp_change else ""
-
-        print(f"      {'Mean':<28} {stats['temperature']['mean_c']:>12.2f}  {change_str} {pct_str}")
-        print(f"      {'Range':<28} {stats['temperature']['min_c']:>12.2f}  ")
-        print(f"      {'':<28} {stats['temperature']['max_c']:>12.2f}  ")
-        print(f"      {'Std Deviation':<28} {stats['temperature']['std_c']:>12.2f}  ")
-
-        if 'dry_spells' in stats and stats['dry_spells']['mean_count'] > 0:
-            print(f"\n    Dry Spell Ensemble")
-            print(f"    {'-'*62}")
-            print(f"      {'Metric':<28} {'Value':>12}  {'Change':<12}")
-            print(f"      {'-'*28} {'-'*12}  {'-'*12}")
-
-            ds_change = changes.get('dry_spells', {})
-            
-            if 'count' in ds_change:
-                count_change = ds_change['count']['absolute']
-                change_str = f"+{count_change:.2f}" if count_change >= 0 else f"{count_change:.2f}"
-                pct_str = f"({ds_change['count']['percent']:+.1f}%)"
-                print(f"      {'Mean Spell Count':<28} {stats['dry_spells']['mean_count']:>12.2f}  {change_str} {pct_str}")
-            else:
-                print(f"      {'Mean Spell Count':<28} {stats['dry_spells']['mean_count']:>12.2f}  ")
-            
-            print(f"      {'Range':<28} {stats['dry_spells']['min_count']:>12}  ")
-            print(f"      {'':<28} {stats['dry_spells']['max_count']:>12}  ")
-            print(f"      {'Std Deviation':<28} {stats['dry_spells']['std_count']:>12.2f}  ")
-            
-            if 'max_length_days' in ds_change:
-                length_change = ds_change['max_length_days']['absolute']
-                change_str = f"+{length_change:.2f}d" if length_change >= 0 else f"{length_change:.2f}d"
-                pct_str = f"({ds_change['max_length_days']['percent']:+.1f}%)"
-                print(f"      {'Mean Max Length':<28} {stats['dry_spells']['mean_max_length_days']:>12.2f}  {change_str} {pct_str}")
-            else:
-                print(f"      {'Mean Max Length':<28} {stats['dry_spells']['mean_max_length_days']:>12.2f}  ")
-            
-            print(f"      {'Range':<28} {stats['dry_spells']['min_max_length_days']:>12}  ")
-            print(f"      {'':<28} {stats['dry_spells']['max_max_length_days']:>12}  ")
-
-        print(f"\n    Consensus")
-        print(f"    {'-'*62}")
-        precip_status = consensus['precipitation']['most_common'].replace('_', ' ').upper()
-        precip_agree = consensus['precipitation']['agreement_pct']
-        precip_sym = '✓' if 'no_stress' in consensus['precipitation']['most_common'] else '⚠' if 'moderate' in consensus['precipitation']['most_common'] else '✗'
-
-        temp_status = consensus['temperature']['most_common'].replace('_', ' ').upper()
-        temp_agree = consensus['temperature']['agreement_pct']
-        temp_sym = '✓' if 'no_stress' in consensus['temperature']['most_common'] else '⚠' if 'moderate' in consensus['temperature']['most_common'] else '✗'
-
-        print(f"      Precipitation: {precip_sym} {precip_status} ({precip_agree:.0f}% agreement)")
-        print(f"      Temperature:   {temp_sym} {temp_status} ({temp_agree:.0f}% agreement)")
-
+    print(f"  Precipitation (mean): {s.get('total_precipitation_mm', 0):.2f} mm per season")
+    print(f"  Temperature   (mean): {s.get('mean_temperature_c', 0):.2f} deg C")
+    if 'dry_spell_statistics' in s:
+        ds = s['dry_spell_statistics']
+        print(f"  Dry spells    (mean): {ds['number_of_dry_spells']:.2f} per season  "
+              f"(max length {ds['max_dry_spell_length_days']:.2f} days)")
+    if 'precipitation' in h:
+        print(f"  Precip status:        [{_sym(h['precipitation']['status'])}] "
+              f"{h['precipitation']['status'].replace('_', ' ').upper()}")
+    if 'temperature' in h:
+        print(f"  Temp   status:        [{_sym(h['temperature']['status'])}] "
+              f"{h['temperature']['status'].replace('_', ' ').upper()}")
     print(f"\n{'='*70}\n")
 
+# CLI
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Calculate ensemble crop hazard indices with baseline comparison')
-    parser.add_argument('crop', type=str, help='Crop name')
-    parser.add_argument('--location', type=str, required=True, help='Location as "lat,lon"')
-    parser.add_argument('--baseline-start', type=str, required=True, help='Baseline start (YYYY-MM-DD)')
-    parser.add_argument('--baseline-end', type=str, required=True, help='Baseline end (YYYY-MM-DD)')
-    parser.add_argument('--future-start', type=str, required=True, help='Future start (YYYY-MM-DD)')
-    parser.add_argument('--future-end', type=str, required=True, help='Future end (YYYY-MM-DD)')
-    parser.add_argument('--scenarios', type=str, default='SSP1-2.6,SSP2-4.5,SSP5-8.5',
-                       help='Comma-separated SSP scenarios')
-    parser.add_argument('--models', type=str,
-                       help='Comma-separated GCM models (default: 5 models)')
-    parser.add_argument('--format', choices=['json', 'text'], default='text', help='Output format')
-    parser.add_argument('--output', type=str, help='Output file')
+    p = argparse.ArgumentParser(
+        description='Ensemble of hazards.py across NEX-GDDP models x scenarios.',
+    )
+    p.add_argument('crop', nargs='?', default='maize',
+                   help='Crop name (default: maize). Same options as hazards.py.')
+    p.add_argument('--list-models', action='store_true',
+                   help='Print available models & scenarios, then exit.')
+    p.add_argument('--location',     type=str, help='"lat,lon"')
+    p.add_argument('--start-year',   type=int)
+    p.add_argument('--end-year',     type=int)
+    p.add_argument('--fixed-season', type=str, default=None,
+                   metavar='MM-DD:MM-DD[,MM-DD:MM-DD]',
+                   help="omit for auto-detect; otherwise single, two, or year-crossing windows")
+    p.add_argument('--models',       type=str, default=','.join(MODELS),
+                   help='comma-separated GCMs (default: all 16)')
+    p.add_argument('--scenarios',    type=str, default=','.join(SCENARIOS),
+                   help=f"comma-separated scenarios (default: {','.join(SCENARIOS)})")
+    p.add_argument('--format',       choices=['json', 'text'], default='text')
+    p.add_argument('--output',       type=str, default=None,
+                   help='write full result as JSON to this path')
+    args = p.parse_args()
 
-    args = parser.parse_args()
+    if args.list_models:
+        print("Models:");    [print(f"  {m}") for m in MODELS]
+        print("\nScenarios:"); [print(f"  {s}") for s in SCENARIOS]
+        sys.exit(0)
 
-    lat, lon = map(float, args.location.split(','))
-    scenarios = args.scenarios.split(',')
+    missing = [n for n, v in (('--location',  args.location),
+                              ('--start-year', args.start_year),
+                              ('--end-year',   args.end_year)) if v in (None, '')]
+    if missing:
+        p.error(f"missing required arguments: {', '.join(missing)}")
 
-    if args.models:
-        models = args.models.split(',')
-    else:
-        models = ['ACCESS-CM2', 'CanESM5', 'GFDL-ESM4', 'MIROC6', 'MRI-ESM2-0']
+    lat, lon  = map(float, args.location.split(','))
+    models    = [s.strip() for s in args.models.split(',')    if s.strip()]
+    scenarios = [s.strip() for s in args.scenarios.split(',') if s.strip()]
 
-    result = calculate_ensemble_hazards(
-        crop_name=args.crop,
-        location_coord=(lat, lon),
-        baseline_start=args.baseline_start,
-        baseline_end=args.baseline_end,
-        future_start=args.future_start,
-        future_end=args.future_end,
-        scenarios=scenarios,
-        models=models
+    result = calculate_ensemble(
+        crop=args.crop,
+        lat=lat, lon=lon,
+        start_year=args.start_year, end_year=args.end_year,
+        models=models, scenarios=scenarios,
+        fixed_season=args.fixed_season,
     )
 
     if args.format == 'json':
-        output = json.dumps(result, indent=2, default=str)
-        print(output)
-        if args.output:
-            with open(args.output, 'w') as f:
-                f.write(output)
+        print(json.dumps(result, indent=2, default=str))
     else:
-        print_ensemble_results(result)
-        if args.output:
-            with open(args.output, 'w') as f:
-                f.write(json.dumps(result, indent=2, default=str))
-                
-# python -m climate_tookit.calculate_hazards.ensemble_hazards maize --location="-1.286,36.817" --baseline-start 1991-03-01 --baseline-end 1991-06-30 --future-start 2045-03-01 --future-end 2045-06-30 --models ACCESS-CM2,CanESM5,GFDL-ESM4,MIROC6,MRI-ESM2-0
+        print_results(result)
 
-# python -m climate_tookit.calculate_hazards.ensemble_hazards maize --location="-1.286,36.817" --baseline-start 1991-03-01 --baseline-end 1991-06-30 --future-start 2045-03-01 --future-end 2045-06-30 --models ACCESS-CM2,ACCESS-ESM1-5,CanESM5,CMCC-ESM2,EC-Earth3,EC-Earth3-Veg-LR,GFDL-ESM4,INM-CM4-8,INM-CM5-0,KACE-1-0-G,MIROC6,MPI-ESM1-2-LR,MRI-ESM2-0,NorESM2-LM,NorESM2-MM,TaiESM1
+    if args.output:
+        os.makedirs(os.path.dirname(os.path.abspath(args.output)) or '.', exist_ok=True)
+        with open(args.output, 'w') as f:
+            json.dump(result, f, indent=2, default=str)
+        print(f"Saved to: {args.output}")
+        
+# NOTE: the 1st command in a section includes all models/scenarios while the 2nd allows selection  
+   
+# Fixed single season:
+# python -m climate_tookit.calculate_hazards.ensemble_hazards millet --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "03-01:05-31" --scenarios ssp245,ssp585 --output ensemble_mam_all.json
+# python -m climate_tookit.calculate_hazards.ensemble_hazards maize --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "03-01:05-31" --models "ACCESS-CM2,EC-Earth3,MRI-ESM2-0" --scenarios ssp585 --output ensemble_mam.json
+
+# Fixed two seasons:
+# python -m climate_tookit.calculate_hazards.ensemble_hazards rice --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "03-01:05-31,10-01:12-15" --scenarios ssp245,ssp585 --output ensemble_mam_ond_all.json
+# python -m climate_tookit.calculate_hazards.ensemble_hazards beans --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "03-01:05-31,10-01:12-15" --models "ACCESS-CM2,EC-Earth3,MRI-ESM2-0" --scenarios ssp245,ssp585 --output ensemble_mam_ond.json
+
+# Fixed year-crossing season:
+# python -m climate_tookit.calculate_hazards.ensemble_hazards sorghum --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "11-01:02-28" --scenarios ssp245,ssp585 --output ensemble_njf_all.json
+# python -m climate_tookit.calculate_hazards.ensemble_hazards cassava --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "11-01:02-28" --models "ACCESS-CM2,EC-Earth3,MRI-ESM2-0" --scenarios ssp585 --output ensemble_njf.json
+
+# List available NEX-GDDP models and scenarios:
+# python -m climate_tookit.calculate_hazards.ensemble_hazards --list-models
+
+# Auto-detect season (NEX-GDDP per (model, scenario), no flag) -- all models, pick scenarios:
+# python -m climate_tookit.calculate_hazards.ensemble_hazards maize --location="-1.286,36.817" --start-year 2040 --end-year 2060 --scenarios ssp245,ssp585 --output ensemble_auto_all.json
+
+# Auto-detect season -- custom subset:
+# python -m climate_tookit.calculate_hazards.ensemble_hazards maize --location="-1.286,36.817" --start-year 2040 --end-year 2060 --models "ACCESS-CM2,EC-Earth3,MRI-ESM2-0" --scenarios ssp245,ssp585 --output ensemble_auto.json
