@@ -1,35 +1,34 @@
 """
-Ensemble Period Comparison Module
+NEX-GDDP Ensemble Period Comparison
 
-Runs future-vs-baseline climate statistics comparison across all 16 NEX-GDDP
-CMIP6 models, then computes an ensemble-mean future and compares that ensemble
-future against one shared historical baseline.
+Runs the same focal-vs-baseline comparison as periods.compare(), once per NEX-GDDP CMIP6 model, then averages the per-model results into a single
+ensemble comparison.
+Both baseline and focal data come from NEX-GDDP, so each model is compared against its own historical run (the standard model-bias-removing convention).
 
-This is NOT model-vs-model comparison.
-Each model contributes one future-period result. Those 16 future values are
-averaged into a single ensemble mean per metric, which is then compared against
-the shared historical baseline. The output contains ONE result — the average.
+Why we don't just call periods.compare() in the loop:
+    periods.compare()'s signature doesn't accept arbitrary source kwargs, so 'model' and 'scenario' can't flow through it. Rather than modify periods.py,
+    this module reuses periods.py's diff helpers (_diff_raw, _diff_block, _diff_annual, _annualize, _agg_seasons, _round) inside a local
+    _compare_one_model() that calls analyze_climate_statistics directly with model+scenario. The per-model output shape is identical to compare()'s, so downstream aggregation is unchanged.
 
-Usage (CLI):
-    python ensemble_periods.py --location="-1.286,36.817" \
-        --baseline-start 1991 --baseline-end 2020 --baseline-source nasa_power \
-        --future-start 2040 --future-end 2060 --scenario ssp245
-
-    python ensemble_periods.py --location="-1.286,36.817" \
-        --baseline-start 1991 --baseline-end 2020 --baseline-source nasa_power \
-        --future-start 2040 --future-end 2060 --scenario ssp245 \
-        --exclude-models "CanESM5,KACE-1-0-G" --output results.json
-
-    python ensemble_periods.py --list-models
+Output mirrors periods.compare()'s four-section shape, with each leaf replaced by ensemble means + model spread:
+    {
+        focal_year, baseline_period, scenario, fixed_season,
+        models_used, models_failed, n_models_ok,
+        raw_climate_summary: {var: {stat: {<m>_ensemble_mean, model_spread}}},
+        overall_statistics : {cat: {metric: {<m>_ensemble_mean, model_spread}}},
+        season_statistics  : {windows: [...]} | {n_models, diff: {...}},
+        annual_summary     : {annual_rain_mm_focal/diff/pct: spread, humid_models},
+        metadata           : {...},
+    }
 """
 
 import sys
 import os
 import math
-import statistics
-import logging
 import json
+import logging
 import argparse
+import statistics as pystat
 from datetime import datetime
 from typing import Dict, Any, Tuple, List, Optional
 
@@ -37,505 +36,557 @@ import pandas as pd
 
 logging.disable(logging.INFO)
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
+current_dir  = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(os.path.dirname(current_dir))
 sys.path.insert(0, project_root)
 
+from climate_tookit.climate_statistics.statistics import analyze_climate_statistics
 from climate_tookit.compare_periods.periods import (
-    calculate_baseline_statistics,
-    compare_future_vs_baseline,
+    _annualize, _agg_seasons, _round,
+    _diff_raw, _diff_block, _diff_annual,
+    PRECIP_ONLY,
 )
 
-pd.set_option("display.float_format", lambda x: f"{x:.2f}")
-
-
-# Corrected model list — aligned with what compare_future_vs_baseline() accepts.
 NEX_GDDP_MODELS: List[str] = [
-    "ACCESS-CM2",
-    "ACCESS-ESM1-5",
-    "CanESM5",
-    "CMCC-ESM2",
-    "EC-Earth3",
-    "EC-Earth3-Veg-LR",
-    "GFDL-ESM4",
-    "INM-CM4-8",
-    "INM-CM5-0",
-    "KACE-1-0-G",
-    "MIROC6",
-    "MPI-ESM1-2-LR",
-    "MRI-ESM2-0",
-    "NorESM2-LM",
-    "NorESM2-MM",
-    "TaiESM1",
+    "ACCESS-CM2", "ACCESS-ESM1-5", "CanESM5", "CMCC-ESM2", "EC-Earth3",
+    "EC-Earth3-Veg-LR", "GFDL-ESM4", "INM-CM4-8", "INM-CM5-0", "KACE-1-0-G",
+    "MIROC6", "MPI-ESM1-2-LR", "MRI-ESM2-0", "NorESM2-LM", "NorESM2-MM", "TaiESM1",
 ]
+# Canonical scenarios accepted by analyze_climate_statistics for NEX-GDDP.
+SSP_SCENARIOS: List[str] = ["ssp126", "ssp245", "ssp585", "historical"]
 
-SSP_SCENARIOS: List[str] = ["ssp126", "ssp245", "ssp370", "ssp585"]
+# Accept both the dotted/dashed CMIP6 labels and the lowercase canonical forms.
+SCENARIO_ALIASES: Dict[str, str] = {
+    "SSP1-2.6": "ssp126", "SSP2-4.5": "ssp245", "SSP5-8.5": "ssp585",
+    "ssp126":   "ssp126", "ssp245":   "ssp245", "ssp585":   "ssp585",
+    "historical": "historical",
+}
 
-COMPARISON_CATEGORIES = ["precipitation", "temperature", "et0", "water_balance"]
+def _normalize_scenario(s: str) -> Optional[str]:
+    """Map any accepted alias to the canonical scenario string, else None."""
+    return SCENARIO_ALIASES.get(s.strip()) if isinstance(s, str) else None
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ──────────────────────────────────────────────────────────────────────────────
+# helpers
+def _is_num(x: Any) -> bool:
+    return (isinstance(x, (int, float))
+            and not isinstance(x, bool)
+            and not (isinstance(x, float) and math.isnan(x)))
 
 def _percentile(data: List[float], p: float) -> Optional[float]:
-    """Compute a simple interpolated percentile."""
     if not data:
         return None
     s = sorted(data)
     idx = (p / 100) * (len(s) - 1)
-    lo = int(math.floor(idx))
-    hi = int(math.ceil(idx))
+    lo, hi = int(math.floor(idx)), int(math.ceil(idx))
     if lo == hi:
         return round(s[lo], 2)
     return round(s[lo] + (idx - lo) * (s[hi] - s[lo]), 2)
 
-
-def _clean_numeric(values: List[Any]) -> List[float]:
-    """Keep only numeric non-NaN values."""
-    clean: List[float] = []
-    for v in values:
-        if isinstance(v, bool):
-            continue
-        if isinstance(v, (int, float)):
-            if isinstance(v, float) and math.isnan(v):
-                continue
-            clean.append(float(v))
-    return clean
-
-
-def _ensemble_stats(values: List[Any]) -> Dict[str, Any]:
-    """
-    Compute descriptive statistics across all models' future values for one
-    metric. The 'mean' is the ensemble average used in all comparisons.
-    """
-    clean = _clean_numeric(values)
+def _spread(values: List[float]) -> Dict[str, Any]:
+    """Cross-model spread for one numeric vector."""
+    clean = [float(v) for v in values if _is_num(v)]
     if not clean:
-        return {
-            "mean": None, "median": None, "std": None,
-            "min": None, "max": None,
-            "p10": None, "p25": None, "p75": None, "p90": None,
-            "n": 0,
-        }
+        return {"n": 0, "mean": None, "std": None, "min": None, "max": None,
+                "p10": None, "p90": None}
     return {
-        "mean":   round(statistics.mean(clean), 2),
-        "median": round(statistics.median(clean), 2),
-        "std":    round(statistics.stdev(clean), 2) if len(clean) > 1 else 0.0,
-        "min":    round(min(clean), 2),
-        "max":    round(max(clean), 2),
-        "p10":    _percentile(clean, 10),
-        "p25":    _percentile(clean, 25),
-        "p75":    _percentile(clean, 75),
-        "p90":    _percentile(clean, 90),
-        "n":      len(clean),
+        "n":    len(clean),
+        "mean": round(pystat.mean(clean), 2),
+        "std":  round(pystat.stdev(clean), 2) if len(clean) > 1 else 0.0,
+        "min":  round(min(clean), 2),
+        "max":  round(max(clean), 2),
+        "p10":  _percentile(clean, 10),
+        "p90":  _percentile(clean, 90),
     }
 
-
-def _filter_models(
-    models: Optional[List[str]],
-    exclude_models: Optional[List[str]],
-) -> List[str]:
+def _filter_models(models: Optional[List[str]],
+                   exclude_models: Optional[List[str]]) -> List[str]:
     active = list(models) if models else list(NEX_GDDP_MODELS)
     if exclude_models:
-        excluded = {m.upper() for m in exclude_models}
-        active = [m for m in active if m.upper() not in excluded]
+        excl = {m.upper() for m in exclude_models}
+        active = [m for m in active if m.upper() not in excl]
     return active
 
-
-def _safe_number(value: Any) -> Optional[float]:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        if isinstance(value, float) and math.isnan(value):
-            return None
-        return float(value)
-    return None
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Per-model run
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _run_single_model(
-    model: str,
-    location_coord: Tuple[float, float],
-    future_years: Tuple[int, int],
-    baseline_stats: Dict[str, Any],
-    scenario: str,
-) -> Dict[str, Any]:
-    """Run future-vs-baseline for one model. Returns {model, error, comparison}."""
-    try:
-        comparison = compare_future_vs_baseline(
-            location_coord=location_coord,
-            future_years=future_years,
-            baseline_stats=baseline_stats,
-            source="nex_gddp",
-            model=model,
-            scenario=scenario,
-        )
-        if "error" in comparison:
-            return {"model": model, "error": comparison["error"], "comparison": None}
-        return {"model": model, "error": None, "comparison": comparison}
-    except Exception as exc:
-        return {"model": model, "error": str(exc), "comparison": None}
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Aggregation  →  single ensemble average
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _aggregate_ensemble(
-    model_results: List[Dict[str, Any]],
-    baseline_stats: Dict[str, Any],
+# per-model comparison (replicates periods.compare with model+scenario kwargs)
+def _compare_one_model(
+    location:       Tuple[float, float],
+    baseline_start: int,
+    baseline_end:   int,
+    focal_year:     int,
+    fixed_season:   Optional[str],
+    model:          str,
+    scenario:       str,
 ) -> Dict[str, Any]:
     """
-    Pool all 16 models' future values per metric and compute a single average.
+    Same logic as periods.compare(), but pinned to source='nex_gddp' and forwarding model+scenario to analyze_climate_statistics. periods.compare() 
+    can't do this directly because its signature doesn't accept arbitrary source kwargs, so we replicate the compare flow here using periods.py's 
+    diff helpers to keep the output shape identical.
+    """
+    if baseline_end < baseline_start:
+        return {"error": "baseline_end must be >= baseline_start"}
 
-    Returns one flat result per category/metric:
-        {
-            category: {
-                metric: {
-                    baseline:       float,
-                    future:         float,   <- ensemble mean (average of all models)
-                    difference:     float,
-                    percent_change: float,
-                    model_spread: {          <- uncertainty info only, no per-model data
-                        std, min, max, p10, p90, n_models
-                    }
-                }
+    n_years   = baseline_end - baseline_start + 1
+    drop_temp = "nex_gddp" in PRECIP_ONLY  # NEX-GDDP carries tas, so False
+    fs_kw     = {"fixed_season": fixed_season} if fixed_season else {}
+
+    base = analyze_climate_statistics(
+        location_coord=location,
+        start_year=baseline_start, end_year=baseline_end,
+        source="nex_gddp",
+        model=model, scenario=scenario,
+        **fs_kw,
+    )
+    focal = analyze_climate_statistics(
+        location_coord=location,
+        start_year=focal_year, end_year=focal_year,
+        source="nex_gddp",
+        model=model, scenario=scenario,
+        **fs_kw,
+    )
+    # 1. raw_climate_summary
+    raw_diff = _diff_raw(focal.get("raw_climate_summary", []),
+                         base.get("raw_climate_summary",  []),
+                         drop_temp)
+    
+    # 2. overall_statistics (annualise baseline)
+    base_overall  = _annualize(_round(base.get("overall_statistics", {}), 2), n_years)
+    focal_overall = _round(focal.get("overall_statistics", {}), 2)
+    overall_diff  = _diff_block(focal_overall, base_overall,
+                                "focal_year", "baseline_avg", drop_temp)
+    
+    # 3. season_statistics
+    base_seasons  = _round(base.get("season_statistics",  []), 2)
+    focal_seasons = _round(focal.get("season_statistics", []), 2)
+    season_diff: Optional[Dict[str, Any]] = None
+    if base_seasons or focal_seasons:
+        if fixed_season:
+            labels = [w.strip() for w in fixed_season.split(",")]
+            base_grp:  Dict[int, List[Dict]] = {}
+            focal_grp: Dict[int, List[Dict]] = {}
+            for s in base_seasons:
+                base_grp.setdefault(s.get("season_number", 1), []).append(s)
+            for s in focal_seasons:
+                focal_grp.setdefault(s.get("season_number", 1), []).append(s)
+            windows = []
+            for sn in sorted(set(base_grp) | set(focal_grp)):
+                label = labels[sn - 1] if 0 < sn <= len(labels) else f"window_{sn}"
+                fb = _agg_seasons(focal_grp.get(sn, []))
+                bb = _agg_seasons(base_grp.get(sn, []))
+                windows.append({
+                    "window":        label,
+                    "season_number": sn,
+                    "n_baseline":    bb["_n"],
+                    "n_focal":       fb["_n"],
+                    "diff":          _diff_block(fb, bb, "focal", "baseline_avg",
+                                                 drop_temp),
+                })
+            season_diff = {"windows": windows}
+        else:
+            fb = _agg_seasons(focal_seasons)
+            bb = _agg_seasons(base_seasons)
+            season_diff = {
+                "n_baseline": bb["_n"],
+                "n_focal":    fb["_n"],
+                "diff":       _diff_block(fb, bb, "focal_avg", "baseline_avg",
+                                          drop_temp),
             }
-        }
+    # 4. annual_summary
+    annual_diff = _diff_annual(focal.get("annual_summary", {}),
+                               base.get("annual_summary",  {}),
+                               focal_year)
+    return {
+        "focal_year":           focal_year,
+        "baseline_period":      f"{baseline_start}-{baseline_end}",
+        "baseline_years":       n_years,
+        "source":               "nex_gddp",
+        "model":                model,
+        "scenario":             scenario,
+        "fixed_season":         fixed_season,
+        "temperature_excluded": drop_temp,
+        "raw_climate_summary":  raw_diff,
+        "overall_statistics":   overall_diff,
+        "season_statistics":    season_diff,
+        "annual_summary":       annual_diff,
+    }
+
+# cross-model aggregation
+def _aggregate_2level(per_model: List[Dict[str, Dict[str, Dict[str, Any]]]],
+                      round_n: int = 2) -> Dict[str, Any]:
     """
-    successful = [r for r in model_results if r.get("comparison") is not None]
-    if not successful:
-        return {}
-
-    ensemble: Dict[str, Any] = {}
-
-    for category in COMPARISON_CATEGORIES:
-        metric_values: Dict[str, List[float]] = {}
-
-        for result in successful:
-            category_data = result["comparison"].get("variables", {}).get(category, {})
-            for metric, values in category_data.items():
-                future_value = _safe_number(values.get("future"))
-                if future_value is None:
+    Pool {outer: {inner: {metric_name: number, ...}}} across models.
+    Returns: {outer: {inner: {<metric>_ensemble_mean, model_spread}}}.
+    Used for raw_climate_summary, overall_statistics, and each season window.
+    """
+    pool: Dict[str, Dict[str, Dict[str, List[float]]]] = {}
+    for d in per_model:
+        for outer, inner_dict in (d or {}).items():
+            if not isinstance(inner_dict, dict):
+                continue
+            for inner, vals in inner_dict.items():
+                if not isinstance(vals, dict):
                     continue
-                metric_values.setdefault(metric, []).append(future_value)
-
-        if not metric_values:
-            continue
-
-        ensemble[category] = {}
-
-        for metric, futures in metric_values.items():
-            stats = _ensemble_stats(futures)
-            baseline_value = _safe_number(baseline_stats.get(category, {}).get(metric))
-            ensemble_mean = stats["mean"]
-
-            if baseline_value is not None and ensemble_mean is not None:
-                diff = round(ensemble_mean - baseline_value, 2)
-                pct  = round((diff / baseline_value) * 100, 2) if baseline_value != 0 else 0.0
-            else:
-                diff = pct = None
-
-            ensemble[category][metric] = {
-                "baseline":       round(baseline_value, 2) if baseline_value is not None else None,
-                "future":         ensemble_mean,   # single averaged value across all models
-                "difference":     diff,
-                "percent_change": pct,
-                "model_spread": {                  # spread info, not per-model data
-                    "std":      stats["std"],
-                    "min":      stats["min"],
-                    "max":      stats["max"],
-                    "p10":      stats["p10"],
-                    "p90":      stats["p90"],
-                    "n_models": stats["n"],
-                },
+                slot = pool.setdefault(outer, {}).setdefault(inner, {})
+                for k, v in vals.items():
+                    if _is_num(v):
+                        slot.setdefault(k, []).append(float(v))
+    out: Dict[str, Any] = {}
+    for outer, inner_dict in pool.items():
+        out[outer] = {}
+        for inner, vecs in inner_dict.items():
+            entry: Dict[str, Any] = {
+                f"{k}_ensemble_mean": round(pystat.mean(vs), round_n)
+                for k, vs in vecs.items() if vs
             }
+            entry["model_spread"] = {
+                "diff": _spread(vecs.get("diff", [])),
+                "pct":  _spread(vecs.get("pct", [])),
+            }
+            out[outer][inner] = entry
+    return out
 
-    return ensemble
+def _aggregate_seasons(per_model: List[Optional[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
+    """Aggregate season_statistics across models (handles both lumped and windowed)."""
+    samples = [s for s in per_model if isinstance(s, dict) and s]
+    if not samples:
+        return None
 
+    if "windows" in samples[0]:
+        win_pool: Dict[int, Dict[str, Any]] = {}
+        for s in per_model:
+            for w in (s or {}).get("windows", []) or []:
+                sn = w.get("season_number", 1)
+                bucket = win_pool.setdefault(sn, {"label": w.get("window"), "diffs": []})
+                bucket["diffs"].append(w.get("diff", {}))
+        windows = []
+        for sn in sorted(win_pool):
+            windows.append({
+                "window":        win_pool[sn]["label"],
+                "season_number": sn,
+                "n_models":      len(win_pool[sn]["diffs"]),
+                "diff":          _aggregate_2level(win_pool[sn]["diffs"]),
+            })
+        return {"windows": windows}
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Public API
-# ──────────────────────────────────────────────────────────────────────────────
+    diffs = [(s or {}).get("diff", {}) for s in per_model if s]
+    return {"n_models": len(diffs), "diff": _aggregate_2level(diffs)}
 
-def ensemble_compare_periods(
-    location_coord: Tuple[float, float],
-    baseline_years: Tuple[int, int],
-    future_years: Tuple[int, int],
-    baseline_source: str,
-    scenario: str = "ssp245",
-    models: Optional[List[str]] = None,
+def _aggregate_annual(per_model: List[Optional[Dict[str, Any]]]) -> Dict[str, Any]:
+    """Aggregate annual_summary across models."""
+    rains_focal:    List[float] = []
+    rains_baseline: List[float] = []
+    rains_diff:     List[float] = []
+    rains_pct:      List[float] = []
+    humid_yes = 0
+    humid_known = 0
+    for ann in per_model:
+        ann = ann or {}
+        arm = ann.get("annual_rain_mm") or {}
+        for vec, key in [(rains_focal,    "focal"),
+                         (rains_baseline, "baseline_avg"),
+                         (rains_diff,     "diff"),
+                         (rains_pct,      "pct")]:
+            v = arm.get(key)
+            if _is_num(v):
+                vec.append(float(v))
+        hs = ann.get("humid_status") or {}
+        flag = hs.get("focal_is_humid")
+        if flag in (True, False):
+            humid_known += 1
+            if flag:
+                humid_yes += 1
+
+    out: Dict[str, Any] = {}
+    if rains_focal:    out["annual_rain_mm_focal"]    = _spread(rains_focal)
+    if rains_baseline: out["annual_rain_mm_baseline"] = _spread(rains_baseline)
+    if rains_diff:     out["annual_rain_mm_diff"]     = _spread(rains_diff)
+    if rains_pct:      out["annual_rain_mm_pct"]      = _spread(rains_pct)
+    out["humid_models"] = (
+        f"{humid_yes}/{humid_known} ({humid_yes / humid_known * 100:.1f}%)"
+        if humid_known else "n/a"
+    )
+    return out
+
+# main API
+def ensemble_compare(
+    location:       Tuple[float, float],
+    baseline_start: int,
+    baseline_end:   int,
+    focal_year:     int,
+    scenario:       str = "ssp245",
+    fixed_season:   Optional[str] = None,
+    models:         Optional[List[str]] = None,
     exclude_models: Optional[List[str]] = None,
-    verbose: bool = True,
+    verbose:        bool = True,
 ) -> Dict[str, Any]:
     """
-    Compare baseline vs future climate across all 16 NEX-GDDP models and
-    return a SINGLE ensemble-averaged result per metric.
-
-    Process:
-      1. Compute one shared historical baseline.
-      2. Run each model independently to get its future values.
-      3. Average all 16 models' future values per metric.
-      4. Compare the ensemble average against the baseline.
-
-    Individual model outputs are NOT included in the return value.
-
-    Returns:
-        {
-            "ensemble_results": {
-                category: {
-                    metric: {
-                        baseline, future, difference, percent_change, model_spread
-                    }
-                }
-            },
-            "baseline": { ... },
-            "metadata": { ... }
-        }
+    Run the focal-vs-baseline comparison once per NEX-GDDP model, then average across models.
+    All data (baseline + focal) comes from NEX-GDDP, so each model is compared against its own historical run. Returns one ensemble-shaped result.
     """
-    lat, lon = location_coord
-    baseline_start, baseline_end = baseline_years
-    future_start, future_end = future_years
+    canon = _normalize_scenario(scenario)
+    if not canon:
+        return {"error": (f"scenario '{scenario}' not recognised. "
+                          f"Accepted: {sorted(SCENARIO_ALIASES)}")}
+    scenario = canon
 
-    active_models = _filter_models(models, exclude_models)
+    active = _filter_models(models, exclude_models)
+    if not active:
+        return {"error": "No models selected after filtering."}
 
     if verbose:
         print(f"\n{'=' * 60}")
-        print("NEX-GDDP Ensemble Period Comparison")
-        print(f"  Location  : {lat}, {lon}")
-        print(f"  Baseline  : {baseline_start}-{baseline_end}  ({baseline_source})")
-        print(f"  Future    : {future_start}-{future_end}  (NEX-GDDP / {scenario})")
-        print(f"  Models    : {len(active_models)}")
+        print("NEX-GDDP Ensemble Comparison")
+        print(f"  Location  : {location[0]}, {location[1]}")
+        print(f"  Baseline  : {baseline_start}-{baseline_end}")
+        print(f"  Focal     : {focal_year}")
+        print(f"  Scenario  : {scenario}")
+        if fixed_season:
+            print(f"  Seasons   : {fixed_season}")
+        print(f"  Models    : {len(active)}")
         print(f"{'=' * 60}")
 
-    # ── Step 1: one shared historical baseline ────────────────────────────────
-    baseline_stats = calculate_baseline_statistics(
-        location_coord=location_coord,
-        baseline_years=baseline_years,
-        source=baseline_source,
-    )
-    if "error" in baseline_stats:
-        return {
-            "error": f"Baseline calculation failed: {baseline_stats['error']}",
-            "metadata": {"analysis_date": datetime.now().isoformat()},
-        }
+    per_model: List[Dict[str, Any]] = []
+    failed:    List[Dict[str, str]] = []
 
-    # ── Step 2: run each model independently ─────────────────────────────────
-    if verbose:
-        print(f"\n  Running {len(active_models)} future model calculations...\n")
-
-    model_results: List[Dict[str, Any]] = []
-    failed_models: List[str] = []
-
-    for i, model in enumerate(active_models, 1):
+    for i, model in enumerate(active, 1):
         if verbose:
-            print(f"  [{i:02d}/{len(active_models):02d}] {model:<25}", end=" ", flush=True)
-
-        result = _run_single_model(
-            model=model,
-            location_coord=location_coord,
-            future_years=future_years,
-            baseline_stats=baseline_stats,
-            scenario=scenario,
-        )
-        model_results.append(result)
-
-        if verbose:
-            if result["error"]:
-                print(f"x  {result['error']}")
-                failed_models.append(model)
-            else:
-                print("ok")
-
-    # ── Step 3: average all models into one ensemble result ───────────────────
-    successful = [r for r in model_results if r["comparison"] is not None]
-    ensemble_results = _aggregate_ensemble(model_results, baseline_stats)
-
-    if verbose:
-        print(f"\n{'-' * 60}")
-        print(f"Ensemble complete ({len(successful)}/{len(active_models)} models succeeded)")
-        if failed_models:
-            print(f"Failed models : {', '.join(failed_models)}")
-        _print_ensemble_summary(ensemble_results)
-        print("=" * 60)
-
-    # Only the averaged ensemble result is returned — no per-model data.
+            print(f"\n  [{i:02d}/{len(active):02d}] {model}", flush=True)
+        try:
+            r = _compare_one_model(
+                location=location,
+                baseline_start=baseline_start,
+                baseline_end=baseline_end,
+                focal_year=focal_year,
+                fixed_season=fixed_season,
+                model=model,
+                scenario=scenario,
+            )
+            if "error" in r:
+                if verbose: print(f"    x  {r['error']}")
+                failed.append({"model": model, "error": r["error"]})
+                continue
+            r["_model"] = model
+            per_model.append(r)
+            if verbose: print("    ok")
+        except Exception as exc:
+            if verbose: print(f"    x  {exc}")
+            failed.append({"model": model, "error": str(exc)})
+    if not per_model:
+        return {"error": "All models failed.", "failed_models": failed}
     return {
-        "ensemble_results": ensemble_results,
-        "baseline": baseline_stats,
+        "focal_year":      focal_year,
+        "baseline_period": f"{baseline_start}-{baseline_end}",
+        "scenario":        scenario,
+        "fixed_season":    fixed_season,
+        "models_used":     [r["_model"] for r in per_model],
+        "models_failed":   failed,
+        "n_models_ok":     len(per_model),
+        "raw_climate_summary": _aggregate_2level(
+            [r.get("raw_climate_summary", {}) for r in per_model], round_n=3),
+        "overall_statistics":  _aggregate_2level(
+            [r.get("overall_statistics", {}) for r in per_model]),
+        "season_statistics":   _aggregate_seasons(
+            [r.get("season_statistics") for r in per_model]),
+        "annual_summary":      _aggregate_annual(
+            [r.get("annual_summary") for r in per_model]),
         "metadata": {
-            "location": {"lat": lat, "lon": lon},
-            "baseline_period": {"start": baseline_start, "end": baseline_end},
-            "future_period": {"start": future_start, "end": future_end},
-            "baseline_source": baseline_source,
-            "future_source": "NEX-GDDP-CMIP6",
-            "scenario": scenario,
-            "models_used": active_models,
-            "models_ok": len(successful),
-            "models_failed": len(active_models) - len(successful),
-            "failed_models": failed_models,
+            "location":      {"lat": location[0], "lon": location[1]},
+            "source":        "NEX-GDDP-CMIP6",
             "analysis_date": datetime.now().isoformat(),
         },
     }
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Reporting
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _print_ensemble_summary(ensemble_results: Dict[str, Any]) -> None:
-    """Print a clean summary table of ensemble-averaged results."""
-    key_metrics = [
-        "total_mm",
-        "mean_daily",
-        "mean_tmax",
-        "mean_tmin",
-        "mean_tavg",
-        "total_balance",
-    ]
-
+# printing
+def _print_2level(agg: Dict[str, Any],
+                  outer_label: str = "Category",
+                  inner_label: str = "Metric",
+                  precision:   int = 2) -> None:
+    """
+    Print ensemble means in the same table shape periods.py prints, with columns matching the underlying diff keys (focal/baseline/diff/pct ->
+    focal/baseline/Δ/Δ%). Model spread is kept in the JSON but suppressed here so the table mirrors periods.py.
+    """
+    if not agg:
+        print("  (no comparable metrics)")
+        return
     rows = []
-    for category, metrics in ensemble_results.items():
-        for metric, data in metrics.items():
-            if metric not in key_metrics:
-                continue
-            spread = data.get("model_spread", {})
-            if spread.get("n_models", 0) == 0:
-                continue
-            rows.append({
-                "Category":     category.title(),
-                "Metric":       metric,
-                "Baseline":     f"{data['baseline']:.2f}"         if data.get("baseline")       is not None else "N/A",
-                "Ens. Average": f"{data['future']:.2f}"           if data.get("future")         is not None else "N/A",
-                "Difference":   f"{data['difference']:+.2f}"      if data.get("difference")     is not None else "N/A",
-                "Change %":     f"{data['percent_change']:+.2f}%" if data.get("percent_change") is not None else "N/A",
-                "Spread (std)": f"{spread['std']:.2f}"            if spread.get("std")          is not None else "N/A",
-                "p10–p90":      (
-                    f"[{spread['p10']:.2f} – {spread['p90']:.2f}]"
-                    if spread.get("p10") is not None and spread.get("p90") is not None
-                    else "N/A"
-                ),
-                "n": spread.get("n_models", 0),
-            })
+    for outer, inner_dict in agg.items():
+        for inner, vals in inner_dict.items():
+            row = {outer_label: outer, inner_label: inner}
+            for k, v in vals.items():
+                if k == "model_spread" or not _is_num(v):
+                    continue
+                short = k.replace("_ensemble_mean", "")
+                if short == "diff":
+                    row["Δ"]  = f"{v:+.{precision}f}"
+                elif short == "pct":
+                    row["Δ%"] = f"{v:+.2f}%"
+                else:
+                    row[short] = f"{v:.{precision}f}"
+            rows.append(row)
+    print(pd.DataFrame(rows).to_string(index=False))
 
-    if rows:
-        print()
-        print(pd.DataFrame(rows).to_string(index=False))
-        print()
-
-
-def print_ensemble_report(result: Dict[str, Any]) -> None:
-    """Print a formatted ensemble comparison report to stdout."""
-    print(f"\n{'=' * 60}")
-    print("ENSEMBLE COMPARISON REPORT")
-    print(f"{'=' * 60}")
-
-    if "error" in result:
-        print(f"Error: {result['error']}")
+def print_report(r: Dict[str, Any]) -> None:
+    if "error" in r:
+        print(f"\nError: {r['error']}")
+        for f in r.get("failed_models", []):
+            print(f"  - {f['model']}: {f['error']}")
         return
 
-    meta = result.get("metadata", {})
-    bp   = meta.get("baseline_period", {})
-    fp   = meta.get("future_period", {})
-    loc  = meta.get("location", {})
+    n_total = r["n_models_ok"] + len(r["models_failed"])
+    print(f"\n{'=' * 60}")
+    print(f"ENSEMBLE: focal {r['focal_year']} vs baseline {r['baseline_period']}")
+    print(f"{'=' * 60}")
+    print(f"  Scenario : {r['scenario']}")
+    print(f"  Models ok: {r['n_models_ok']}/{n_total}")
+    if r["models_failed"]:
+        print(f"  Failed   : {', '.join(f['model'] for f in r['models_failed'])}")
 
-    print(f"Location : {loc.get('lat')}, {loc.get('lon')}")
-    print(f"Baseline : {bp.get('start')}-{bp.get('end')}  ({meta.get('baseline_source', 'N/A')})")
-    print(f"Future   : {fp.get('start')}-{fp.get('end')}  (NEX-GDDP / {meta.get('scenario', 'N/A')})")
-    print(f"Models   : {meta.get('models_ok')}/{len(meta.get('models_used', []))} succeeded")
+    print(f"\n--- 1. RAW CLIMATE SUMMARY (ensemble) ---")
+    _print_2level(r.get("raw_climate_summary", {}),
+                  outer_label="Variable", inner_label="Stat", precision=3)
 
-    if meta.get("failed_models"):
-        print(f"Failed   : {', '.join(meta['failed_models'])}")
+    print(f"\n--- 2. OVERALL STATISTICS (ensemble) ---")
+    _print_2level(r.get("overall_statistics", {}))
 
-    _print_ensemble_summary(result.get("ensemble_results", {}))
+    season = r.get("season_statistics")
+    if season:
+        print(f"\n--- 3. SEASON STATISTICS (ensemble) ---")
+        if "windows" in season:
+            for w in season["windows"]:
+                print(f"\n  Window {w['window']} (season #{w['season_number']}, n_models={w['n_models']})")
+                _print_2level(w["diff"])
+        else:
+            print(f"  (n_models={season['n_models']})")
+            _print_2level(season["diff"])
 
+    print(f"\n--- 4. ANNUAL SUMMARY (ensemble) ---")
+    ann = r.get("annual_summary", {})
+    foc = ann.get("annual_rain_mm_focal")    or {}
+    bas = ann.get("annual_rain_mm_baseline") or {}
+    dif = ann.get("annual_rain_mm_diff")     or {}
+    pct = ann.get("annual_rain_mm_pct")      or {}
+    if _is_num(foc.get("mean")):
+        parts = [f"focal={foc['mean']:.1f} mm"]
+        if _is_num(bas.get("mean")):
+            parts.append(f"baseline_avg={bas['mean']:.1f} mm")
+        if _is_num(dif.get("mean")):
+            tail = (f" ({pct['mean']:+.2f}%)"
+                    if _is_num(pct.get("mean")) else "")
+            parts.append(f"Δ={dif['mean']:+.1f}{tail}")
+        print(f"  Annual rainfall : {' | '.join(parts)}")
+    print(f"  Humid models    : {ann.get('humid_models', 'n/a')}")
+    print()
 
-# ──────────────────────────────────────────────────────────────────────────────
 # CLI
-# ──────────────────────────────────────────────────────────────────────────────
-
 def main() -> None:
     if "--list-models" in sys.argv:
         print("Available NEX-GDDP-CMIP6 models:")
-        for i, model in enumerate(NEX_GDDP_MODELS, 1):
-            print(f"  {i:02d}. {model}")
+        for i, m in enumerate(NEX_GDDP_MODELS, 1):
+            print(f"  {i:02d}. {m}")
+        print("\nAvailable scenarios (canonical -> accepted aliases):")
+        for canon in SSP_SCENARIOS:
+            aliases = sorted(a for a, c in SCENARIO_ALIASES.items()
+                             if c == canon and a != canon)
+            extras = f"  (also: {', '.join(aliases)})" if aliases else ""
+            print(f"  - {canon}{extras}")
         sys.exit(0)
 
-    parser = argparse.ArgumentParser(
-        description=(
-            "Ensemble future-vs-baseline climate comparison across NEX-GDDP models.\n"
-            "Outputs a single averaged result — not per-model data."
-        )
-    )
-    parser.add_argument("--location",        required=True, help='Coordinates as "lat,lon"')
-    parser.add_argument("--baseline-start",  type=int, required=True)
-    parser.add_argument("--baseline-end",    type=int, required=True)
-    parser.add_argument("--baseline-source", required=True,
-                        help="Historical data source (e.g. nasa_power, era5)")
-    parser.add_argument("--future-start",    type=int, required=True)
-    parser.add_argument("--future-end",      type=int, required=True)
-    parser.add_argument("--scenario",        default="ssp245", choices=SSP_SCENARIOS)
-    parser.add_argument("--models",          help="Comma-separated subset of models")
-    parser.add_argument("--exclude-models",  help="Comma-separated models to exclude")
-    parser.add_argument("--list-models",     action="store_true")
-    parser.add_argument("--output",          help="Save JSON result to this file path")
-    parser.add_argument("--quiet",           action="store_true")
-    args = parser.parse_args()
+    p = argparse.ArgumentParser(
+        description="Ensemble focal-vs-baseline comparison across NEX-GDDP models.",
+        formatter_class=argparse.RawTextHelpFormatter)
+    p.add_argument("--location",       required=True, help="lat,lon (e.g. -1.286,36.817)")
+    p.add_argument("--baseline-start", type=int, required=True)
+    p.add_argument("--baseline-end",   type=int, required=True)
+    p.add_argument("--focal-year",     type=int, required=True)
+    p.add_argument("--scenarios",      default="ssp245",
+                   metavar="ssp245[,ssp585]",
+                   help=("Comma-separated. Canonical: "
+                         f"{', '.join(SSP_SCENARIOS)}.\n"
+                         "Aliases also accepted: SSP1-2.6, SSP2-4.5, SSP5-8.5."))
+    p.add_argument("--fixed-season",   default=None,
+                   metavar="MM-DD:MM-DD[,MM-DD:MM-DD]",
+                   help=("Optional. Same syntax as periods.py.\n"
+                         "  Single        : '03-01:05-31'\n"
+                         "  Two seasons   : '03-01:05-31,10-01:12-15'\n"
+                         "  Year-crossing : '11-01:02-28'"))
+    p.add_argument("--models",         help="Comma-separated subset of models")
+    p.add_argument("--exclude-models", help="Comma-separated models to exclude")
+    p.add_argument("--list-models",    action="store_true")
+    p.add_argument("--output",         default=None, help="Save JSON result to this path")
+    p.add_argument("--quiet",          action="store_true")
+    args = p.parse_args()
 
     try:
-        parts = [p.strip() for p in args.location.replace(" ", ",").split(",") if p.strip()]
-        if len(parts) != 2:
-            raise ValueError
-        lat, lon = map(float, parts)
+        lat, lon = (float(x) for x in args.location.replace(" ", ",").split(","))
     except ValueError:
-        print('Error: --location must be in "lat,lon" format, e.g. "-1.286,36.817"')
-        sys.exit(1)
+        print("Error: --location must be 'lat,lon'"); sys.exit(1)
 
     models  = [m.strip() for m in args.models.split(",")]         if args.models         else None
-    exclude = [m.strip() for m in args.exclude_models.split(",")]  if args.exclude_models else None
+    exclude = [m.strip() for m in args.exclude_models.split(",")] if args.exclude_models else None
 
-    result = ensemble_compare_periods(
-        location_coord=(lat, lon),
-        baseline_years=(args.baseline_start, args.baseline_end),
-        future_years=(args.future_start, args.future_end),
-        baseline_source=args.baseline_source,
-        scenario=args.scenario,
-        models=models,
-        exclude_models=exclude,
-        verbose=not args.quiet,
-    )
+    raw_scenarios = [s.strip() for s in args.scenarios.split(",") if s.strip()]
+    scenarios: List[str] = []
+    invalid:   List[str] = []
+    for s in raw_scenarios:
+        canon = _normalize_scenario(s)
+        if canon and canon not in scenarios:
+            scenarios.append(canon)
+        elif not canon:
+            invalid.append(s)
+    if invalid:
+        print(f"Error: invalid scenario(s) {invalid}. "
+              f"Accepted: {sorted(SCENARIO_ALIASES)}"); sys.exit(1)
+    if not scenarios:
+        print("Error: no scenarios provided."); sys.exit(1)
 
-    if not args.quiet:
-        print_ensemble_report(result)
+    all_results: Dict[str, Any] = {}
+    any_ok = False
+    for scenario in scenarios:
+        result = ensemble_compare(
+            location=(lat, lon),
+            baseline_start=args.baseline_start,
+            baseline_end=args.baseline_end,
+            focal_year=args.focal_year,
+            scenario=scenario,
+            fixed_season=args.fixed_season,
+            models=models,
+            exclude_models=exclude,
+            verbose=not args.quiet,
+        )
+        all_results[scenario] = result
+        print_report(result)
+        if "error" not in result:
+            any_ok = True
 
-    output = json.dumps(result, indent=2, default=str)
+    if not any_ok:
+        sys.exit(1)
 
     if args.output:
-        with open(args.output, "w") as fh:
-            fh.write(output)
-        print(f"\nResults saved to {args.output}")
-    else:
-        print(output)
-
+        os.makedirs(os.path.dirname(os.path.abspath(args.output)) or ".", exist_ok=True)
+        # Single scenario -> bare result; multiple -> {scenario: result} map
+        payload = all_results[scenarios[0]] if len(scenarios) == 1 else all_results
+        with open(args.output, "w") as f:
+            json.dump(payload, f, indent=2, default=str)
+        print(f"✓ Saved: {args.output}")
 
 if __name__ == "__main__":
     main()
 
-# Example commands
-# List available models:
-# python climate_tookit/compare_periods/ensemble_periods.py --list-models
+# NOTE: the 1st command in a section runs all 16 models, the 2nd allows model selection.
 
-# Basic run:
-# python climate_tookit/compare_periods/ensemble_periods.py --location="-1.286,36.817" --baseline-start 1991 --baseline-end 2020 --baseline-source nasa_power --future-start 2040 --future-end 2060 --scenario ssp245
+# List available NEX-GDDP models and scenarios:
+# python -m climate_tookit.compare_periods.ensemble_periods --list-models
 
-# Save output:
-# python climate_tookit/compare_periods/ensemble_periods.py --location="-1.286,36.817" --baseline-start 1991 --baseline-end 2020 --baseline-source nasa_power --future-start 2040 --future-end 2060 --scenario ssp245 --output results.json
+# Auto-detected season (no --fixed-season) -- all models, pick scenarios:
+# python -m climate_tookit.compare_periods.ensemble_periods --location="-1.286,36.817" --baseline-start 1991 --baseline-end 2020 --focal-year 2050 --scenarios ssp245,ssp585 --output ensemble_auto_all.json
+# python -m climate_tookit.compare_periods.ensemble_periods --location="-1.286,36.817" --baseline-start 1991 --baseline-end 2020 --focal-year 2050 --models "ACCESS-CM2,EC-Earth3,MRI-ESM2-0" --scenarios ssp245,ssp585 --output ensemble_auto.json
 
-# Exclude models:
-# python climate_tookit/compare_periods/ensemble_periods.py --location="-1.286,36.817" --baseline-start 1991 --baseline-end 2020 --baseline-source nasa_power --future-start 2040 --future-end 2060 --scenario ssp245 --exclude-models "CESM2,GFDL-CM4,BCC-CSM2-MR"
+# Fixed single season:
+# python -m climate_tookit.compare_periods.ensemble_periods --location="-1.286,36.817" --baseline-start 1991 --baseline-end 2020 --focal-year 2050 --fixed-season "03-01:05-31" --scenarios ssp245,ssp585 --output ensemble_mam_all.json
+# python -m climate_tookit.compare_periods.ensemble_periods --location="-1.286,36.817" --baseline-start 1991 --baseline-end 2020 --focal-year 2050 --fixed-season "03-01:05-31" --models "ACCESS-CM2,EC-Earth3,MRI-ESM2-0" --scenarios ssp585 --output ensemble_mam.json
 
-# Subset of models only:
-# python climate_tookit/compare_periods/ensemble_periods.py --location="-1.286,36.817" --baseline-start 1991 --baseline-end 2020 --baseline-source nasa_power --future-start 2040 --future-end 2060 --scenario ssp245 --models "GFDL-ESM4,MRI-ESM2-0,ACCESS-CM2"
+# Fixed two seasons:
+# python -m climate_tookit.compare_periods.ensemble_periods --location="-1.286,36.817" --baseline-start 1991 --baseline-end 2020 --focal-year 2050 --fixed-season "03-01:05-31,10-01:12-15" --scenarios ssp245,ssp585 --output ensemble_mam_ond_all.json
+# python -m climate_tookit.compare_periods.ensemble_periods --location="-1.286,36.817" --baseline-start 1991 --baseline-end 2020 --focal-year 2050 --fixed-season "03-01:05-31,10-01:12-15" --models "ACCESS-CM2,EC-Earth3,MRI-ESM2-0" --scenarios ssp245,ssp585 --output ensemble_mam_ond.json
+
+# Fixed year-crossing season:
+# python -m climate_tookit.compare_periods.ensemble_periods --location="-1.286,36.817" --baseline-start 1991 --baseline-end 2020 --focal-year 2050 --fixed-season "11-01:02-28" --scenarios ssp245,ssp585 --output ensemble_njf_all.json
+# python -m climate_tookit.compare_periods.ensemble_periods --location="-1.286,36.817" --baseline-start 1991 --baseline-end 2020 --focal-year 2050 --fixed-season "11-01:02-28" --models "ACCESS-CM2,EC-Earth3,MRI-ESM2-0" --scenarios ssp585 --output ensemble_njf.json
