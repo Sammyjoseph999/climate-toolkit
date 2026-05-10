@@ -1,330 +1,455 @@
 """
-NEX-GDDP Ensemble Season Analysis Submodule
+NEX-GDDP Ensemble Season Analysis
 
-Runs season analysis across all 16 NEX-GDDP CMIP6 models and computes ensemble
-statistics (mean, median, std, percentiles) for onset DOY, cessation DOY, and
-season length. Supports per-scenario ensembling with optional model exclusion.
+Loops over (scenario × model), calls seasons.py's existing analysis functions for each combination (after monkey-patching get_climate_data to read NEX-GDDP),
+then averages results across models.
 
-Dependencies: pandas, climate_toolkit, season_analysis.seasons
+Default: ALL 16 NEX-GDDP-CMIP6 models × ALL 4 SSP scenarios.
+Use --models / --scenarios / --exclude-models to narrow.
+Use --fixed-season for fixed calendar windows (single, two-season, year-crossing).
 """
 
-import json
-import argparse
-import sys
-import math
-import statistics
-
-import logging
-logging.disable(logging.INFO)
-
-from datetime import datetime
-from typing import Tuple, Dict, List, Any, Optional
+import argparse, io, json, math, statistics, sys, warnings
+from contextlib import contextmanager, redirect_stdout
+from datetime import date, datetime
 from pathlib import Path
+from typing import Any, Dict, List
+
+import pandas as pd
+
+warnings.filterwarnings("ignore")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from season_analysis.seasons import get_climate_data, calculate_et0, detect_seasons
+import season_analysis.seasons as seasons
+from fetch_data.preprocess_data.preprocess_data import preprocess_data
 
-NEX_GDDP_MODELS: List[str] = [
-    'ACCESS-CM2',
-    'ACCESS-ESM1-5',
-    'BCC-CSM2-MR',
-    'CESM2',
-    'CMCC-CM2-SR5',
-    'CMCC-ESM2',
-    'EC-Earth3',
-    'EC-Earth3-Veg-LR',
-    'GFDL-CM4',
-    'GFDL-ESM4',
-    'INM-CM4-8',
-    'INM-CM5-0',
-    'IPSL-CM6A-LR',
-    'MPI-ESM1-2-HR',
-    'MRI-ESM2-0',
-    'NorESM2-MM',
+NEX_GDDP_MODELS = [
+    'ACCESS-CM2',  'ACCESS-ESM1-5',    'CanESM5',       'CMCC-ESM2',
+    'EC-Earth3',   'EC-Earth3-Veg-LR', 'GFDL-ESM4',     'INM-CM4-8',
+    'INM-CM5-0',   'KACE-1-0-G',       'MIROC6',        'MPI-ESM1-2-LR',
+    'MRI-ESM2-0',  'NorESM2-LM',       'NorESM2-MM',    'TaiESM1',
 ]
+SSP_SCENARIOS   = ['ssp126', 'ssp245', 'ssp585']
+NEX_GDDP_SOURCE = 'nex_gddp'
 
-SSP_SCENARIOS: List[str] = ['ssp126', 'ssp245', 'ssp370', 'ssp585']
-
-
-def _percentile(data: List[float], p: float) -> float:
-    if not data:
-        return float('nan')
-    s = sorted(data)
-    idx = (p / 100) * (len(s) - 1)
-    lo, hi = int(idx), min(int(idx) + 1, len(s) - 1)
-    return s[lo] + (idx - lo) * (s[hi] - s[lo])
-
-
-def compute_ensemble_stats(values: List[float]) -> Dict[str, Any]:
+# Route seasons.get_climate_data through NEX-GDDP 
+@contextmanager
+def use_nex_gddp(model: str, scenario: str):
     """
-    Compute descriptive statistics over a list of per-model values.
-
-    Args:
-        values: Numeric values, one per model. None and NaN are excluded.
-
-    Returns:
-        Dict with keys: mean, median, std, min, max, p10, p25, p75, p90, n.
-        All values are None when the cleaned list is empty.
+    Temporarily replace seasons.get_climate_data so any call inside seasons.py reads NEX-GDDP for the given (model, scenario).
+    Tracks success/failure so we can surface real fetch errors even though seasons.py's orchestrators catch all exceptions internally.
     """
+    state    = {'success': 0, 'fail': 0, 'last_error': None}
+    original = seasons.get_climate_data
+
+    def patched(lat, lon, start_date, end_date, force_source=None):
+        try:
+            df = preprocess_data(
+                source         = NEX_GDDP_SOURCE,
+                location_coord = (lat, lon),
+                date_from      = date.fromisoformat(start_date),
+                date_to        = date.fromisoformat(end_date),
+                model          = model,
+                scenario       = scenario,
+            )
+            if df is None or df.empty:
+                raise RuntimeError("preprocess_data returned empty DataFrame")
+            out = pd.DataFrame({
+                'date':   pd.to_datetime(df['date']),
+                'tmax':   df.get('max_temperature'),
+                'tmin':   df.get('min_temperature'),
+                'precip': df.get('precipitation'),
+            })
+            state['success'] += 1
+            return out
+        except Exception as exc:
+            state['fail']      += 1
+            state['last_error'] = exc
+            raise
+
+    seasons.get_climate_data = patched
+    try:
+        yield state
+    finally:
+        seasons.get_climate_data = original
+
+def analyze_one_model(lat, lon, start_year, end_year, model, scenario, fixed_arg):
+    """Run seasons.py for one (model, scenario). Returns (seasons_dict, annual_dict)."""
+    sink = io.StringIO()                       # swallow seasons.py's chatter
+    with redirect_stdout(sink), use_nex_gddp(model, scenario) as state:
+        if fixed_arg:
+            fixed_defs = seasons.parse_fixed_seasons(fixed_arg)
+            s_dict, a_dict = seasons.fetch_and_analyze_years_fixed(
+                lat, lon,
+                fixed_seasons = fixed_defs,
+                start_year    = start_year,
+                end_year      = end_year,
+                source        = 'nex_gddp',  
+            )
+        else:
+            s_dict, a_dict = seasons.fetch_and_analyze_years(
+                lat, lon,
+                start_year = start_year,
+                end_year   = end_year,
+                source     = 'nex_gddp',
+            )
+
+    # If every fetch failed, surface the real error
+    if state['success'] == 0 and state['last_error'] is not None:
+        raise state['last_error']
+    return s_dict, a_dict
+
+# Ensemble statistics
+def _avg(values):
+    """Mean of non-null numeric values, or None."""
     clean = [v for v in values if v is not None and not (isinstance(v, float) and math.isnan(v))]
     if not clean:
-        return {k: None for k in ('mean', 'median', 'std', 'min', 'max', 'p10', 'p25', 'p75', 'p90', 'n')}
-    return {
-        'mean':   round(statistics.mean(clean), 2),
-        'median': round(statistics.median(clean), 2),
-        'std':    round(statistics.stdev(clean), 2) if len(clean) > 1 else 0.0,
-        'min':    round(min(clean), 2),
-        'max':    round(max(clean), 2),
-        'p10':    round(_percentile(clean, 10), 2),
-        'p25':    round(_percentile(clean, 25), 2),
-        'p75':    round(_percentile(clean, 75), 2),
-        'p90':    round(_percentile(clean, 90), 2),
-        'n':      len(clean),
-    }
+        return None
+    return statistics.mean(clean)
 
-
-def _run_single_model(
-    model: str,
-    lat: float,
-    lon: float,
-    future_start: int,
-    future_end: int,
-    scenario: str,
-    gap_days: int,
-    min_season_days: int,
-) -> Dict[str, Any]:
-    all_seasons: List[Dict] = []
-    years_ok = years_fail = 0
-
-    for year in range(future_start, future_end + 1):
+def _avg_ts_iso(ts_list):
+    """Average a list of date-like values as timestamps; return ISO date or None."""
+    valid = []
+    for t in ts_list:
+        if t is None:
+            continue
         try:
-            df = get_climate_data(
-                lat, lon,
-                f"{year}-01-01", f"{year}-12-31",
-                use_projections=True,
-                model=model,
-                scenario=scenario,
-            )
-            df['et0'] = [calculate_et0(r['tmin'], r['tmax'], lat, r['date']) for _, r in df.iterrows()]
-            all_seasons.extend(detect_seasons(df, gap_days, min_season_days))
-            years_ok += 1
+            ts = pd.Timestamp(t)
+            if not pd.isna(ts):
+                valid.append(ts.value)   # int64 nanoseconds
         except Exception:
-            years_fail += 1
+            pass
+    if not valid:
+        return None
+    return pd.Timestamp(sum(valid) // len(valid)).strftime('%Y-%m-%d')
 
-    if not all_seasons:
-        return {
-            'model': model, 'scenario': scenario,
-            'avg_onset_doy': None, 'avg_cessation_doy': None, 'avg_length_days': None,
-            'season_count': 0, 'years_with_data': years_ok, 'years_failed': years_fail,
-            'error': 'No seasons detected across all years',
+def _aggregate_eto_subseasons(eto_per_model: List[List[Dict]]) -> Dict:
+    """
+    Aggregate ETO sub-seasons across models for one fixed-season slot.
+    Sub-seasons are aligned by their position in each model's list.
+    """
+    metrics = ['total_rainfall_mm', 'rainy_days', 'dry_days', 'dry_spells', 'length_days']
+    n_total    = len(eto_per_model)
+    n_with_any = sum(1 for lst in eto_per_model if lst)
+    max_subs   = max((len(lst) for lst in eto_per_model), default=0)
+
+    sub_slots = []
+    for sub_idx in range(max_subs):
+        buckets = {k: [] for k in metrics}
+        onsets, cessations, regimes = [], [], []
+        n = 0
+        for lst in eto_per_model:
+            if sub_idx < len(lst):
+                s = lst[sub_idx]; n += 1
+                for k in metrics: buckets[k].append(s.get(k))
+                onsets.append(s.get('onset'))
+                cessations.append(s.get('cessation'))
+                regimes.append(s.get('regime'))
+        regime_counts = {}
+        for r_ in regimes:
+            if r_: regime_counts[r_] = regime_counts.get(r_, 0) + 1
+        n_open = sum(1 for c in cessations if c is None)
+
+        sub_slots.append({
+            'subseason_index':  sub_idx + 1,
+            'n_models':         n,
+            'regime_counts':    regime_counts,
+            'avg_onset':        _avg_ts_iso(onsets),
+            'avg_cessation':    _avg_ts_iso(cessations),
+            'n_open_cessation': n_open,
+            **{k: _avg(buckets[k]) for k in metrics},
+        })
+    return {
+        'n_models_with_any': n_with_any,
+        'n_models_total':    n_total,
+        'subseasons':        sub_slots,
+    }
+
+def aggregate(model_results: List[Dict]) -> Dict[int, Dict]:
+    """Average per-model {seasons_dict, annual_dict} into ensemble stats by year."""
+    years = sorted({y for r in model_results for y in r.get('seasons_dict', {})})
+    out   = {}
+    metrics = ['total_rainfall_mm', 'rainy_days', 'dry_days', 'dry_spells', 'length_days']
+
+    for year in years:
+        max_n = max((len(r['seasons_dict'].get(year, [])) for r in model_results), default=0)
+        seasons_agg = []
+        for idx in range(max_n):
+            buckets = {k: [] for k in metrics}
+            onsets, cessations, regimes = [], [], []
+            eto_per_model = []
+            n = 0
+            for r in model_results:
+                slist = r['seasons_dict'].get(year, [])
+                if idx < len(slist):
+                    s = slist[idx]; n += 1
+                    for k in metrics: buckets[k].append(s.get(k))
+                    onsets.append(s.get('onset'))
+                    cessations.append(s.get('cessation'))
+                    regimes.append(s.get('regime'))
+                    eto_per_model.append(s.get('eto_seasons') or [])
+            regime_counts = {}
+            for r_ in regimes:
+                if r_: regime_counts[r_] = regime_counts.get(r_, 0) + 1
+            n_open = sum(1 for c in cessations if c is None)
+
+            seasons_agg.append({
+                'season_index':     idx + 1,
+                'n_models':         n,
+                'avg_onset':        _avg_ts_iso(onsets),
+                'avg_cessation':    _avg_ts_iso(cessations),
+                'n_open_cessation': n_open,
+                'regime_counts':    regime_counts,
+                'eto_subseasons':   _aggregate_eto_subseasons(eto_per_model),
+                **{k: _avg(buckets[k]) for k in metrics},
+            })
+
+        annual_rain, low_rain_months = [], []
+        humid_n = humid_total = 0
+        for r in model_results:
+            ann = r['annual_dict'].get(year, {})
+            if ann.get('annual_rain_mm') is not None:
+                annual_rain.append(ann['annual_rain_mm'])
+                humid_total += 1
+                if ann.get('low_rain_months') is not None:
+                    low_rain_months.append(ann['low_rain_months'])
+                if ann.get('is_humid'):
+                    humid_n += 1
+
+        out[year] = {
+            'seasons':         seasons_agg,
+            'annual_rain_mm':  _avg(annual_rain),
+            'low_rain_months': _avg(low_rain_months),
+            'humid_n':         humid_n,
+            'humid_total':     humid_total,
         }
+    return out
 
-    n = len(all_seasons)
-    return {
-        'model':             model,
-        'scenario':          scenario,
-        'avg_onset_doy':     round(sum(s['onset_doy'] for s in all_seasons) / n, 1),
-        'avg_cessation_doy': round(sum(s['cessation_doy'] for s in all_seasons) / n, 1),
-        'avg_length_days':   round(sum(s['length_days'] for s in all_seasons) / n, 1),
-        'season_count':      n,
-        'years_with_data':   years_ok,
-        'years_failed':      years_fail,
-    }
+# Top-level orchestrator
+def run_ensemble(lat, lon, start_year, end_year, scenarios, models, fixed_arg=None, verbose=True):
+    results = {}
+    mode    = 'fixed' if fixed_arg else 'auto'
 
-
-def ensemble_season_analysis(
-    location_coord: Tuple[float, float],
-    future_years: Tuple[int, int],
-    scenario: str = 'ssp245',
-    models: Optional[List[str]] = None,
-    exclude_models: Optional[List[str]] = None,
-    gap_days: int = 30,
-    min_season_days: int = 30,
-    verbose: bool = True,
-) -> Dict[str, Any]:
-    """
-    Run season analysis across all (or selected) NEX-GDDP models and return
-    ensemble-aggregated statistics.
-
-    Args:
-        location_coord: (lat, lon) in decimal degrees.
-        future_years: (start_year, end_year) inclusive.
-        scenario: SSP scenario — ssp126, ssp245, ssp370, or ssp585.
-        models: Explicit model list; defaults to all 16 NEX_GDDP_MODELS.
-        exclude_models: Model names to skip (case-insensitive).
-        gap_days: Consecutive dry days to close a season.
-        min_season_days: Minimum valid season length in days.
-        verbose: Print per-model progress to stdout.
-
-    Returns:
-        Dict with keys:
-            ensemble_stats — {onset_doy, cessation_doy, length_days} x statistics.
-            model_results  — per-model averages.
-            metadata       — location, scenario, period, models used, analysis_date.
-    """
-    lat, lon = location_coord
-    future_start, future_end = future_years
-
-    active_models = list(models) if models else list(NEX_GDDP_MODELS)
-    if exclude_models:
-        excluded = {m.upper() for m in exclude_models}
-        active_models = [m for m in active_models if m.upper() not in excluded]
-
-    if verbose:
-        print(f"\n{'='*60}")
-        print(f"NEX-GDDP Ensemble  |  {lat}, {lon}  |  {future_start}-{future_end}  |  {scenario}  |  {len(active_models)} models")
-        print('='*60)
-
-    model_results: List[Dict] = []
-
-    for i, model in enumerate(active_models, 1):
+    for scenario in scenarios:
         if verbose:
-            print(f"  [{i:02d}/{len(active_models):02d}] {model:<25}", end=' ', flush=True)
-        r = _run_single_model(model, lat, lon, future_start, future_end, scenario, gap_days, min_season_days)
-        model_results.append(r)
+            print(f"\n{'=' * 70}")
+            print(f"Scenario: {scenario}  |  {len(models)} model(s)  |  "
+                  f"{start_year}–{end_year}  |  mode={mode}")
+            print('=' * 70)
 
+        per_model = []
+        for i, model in enumerate(models, 1):
+            if verbose:
+                print(f"  [{i:02d}/{len(models):02d}] {model:<22}", end=' ', flush=True)
+            try:
+                s_dict, a_dict = analyze_one_model(
+                    lat, lon, start_year, end_year, model, scenario, fixed_arg)
+                per_model.append({'model': model, 'seasons_dict': s_dict, 'annual_dict': a_dict})
+                if verbose:
+                    n_seasons = sum(len(v) for v in s_dict.values())
+                    n_years   = sum(1 for v in s_dict.values() if v)
+                    print(f"✓  {n_seasons} season(s) over {n_years} year(s)")
+            except Exception as exc:
+                per_model.append({
+                    'model': model, 'seasons_dict': {}, 'annual_dict': {},
+                    'error': f"{type(exc).__name__}: {exc}",
+                })
+                if verbose:
+                    print(f"✗  {type(exc).__name__}: {exc}")
+
+        ok = sum(1 for r in per_model if not r.get('error'))
+        results[scenario] = {
+            'by_year':       aggregate(per_model),
+            'model_results': per_model,
+            'metadata': {
+                'lat': lat, 'lon': lon,
+                'period':         [start_year, end_year],
+                'scenario':       scenario,
+                'models':         models,
+                'models_ok':      ok,
+                'models_failed':  len(models) - ok,
+                'mode':           mode,
+                'fixed_seasons':  fixed_arg,
+                'data_source':    'NEX-GDDP-CMIP6',
+                'source_key':     NEX_GDDP_SOURCE,
+                'analysis_date':  datetime.now().isoformat(),
+            },
+        }
         if verbose:
-            if r.get('error'):
-                print(f"✗  {r['error']}")
-            else:
-                print(f"✓  onset={r['avg_onset_doy']} DOY  cessation={r['avg_cessation_doy']} DOY  length={r['avg_length_days']} d  ({r['season_count']} seasons)")
+            print(f"\n  Ensemble: {ok}/{len(models)} models succeeded")
+    return results
 
-    successful = [r for r in model_results if not r.get('error') and r['avg_onset_doy'] is not None]
+# Pretty printer (mirrors seasons.py print_summary exactly, averaged)
+def _mm(v):  return f"{v:.1f} mm" if v is not None else "n/a"
+def _d(v):   return f"{int(round(v))} days" if v is not None else "n/a"
+def _ct(v):  return f"{int(round(v))}" if v is not None else "n/a"
+def _len(v): return f"{int(round(v))}d" if v is not None else "?d"
 
-    ensemble_stats = {
-        'onset_doy':     compute_ensemble_stats([r['avg_onset_doy'] for r in successful]),
-        'cessation_doy': compute_ensemble_stats([r['avg_cessation_doy'] for r in successful]),
-        'length_days':   compute_ensemble_stats([r['avg_length_days'] for r in successful]),
-    }
+def _humid_line(annual, low_months):
+    """Apply the humid test (annual > 1400 AND low-rain months ≤ 3) to ensemble means."""
+    HUMID_RAIN, HUMID_LRM = 1400, 3
+    if annual is None or low_months is None:
+        return "n/a"
+    is_humid = annual > HUMID_RAIN and low_months <= HUMID_LRM
+    rain_op  = ">"  if annual > HUMID_RAIN else "≤"
+    lrm_op   = "≤"  if low_months <= HUMID_LRM else ">"
+    label    = "Humid" if is_humid else "Not humid"
+    return (f"{label}  (annual={annual:.1f} mm {rain_op} {HUMID_RAIN} mm, "
+            f"low-rain months={int(round(low_months))} {lrm_op} {HUMID_LRM})")
 
-    if verbose:
-        print(f"\n{'─'*60}")
-        print(f"Ensemble complete  ({len(successful)}/{len(active_models)} models succeeded)")
-        for var, stats in ensemble_stats.items():
-            if stats['n']:
-                print(f"  {var:<16} mean={stats['mean']}  median={stats['median']}  std={stats['std']}  p10-p90=[{stats['p10']}-{stats['p90']}]")
-        print('='*60)
+def print_summary(results):
+    print("\n" + "=" * 70)
+    print("FINAL SEASONS SUMMARY  (ENSEMBLE)")
+    print("=" * 70)
 
-    return {
-        'ensemble_stats': ensemble_stats,
-        'model_results':  model_results,
-        'metadata': {
-            'location':        {'lat': lat, 'lon': lon},
-            'period':          {'start': future_start, 'end': future_end},
-            'scenario':        scenario,
-            'models_used':     active_models,
-            'models_ok':       len(successful),
-            'models_failed':   len(active_models) - len(successful),
-            'gap_days':        gap_days,
-            'min_season_days': min_season_days,
-            'data_source':     'NEX-GDDP-CMIP6',
-            'method':          'ET0_precipitation_threshold',
-            'analysis_date':   datetime.now().isoformat(),
-        },
-    }
+    for scenario, payload in results.items():
+        n_models = len(payload['metadata']['models'])
+        mode     = payload['metadata']['mode']
+        print(f"\n{'━' * 70}")
+        print(f"Scenario: {scenario}  (mode={mode}, {n_models} model(s), values are averages)")
+        print('━' * 70)
 
+        for year in sorted(payload['by_year']):
+            yr = payload['by_year'][year]
+            print(f"\nYear {year}: {len(yr['seasons'])} season(s)")
 
-def ensemble_all_scenarios(
-    location_coord: Tuple[float, float],
-    future_years: Tuple[int, int],
-    models: Optional[List[str]] = None,
-    exclude_models: Optional[List[str]] = None,
-    gap_days: int = 30,
-    min_season_days: int = 30,
-    verbose: bool = True,
-) -> Dict[str, Any]:
-    """
-    Run ensemble_season_analysis for all four SSP scenarios.
+            for s in yr['seasons']:
+                idx    = s['season_index']
+                regime = max(s['regime_counts'], key=s['regime_counts'].get) if s['regime_counts'] else "?"
+                onset  = s['avg_onset'] or "?"
+                cess   = s['avg_cessation'] or "open"
+                if s['n_open_cessation'] and s['n_open_cessation'] > s['n_models'] / 2:
+                    cess = "open"
+                print(f"  Season {idx}: {onset} → {cess} | {regime} | {_len(s['length_days'])}")
+                print(f"    Total rainfall : {_mm(s['total_rainfall_mm'])}")
+                print(f"    Rainy days     : {_d(s['rainy_days'])}  (precip ≥ 1 mm)")
+                print(f"    Dry days       : {_d(s['dry_days'])}  (precip < 1 mm)")
+                print(f"    Dry spells     : {_ct(s['dry_spells'])}  (runs of ≥ 7 consecutive dry days)")
 
-    Returns:
-        Dict keyed by scenario (ssp126, ssp245, ssp370, ssp585), each value
-        being the full result from ensemble_season_analysis.
-    """
-    return {
-        scenario: ensemble_season_analysis(
-            location_coord=location_coord,
-            future_years=future_years,
-            scenario=scenario,
-            models=models,
-            exclude_models=exclude_models,
-            gap_days=gap_days,
-            min_season_days=min_season_days,
-            verbose=verbose,
-        )
-        for scenario in SSP_SCENARIOS
-    }
+                # ETO sub-season block (fixed mode)
+                eto = s.get('eto_subseasons') or {}
+                if eto.get('n_models_total'):
+                    n_any, n_tot = eto['n_models_with_any'], eto['n_models_total']
+                    print(f"    {'─' * 50}")
+                    print(f"    Season analysis within fixed window:")
+                    if n_any == 0 or not eto['subseasons']:
+                        print(f"      No ETO-based season detected within window")
+                    else:
+                        for sub in eto['subseasons']:
+                            sn, sn_n = sub['subseason_index'], sub['n_models']
+                            if sn_n == 0:
+                                continue
+                            sub_regime = (max(sub['regime_counts'], key=sub['regime_counts'].get)
+                                          if sub['regime_counts'] else "?")
+                            sub_onset = sub['avg_onset'] or "?"
+                            sub_cess  = sub['avg_cessation'] or "open"
+                            if sub.get('n_open_cessation', 0) > sn_n / 2:
+                                sub_cess = "open"
+                            print(f"      ETO sub-season {sn}: {sub_onset} → {sub_cess} | "
+                                  f"{sub_regime} | {_len(sub['length_days'])}  "
+                                  f"(detected by {sn_n}/{n_tot} models)")
+                            print(f"        Total rainfall : {_mm(sub['total_rainfall_mm'])}")
+                            print(f"        Rainy days     : {_d(sub['rainy_days'])}  (precip ≥ 1 mm)")
+                            print(f"        Dry days       : {_d(sub['dry_days'])}  (precip < 1 mm)")
+                            print(f"        Dry spells     : {_ct(sub['dry_spells'])}  (runs of ≥ 7 consecutive dry days)")
 
+            # year footer (matches seasons.py format)
+            print(f"  {'─' * 48}")
+            print(f"  Annual total rainfall : {_mm(yr['annual_rain_mm'])}")
+            print(f"  Humid test            : {_humid_line(yr['annual_rain_mm'], yr['low_rain_months'])}")
 
-def main() -> None:
-    
+# CLI 
+def main():
+    global NEX_GDDP_SOURCE
+
     if '--list-models' in sys.argv:
         print("Available NEX-GDDP-CMIP6 models:")
         for i, m in enumerate(NEX_GDDP_MODELS, 1):
             print(f"  {i:02d}. {m}")
         sys.exit(0)
-        
-    parser = argparse.ArgumentParser(description='NEX-GDDP ensemble season analysis across all 16 CMIP6 models')
-    parser.add_argument('--location', required=True, help='Coordinates as "lat,lon"')
-    parser.add_argument('--future-start', type=int, required=True)
-    parser.add_argument('--future-end', type=int, required=True)
-    parser.add_argument('--scenario', default='ssp245', choices=SSP_SCENARIOS)
-    parser.add_argument('--all-scenarios', action='store_true', help='Run all four SSP scenarios')
-    parser.add_argument('--models', help='Comma-separated subset of models')
-    parser.add_argument('--exclude-models', help='Comma-separated models to exclude')
-    parser.add_argument('--gap-days', type=int, default=30)
-    parser.add_argument('--min-season-days', type=int, default=30)
-    parser.add_argument('--list-models', action='store_true', help='Print available models and exit')
-    parser.add_argument('--output', help='Save JSON result to this path')
-    parser.add_argument('--quiet', action='store_true')
-    args = parser.parse_args()
+
+    p = argparse.ArgumentParser(
+        description='NEX-GDDP-CMIP6 ensemble — wraps seasons.py per model and averages',
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    p.add_argument('--location',     required=True, help='lat,lon  e.g. "-1.286,36.817"')
+    p.add_argument('--start-year',   type=int, required=True)
+    p.add_argument('--end-year',     type=int, required=True)
+    p.add_argument('--scenarios',    help=f"Comma-separated. Default: ALL ({','.join(SSP_SCENARIOS)})")
+    p.add_argument('--models',       help=f"Comma-separated. Default: ALL {len(NEX_GDDP_MODELS)} models")
+    p.add_argument('--exclude-models', help='Comma-separated models to drop')
+    p.add_argument('--fixed-season', metavar='MM-DD:MM-DD[,MM-DD:MM-DD]',
+        help="Fixed windows: '03-01:05-31', '03-01:05-31,10-01:12-15', '11-01:02-28' (year-crossing)")
+    p.add_argument('--source-key',
+        help=f"Override preprocess_data source key (default: {NEX_GDDP_SOURCE!r})")
+    p.add_argument('--list-models',  action='store_true', help='Print models and exit')
+    p.add_argument('--output',       help='Save JSON result here')
+    p.add_argument('--quiet',        action='store_true')
+    args = p.parse_args()
+
+    if args.source_key:
+        NEX_GDDP_SOURCE = args.source_key
 
     try:
         lat, lon = map(float, args.location.split(','))
     except ValueError:
-        print("Error: --location must be in 'lat,lon' format.")
-        sys.exit(1)
+        print("Error: --location must be in 'lat,lon' format."); sys.exit(1)
 
-    models = [m.strip() for m in args.models.split(',')] if args.models else None
-    exclude = [m.strip() for m in args.exclude_models.split(',')] if args.exclude_models else None
+    scenarios = ([s.strip() for s in args.scenarios.split(',') if s.strip()]
+                 if args.scenarios else list(SSP_SCENARIOS))
+    invalid = [s for s in scenarios if s not in SSP_SCENARIOS]
+    if invalid:
+        print(f"Error: unknown scenario(s) {invalid}. Valid: {SSP_SCENARIOS}"); sys.exit(1)
 
-    if args.all_scenarios:
-        result = ensemble_all_scenarios(
-            location_coord=(lat, lon),
-            future_years=(args.future_start, args.future_end),
-            models=models,
-            exclude_models=exclude,
-            gap_days=args.gap_days,
-            min_season_days=args.min_season_days,
-            verbose=not args.quiet,
-        )
-    else:
-        result = ensemble_season_analysis(
-            location_coord=(lat, lon),
-            future_years=(args.future_start, args.future_end),
-            scenario=args.scenario,
-            models=models,
-            exclude_models=exclude,
-            gap_days=args.gap_days,
-            min_season_days=args.min_season_days,
-            verbose=not args.quiet,
-        )
+    models = ([m.strip() for m in args.models.split(',') if m.strip()]
+              if args.models else list(NEX_GDDP_MODELS))
+    if args.exclude_models:
+        excl   = {m.strip().upper() for m in args.exclude_models.split(',') if m.strip()}
+        models = [m for m in models if m.upper() not in excl]
+    if not models:
+        print("Error: model list is empty."); sys.exit(1)
 
-    output = json.dumps(result, indent=2, default=str)
+    if not args.quiet:
+        print(f"NEX-GDDP Ensemble | {lat:.4f},{lon:.4f} | {args.start_year}–{args.end_year}")
+        print(f"  Mode       : {'fixed-season' if args.fixed_season else 'auto'}")
+        print(f"  Source key : {NEX_GDDP_SOURCE!r}  (override with --source-key)")
+        print(f"  Scenarios  : {', '.join(scenarios)}  ({len(scenarios)})")
+        print(f"  Models     : {len(models)} / {len(NEX_GDDP_MODELS)}")
 
+    results = run_ensemble(
+        lat, lon, args.start_year, args.end_year,
+        scenarios = scenarios, models = models,
+        fixed_arg = args.fixed_season,
+        verbose   = not args.quiet,
+    )
+
+    if not args.quiet:
+        print_summary(results)
     if args.output:
         with open(args.output, 'w') as fh:
-            fh.write(output)
-        print(f"Results saved to {args.output}")
-    else:
-        print(output)
-
+            fh.write(json.dumps(results, indent=2, default=str))
+        print(f"\n✓ Saved to {args.output}")
 
 if __name__ == '__main__':
     main()
-    
-# python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --future-start 2040 --future-end 2060 --scenario ssp245
+
+# NOTE: the 1st command in a section includes all models/scenarios while the 2nd allows selection
+
+# Automatic detection
+# python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --start-year 2040 --end-year 2060 --output ensemble_auto_all.json
+# python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --start-year 2040 --end-year 2060 --models "ACCESS-CM2,EC-Earth3,MRI-ESM2-0" --scenarios ssp245,ssp585 --output ensemble_auto.json
+
+# Fixed single season
+# python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "03-01:05-31" --output ensemble_mam_all.json
+# python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "03-01:05-31" --models "ACCESS-CM2,EC-Earth3,MRI-ESM2-0" --scenarios ssp585 --output ensemble_mam.json
+
+# Fixed two seasons
+# python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "03-01:05-31,10-01:12-15" --output ensemble_mam_ond_all.json
+# python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "03-01:05-31,10-01:12-15" --models "ACCESS-CM2,EC-Earth3,MRI-ESM2-0" --scenarios ssp245,ssp585 --output ensemble_mam_ond.json
+
+# Fixed year-crossing season
+# python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "11-01:02-28" --output ensemble_njf_all.json
+# python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "11-01:02-28" --models "ACCESS-CM2,EC-Earth3,MRI-ESM2-0" --scenarios ssp585 --output ensemble_njf.json
+
 # python climate_tookit/season_analysis/ensemble.py --list-models
-# python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --future-start 2040 --future-end 2060 --scenario ssp245 --output results.json
-# python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --future-start 2040 --future-end 2060 --all-scenarios --output all_scenarios.json
-# python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --future-start 2040 --future-end 2060 --scenario ssp245 --exclude-models "CESM2,INM-CM4-8"
