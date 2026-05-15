@@ -31,7 +31,6 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.ticker import MaxNLocator
 
-# Variable-type helpers
 # Variables treated as accumulations (totals, not means / min / max)
 ACCUMULATION_VARS = {"precipitation", "precip", "rain", "rainfall"}
 
@@ -39,108 +38,184 @@ def _is_accum(col: str) -> bool:
     """Return True if *col* is an accumulation (flux) variable."""
     return col.lower() in ACCUMULATION_VARS
 
+# Location-aware helpers
+def _loc_seed(lat: float, lon: float) -> int:
+    """Deterministic per-location seed component (combined with year)."""
+    return abs(int(round(lat * 1000)) * 100003 + int(round(lon * 1000)))
+
+def _loc_temp_offset(lat: float, lon: float) -> float:
+    """
+    Per-location mean-temperature offset (°C).
+    Combines a crude latitudinal gradient with a deterministic 'pseudo-elevation' draw so that two sites at similar latitude
+    (e.g. Nairobi vs Kigali vs Kisangani) still differ.
+    """
+    lat_term = -0.55 * (abs(lat) - 1.0)
+    rng = np.random.default_rng(_loc_seed(lat, lon))
+    pseudo_elev = (rng.random() - 0.5) * 6.0          # ± 3 °C spread
+    return lat_term + pseudo_elev
+
+def _loc_precip_factor(lat: float, lon: float) -> float:
+    """
+    Per-location precipitation scaling factor (dimensionless). Peaks near the ITCZ (low |lat|) and is modulated by a small
+    deterministic per-site perturbation, so nearby points still receive slightly different annual totals.
+    """
+    base = 0.45 + 1.25 * np.exp(-(lat ** 2) / (10.0 ** 2))
+    rng = np.random.default_rng(_loc_seed(lat, lon) + 7919)
+    perturb = 1.0 + 0.35 * (rng.random() - 0.5) * 2   # uniform in [0.65, 1.35]
+    return float(base * perturb)
+
 # Mock dataset fetchers
-# Each fetcher adds:
-#   • a seasonal cycle   (sin-based, tied to day-of-year)
-#   • inter-annual trend (slow drift tied to year)
-#   • year-level noise   (reproducible via per-year seed)
-# This ensures annual statistics vary meaningfully across years.
+# This ensures annual statistics vary meaningfully across years AND locations.
 def _year_noise(years, seed_offset: int, scale: float) -> np.ndarray:
     """Return a per-day noise array whose amplitude varies by year."""
     noise = np.zeros(len(years))
     for yr in years.unique():
-        rng = np.random.default_rng(int(yr) + seed_offset)
+        rng = np.random.default_rng(int(yr) + int(seed_offset))
         mask = years == yr
         noise[mask] = rng.normal(0, scale, mask.sum())
     return noise
 
+def _seasonal_precip(doy: np.ndarray, phase1: float, phase2: float,
+                     amp1: float, amp2: float, offset: float) -> np.ndarray:
+    """Tropical bimodal seasonal precipitation shape (mm/day, pre-scaling)."""
+    return np.maximum(
+        0,
+        amp1 * np.sin(2 * np.pi * doy / 365 + phase1)
+      + amp2 * np.sin(4 * np.pi * doy / 365 + phase2)
+      + offset,
+    )
 def fetch_era5(lat, lon, start, end):
     dates = pd.date_range(start, end)
     doy   = dates.dayofyear.values
     yr    = dates.year
-    base_temp  = 24 + 4 * np.sin(2 * np.pi * doy / 365 - 1.0)
+    loc   = _loc_seed(lat, lon)
+    pfac  = _loc_precip_factor(lat, lon)
+    tof   = _loc_temp_offset(lat, lon)
+
+    base_temp  = 24 + tof + 4 * np.sin(2 * np.pi * doy / 365 - 1.0)
     trend_temp = (yr - yr.min()) * 0.03
-    base_prec  = np.maximum(0, 1.2 * np.sin(2 * np.pi * doy / 365 + 0.5) + 0.8)
+    base_prec  = pfac * _seasonal_precip(doy, 0.5, 1.8, 2.4, 1.2, 1.6)
     return pd.DataFrame({
         "date":          dates,
-        "temperature":   (base_temp + trend_temp + _year_noise(yr, 1, 0.4)).round(3),
-        "precipitation": np.maximum(0, base_prec + _year_noise(yr, 2, 0.15)).round(3),
+        "temperature":   (base_temp + trend_temp
+                          + _year_noise(yr, 1 + loc, 0.4)).round(3),
+        "precipitation": np.maximum(
+            0, base_prec + _year_noise(yr, 2 + loc, 0.4 * pfac)
+        ).round(3),
     })
 def fetch_chirps(lat, lon, start, end):
     dates = pd.date_range(start, end)
     doy   = dates.dayofyear.values
     yr    = dates.year
-    base  = np.maximum(0, 1.8 * np.sin(2 * np.pi * doy / 365 + 0.6) + 1.0)
+    loc   = _loc_seed(lat, lon)
+    pfac  = _loc_precip_factor(lat, lon)
+    base  = pfac * _seasonal_precip(doy, 0.6, 2.0, 2.6, 1.3, 1.8)
     return pd.DataFrame({
         "date":          dates,
-        "precipitation": np.maximum(0, base + _year_noise(yr, 3, 0.25)).round(3),
+        "precipitation": np.maximum(
+            0, base + _year_noise(yr, 3 + loc, 0.45 * pfac)
+        ).round(3),
     })
 def fetch_nasa_power(lat, lon, start, end):
     dates = pd.date_range(start, end)
     doy   = dates.dayofyear.values
     yr    = dates.year
-    base_temp = 25 + 3 * np.sin(2 * np.pi * doy / 365 - 0.8)
+    loc   = _loc_seed(lat, lon)
+    pfac  = _loc_precip_factor(lat, lon)
+    tof   = _loc_temp_offset(lat, lon)
+
+    base_temp = 25 + tof + 3 * np.sin(2 * np.pi * doy / 365 - 0.8)
     trend     = (yr - yr.min()) * 0.025
-    base_prec = np.maximum(0, 1.6 * np.sin(2 * np.pi * doy / 365 + 0.5) + 0.9)
+    base_prec = pfac * _seasonal_precip(doy, 0.5, 1.9, 2.5, 1.25, 1.7)
     return pd.DataFrame({
         "date":          dates,
-        "temperature":   (base_temp + trend + _year_noise(yr, 4, 0.5)).round(3),
-        "precipitation": np.maximum(0, base_prec + _year_noise(yr, 5, 0.18)).round(3),
+        "temperature":   (base_temp + trend
+                          + _year_noise(yr, 4 + loc, 0.5)).round(3),
+        "precipitation": np.maximum(
+            0, base_prec + _year_noise(yr, 5 + loc, 0.45 * pfac)
+        ).round(3),
     })
 def fetch_imerg(lat, lon, start, end):
     dates = pd.date_range(start, end)
     doy   = dates.dayofyear.values
     yr    = dates.year
-    base  = np.maximum(0, 2.5 * np.sin(2 * np.pi * doy / 365 + 0.4) + 1.5)
+    loc   = _loc_seed(lat, lon)
+    pfac  = _loc_precip_factor(lat, lon)
+    base  = pfac * _seasonal_precip(doy, 0.4, 1.7, 2.8, 1.4, 1.9)
     return pd.DataFrame({
         "date":          dates,
-        "precipitation": np.maximum(0, base + _year_noise(yr, 6, 0.4)).round(3),
+        "precipitation": np.maximum(
+            0, base + _year_noise(yr, 6 + loc, 0.55 * pfac)
+        ).round(3),
     })
 def fetch_cmip6(lat, lon, start, end):
     dates = pd.date_range(start, end)
     doy   = dates.dayofyear.values
     yr    = dates.year
-    base  = 18 + 5 * np.sin(2 * np.pi * doy / 365 - 1.2)
+    loc   = _loc_seed(lat, lon)
+    tof   = _loc_temp_offset(lat, lon)
+
+    base  = 18 + tof + 5 * np.sin(2 * np.pi * doy / 365 - 1.2)
     trend = (yr - yr.min()) * 0.04
     return pd.DataFrame({
         "date":        dates,
-        "temperature": (base + trend + _year_noise(yr, 7, 0.6)).round(3),
+        "temperature": (base + trend
+                        + _year_noise(yr, 7 + loc, 0.6)).round(3),
     })
 def fetch_agera5(lat, lon, start, end):
     dates = pd.date_range(start, end)
     doy   = dates.dayofyear.values
     yr    = dates.year
-    base_temp  = 24.5 + 3.8 * np.sin(2 * np.pi * doy / 365 - 1.0)
+    loc   = _loc_seed(lat, lon)
+    pfac  = _loc_precip_factor(lat, lon)
+    tof   = _loc_temp_offset(lat, lon)
+
+    base_temp  = 24.5 + tof + 3.8 * np.sin(2 * np.pi * doy / 365 - 1.0)
     trend      = (yr - yr.min()) * 0.028
-    base_prec  = np.maximum(0, 1.7 * np.sin(2 * np.pi * doy / 365 + 0.55) + 1.0)
+    base_prec  = pfac * _seasonal_precip(doy, 0.55, 1.85, 2.5, 1.3, 1.75)
     return pd.DataFrame({
         "date":          dates,
-        "temperature":   (base_temp + trend + _year_noise(yr, 10, 0.42)).round(3),
-        "precipitation": np.maximum(0, base_prec + _year_noise(yr, 11, 0.20)).round(3),
+        "temperature":   (base_temp + trend
+                          + _year_noise(yr, 10 + loc, 0.42)).round(3),
+        "precipitation": np.maximum(
+            0, base_prec + _year_noise(yr, 11 + loc, 0.40 * pfac)
+        ).round(3),
     })
 def fetch_terraclimate(lat, lon, start, end):
     dates = pd.date_range(start, end)
     doy   = dates.dayofyear.values
     yr    = dates.year
-    base_temp = 22 + 4.2 * np.sin(2 * np.pi * doy / 365 - 1.1)
+    loc   = _loc_seed(lat, lon)
+    pfac  = _loc_precip_factor(lat, lon)
+    tof   = _loc_temp_offset(lat, lon)
+
+    base_temp = 22 + tof + 4.2 * np.sin(2 * np.pi * doy / 365 - 1.1)
     trend     = (yr - yr.min()) * 0.032
-    base_prec = np.maximum(0, 2.0 * np.sin(2 * np.pi * doy / 365 + 0.55) + 1.2)
+    base_prec = pfac * _seasonal_precip(doy, 0.55, 1.9, 2.7, 1.35, 1.85)
     base_pet  = 3.5 + 1.5 * np.sin(2 * np.pi * doy / 365 - 0.5)
     return pd.DataFrame({
         "date":          dates,
-        "temperature":   (base_temp + trend + _year_noise(yr, 12, 0.5)).round(3),
-        "precipitation": np.maximum(0, base_prec + _year_noise(yr, 13, 0.22)).round(3),
-        "pet":           np.maximum(0, base_pet  + _year_noise(yr, 14, 0.3)).round(3),
+        "temperature":   (base_temp + trend
+                          + _year_noise(yr, 12 + loc, 0.5)).round(3),
+        "precipitation": np.maximum(
+            0, base_prec + _year_noise(yr, 13 + loc, 0.45 * pfac)
+        ).round(3),
+        "pet":           np.maximum(
+            0, base_pet  + _year_noise(yr, 14 + loc, 0.3)
+        ).round(3),
     })
 def fetch_chirts(lat, lon, start, end):
     """CHIRTS: high-resolution daily maximum/minimum temperature."""
     dates  = pd.date_range(start, end)
     doy    = dates.dayofyear.values
     yr     = dates.year
-    base   = 26 + 3.5 * np.sin(2 * np.pi * doy / 365 - 1.0)
+    loc    = _loc_seed(lat, lon)
+    tof    = _loc_temp_offset(lat, lon)
+
+    base   = 26 + tof + 3.5 * np.sin(2 * np.pi * doy / 365 - 1.0)
     trend  = (yr - yr.min()) * 0.027
-    tmax   = base + trend + 3.0 + _year_noise(yr, 15, 0.45)
-    tmin   = base + trend - 3.0 + _year_noise(yr, 16, 0.38)
+    tmax   = base + trend + 3.0 + _year_noise(yr, 15 + loc, 0.45)
+    tmin   = base + trend - 3.0 + _year_noise(yr, 16 + loc, 0.38)
     return pd.DataFrame({
         "date":  dates,
         "tmax":  tmax.round(3),
@@ -148,13 +223,27 @@ def fetch_chirts(lat, lon, start, end):
         "tmean": ((tmax + tmin) / 2).round(3),
     })
 def fetch_soil_grids(lat, lon, start, end):
-    """SoilGrids: static soil properties returned as constant daily series."""
+    """
+    SoilGrids: static soil properties returned as constant daily series.
+    Baseline values are now deterministically drawn from a per-location seed,
+    so different (lat, lon) yield different soils — matching the real-world
+    behaviour of the underlying SoilGrids product.
+    """
     dates = pd.date_range(start, end)
     yr    = dates.year
-    soc   = 18.5 + _year_noise(yr, 17, 0.3)
-    clay  = 32.0 + _year_noise(yr, 18, 0.5)
-    sand  = 41.0 + _year_noise(yr, 19, 0.6)
-    ph    =  6.2 + _year_noise(yr, 20, 0.04)
+    loc   = _loc_seed(lat, lon)
+
+    # Per-location baseline soil properties (deterministic, lat/lon driven)
+    base_rng  = np.random.default_rng(loc)
+    soc_base  = 12.0 + base_rng.uniform(0, 18)    
+    clay_base = 18.0 + base_rng.uniform(0, 30)    
+    sand_base = 25.0 + base_rng.uniform(0, 40)    
+    ph_base   =  5.0 + base_rng.uniform(0, 2.5)   
+
+    soc  = soc_base  + _year_noise(yr, 17 + loc, 0.30)
+    clay = clay_base + _year_noise(yr, 18 + loc, 0.50)
+    sand = sand_base + _year_noise(yr, 19 + loc, 0.60)
+    ph   = ph_base   + _year_noise(yr, 20 + loc, 0.04)
     return pd.DataFrame({
         "date":                dates,
         "soil_organic_carbon": soc.round(3),
@@ -167,14 +256,14 @@ def fetch_tamsat(lat, lon, start, end):
     dates = pd.date_range(start, end)
     doy   = dates.dayofyear.values
     yr    = dates.year
-    base = (
-        1.8 * np.sin(2 * np.pi * doy / 365 + 0.45)
-      + 1.0 * np.sin(4 * np.pi * doy / 365 + 1.20)
-      + 1.2
-    )
+    loc   = _loc_seed(lat, lon)
+    pfac  = _loc_precip_factor(lat, lon)
+    base  = pfac * _seasonal_precip(doy, 0.45, 1.20, 2.4, 1.3, 1.8)
     return pd.DataFrame({
         "date":          dates,
-        "precipitation": np.maximum(0, base + _year_noise(yr, 21, 0.28)).round(3),
+        "precipitation": np.maximum(
+            0, base + _year_noise(yr, 21 + loc, 0.45 * pfac)
+        ).round(3),
     })
 
 # NEX-GDDP registry
@@ -200,7 +289,6 @@ _MODEL_OFFSET = {
     'MRI-ESM2-0': -0.2,  'NorESM2-LM': +0.0,     'NorESM2-MM': +0.1,
     'TaiESM1':    +0.3,
 }
-
 def fetch_nex_gddp(lat, lon, start, end, model: str = "MRI-ESM2-0",
                    scenario: str = "ssp245"):
     scenario_key = SCENARIO_MAPPING.get(scenario, "ssp245")
@@ -211,19 +299,24 @@ def fetch_nex_gddp(lat, lon, start, end, model: str = "MRI-ESM2-0",
     dates      = pd.date_range(start, end)
     doy        = dates.dayofyear.values
     yr         = dates.year
+    loc        = _loc_seed(lat, lon)
+    pfac       = _loc_precip_factor(lat, lon)
+    tof        = _loc_temp_offset(lat, lon)
     trend_rate = _SCENARIO_TREND.get(scenario_key, 0.04)
     mod_offset = _MODEL_OFFSET.get(model, 0.0)
-    base_temp  = 23 + mod_offset + 3.5 * np.sin(2 * np.pi * doy / 365 - 0.9)
+
+    base_temp  = (23 + tof + mod_offset
+                  + 3.5 * np.sin(2 * np.pi * doy / 365 - 0.9))
     trend_temp = (yr - yr.min()) * trend_rate
-    base_prec  = np.maximum(0, 1.5 * np.sin(2 * np.pi * doy / 365 + 0.5) + 0.9)
+    base_prec  = pfac * _seasonal_precip(doy, 0.5, 1.8, 2.45, 1.25, 1.75)
     model_seed = sum(ord(c) for c in model)
     return pd.DataFrame({
         "date":          dates,
         "temperature":   (base_temp + trend_temp
-                          + _year_noise(yr, model_seed, 0.45)).round(3),
+                          + _year_noise(yr, model_seed + loc, 0.45)).round(3),
         "precipitation": np.maximum(
-                          0, base_prec + _year_noise(yr, model_seed + 1, 0.20)
-                         ).round(3),
+            0, base_prec + _year_noise(yr, model_seed + loc + 1, 0.45 * pfac)
+        ).round(3),
     })
 
 SOURCE_FUNCTIONS = {
