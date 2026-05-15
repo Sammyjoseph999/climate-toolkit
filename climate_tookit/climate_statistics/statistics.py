@@ -3,10 +3,10 @@ Climate Statistics Module
 Computes agroecology-focused climate statistics by season.
 Supports both automatic detection (ETO-based, from seasons.py) and fixed-season calendar windows (--fixed-season), matching the season_analysis interface.
 
-Outputs three views per run:
-    1. Raw Climate Summary  -- mean / min / max / std per core variable (precip, tmax, tmin, humidity, solar, wind)
-    2. Overall Statistics   -- essential agro metrics over the full period
-    3. Season Statistics    -- essential agro metrics per detected/fixed season (plus ETO sub-seasons inside fixed windows)
+Outputs three views per run, all sliced per detected/fixed season (no full-period summaries):
+    1. Raw Climate Summary by Season -- mean / min / max / std per core variable (precip, tmax, tmin, humidity, solar, wind), one block per season
+    2. Overall Statistics by Season  -- essential agro metrics, one block per season
+    3. Season Statistics             -- compact agro headline per season (plus ETO sub-seasons inside fixed windows)
 Detection: delegates to seasons.py building blocks (add_et0,
 detect_onset_cessation, reassign_spillover_seasons, remove_duplicate_seasons,
 parse_fixed_seasons, check_humid) so behaviour is identical to seasons.py:
@@ -170,7 +170,6 @@ def get_climate_data(
             raise RuntimeError(
                 f"Temperature missing from '{source}'. Got: {available}"
             )
-
     return df.sort_values('date').reset_index(drop=True)
 
 # Water balance
@@ -225,8 +224,7 @@ def raw_climate_summary(df: pd.DataFrame) -> List[Dict[str, Any]]:
 def overall_statistics(df: pd.DataFrame) -> Dict[str, Any]:
     """
     Essential agro metrics for the full period.
-    Filtered to remove noisy daily means/medians/stds and duplicate metrics
-    (per the agroecology-priority spec).
+    Filtered to remove noisy daily means/medians/stds and duplicate metrics (per the agroecology-priority spec).
     """
     p   = df['precip'].fillna(0)
     tx  = df['tmax']
@@ -322,10 +320,8 @@ def detect_seasons_auto(
     end_year: int,
 ) -> Tuple[Dict[int, List[Dict]], Dict[int, Dict]]:
     """
-    Mirrors seasons.fetch_and_analyze_years() but operates on the *master*
-    DataFrame already in memory (no re-fetching).
-    For each ref year, slices a 1.5-year window so onset/cessation crossing
-    the year boundary is captured, then runs ETO detection.
+    Mirrors seasons.fetch_and_analyze_years() but operates on the *master* DataFrame already in memory (no re-fetching).
+    For each ref year, slices a 1.5-year window so onset/cessation crossing the year boundary is captured, then runs ETO detection.
     Final post-processing (reassign + dedup) matches seasons.py.
     """
     if not SEASONS_AVAILABLE:
@@ -515,12 +511,6 @@ def analyze_climate_statistics(
     df = add_et0(df, lat)
     df = calculate_water_balance(df)
 
-    # Restrict statistics window to [start_year-01-01, end_year-12-31]
-    stats_df = df[
-        (df['date'] >= pd.Timestamp(f"{start_year}-01-01")) &
-        (df['date'] <= pd.Timestamp(f"{end_year}-12-31"))
-    ].copy().reset_index(drop=True)
-
     # Season detection (uses full df with tail for year-crossing capture)
     if fixed_season:
         seasons_dict, annual_dict = detect_seasons_fixed(
@@ -530,12 +520,8 @@ def analyze_climate_statistics(
         seasons_dict, annual_dict = detect_seasons_auto(
             df, lat, start_year, end_year
         )
-    # Compute stats
-    raw_summary = raw_climate_summary(stats_df)
-    overall     = overall_statistics(stats_df)
 
-    # Per-season block (computed against the FULL df so year-crossing seasons
-    # have access to days beyond Dec 31)
+    # Per-season block (computed against the FULL df so year-crossing seasons have access to days beyond Dec 31). Raw and overall stats are computed per season only; no full-period view is produced.
     season_results: List[Dict] = []
     for year in sorted(seasons_dict.keys()):
         for i, season in enumerate(seasons_dict[year], 1):
@@ -545,6 +531,16 @@ def analyze_climate_statistics(
             stats['year']          = year
             stats['season_number'] = i
             stats['regime']        = season.get('regime', 'auto')
+
+            # Slice once and attach the raw + overall views to this season
+            onset_ts = pd.to_datetime(season['onset'])
+            cess_ts  = (pd.to_datetime(season['cessation'])
+                        if season.get('cessation') is not None
+                        else df['date'].iloc[-1])
+            sdf = df[(df['date'] >= onset_ts) & (df['date'] <= cess_ts)]
+            stats['raw_climate_summary'] = raw_climate_summary(sdf)
+            if not sdf.empty:
+                stats['overall_statistics'] = overall_statistics(sdf)
 
             # ETO sub-seasons inside fixed windows
             sub_results: List[Dict] = []
@@ -574,8 +570,6 @@ def analyze_climate_statistics(
         'fixed_season':        fixed_season,
         'model':               model,
         'scenario':            scenario,
-        'raw_climate_summary': raw_summary,
-        'overall_statistics':  overall,
         'season_statistics':   season_results,
         'annual_summary':      annual_summary,
         'analysis_date':       datetime.now().isoformat(),
@@ -583,35 +577,59 @@ def analyze_climate_statistics(
     }
 
 # Display
-def print_raw_summary(rows: List[Dict]) -> None:
-    print("\n" + "=" * 70)
-    print("RAW CLIMATE SUMMARY")
-    print("=" * 70)
-    if not rows:
-        print("(no data)")
-        return
-    out = pd.DataFrame(rows).fillna("n/a")
-    print(out.to_string(index=False))
+def _print_indented_table(df: pd.DataFrame, indent: str = "    ") -> None:
+    for line in df.to_string(index=False).splitlines():
+        print(f"{indent}{line}")
 
-def print_overall(stats: Dict[str, Any]) -> None:
+def print_raw_summary_by_season(seasons: List[Dict]) -> None:
+    """One raw mean/min/max/std table per season, printed as stacked blocks."""
     print("\n" + "=" * 70)
-    print("OVERALL STATISTICS")
+    print("RAW CLIMATE SUMMARY BY SEASON")
     print("=" * 70)
-    print(f"  Total days analysed: {stats['total_days']}")
-    rows = []
-    for var_key, var_label in [
-        ('precipitation', 'Precipitation'),
-        ('temperature',   'Temperature'),
-        ('et0',           'ET0'),
-        ('water_balance', 'Water Balance'),
-    ]:
-        for metric, value in stats[var_key].items():
-            rows.append({
-                'Variable': var_label,
-                'Metric':   metric,
-                'Value':    value if value is not None else "n/a",
-            })
-    print(pd.DataFrame(rows).to_string(index=False))
+    if not seasons:
+        print("No seasons detected for this period.")
+        return
+    for s in seasons:
+        regime = s.get('regime', 'auto')
+        print(f"\n  Year {s['year']} | Season {s['season_number']} ({regime})")
+        print(f"    {s['onset']} → {s['cessation']}  ({s['length_days']}d)")
+        rows = s.get('raw_climate_summary') or []
+        if not rows:
+            print("    (no data)")
+            continue
+        _print_indented_table(pd.DataFrame(rows).fillna("n/a"))
+
+def print_overall_by_season(seasons: List[Dict]) -> None:
+    """One overall agro-metric table per season, printed as stacked blocks."""
+    print("\n" + "=" * 70)
+    print("OVERALL STATISTICS BY SEASON")
+    print("=" * 70)
+    if not seasons:
+        print("No seasons detected for this period.")
+        return
+    for s in seasons:
+        regime = s.get('regime', 'auto')
+        print(f"\n  Year {s['year']} | Season {s['season_number']} ({regime})")
+        print(f"    {s['onset']} → {s['cessation']}  ({s['length_days']}d)")
+        stats = s.get('overall_statistics')
+        if not stats:
+            print("    (no data)")
+            continue
+        print(f"    Total days: {stats['total_days']}")
+        rows = []
+        for var_key, var_label in [
+            ('precipitation', 'Precipitation'),
+            ('temperature',   'Temperature'),
+            ('et0',           'ET0'),
+            ('water_balance', 'Water Balance'),
+        ]:
+            for metric, value in stats[var_key].items():
+                rows.append({
+                    'Variable': var_label,
+                    'Metric':   metric,
+                    'Value':    value if value is not None else "n/a",
+                })
+        _print_indented_table(pd.DataFrame(rows))
 
 def print_seasons(seasons: List[Dict]) -> None:
     print("\n" + "=" * 70)
@@ -695,8 +713,8 @@ def print_pandas(result: Dict[str, Any]) -> None:
     if result.get('scenario'):
         print(f"Scenario : {result['scenario']}")
 
-    print_raw_summary(result['raw_climate_summary'])
-    print_overall(result['overall_statistics'])
+    print_raw_summary_by_season(result['season_statistics'])
+    print_overall_by_season(result['season_statistics'])
     print_seasons(result['season_statistics'])
     print_annual(result['annual_summary'])
 
@@ -721,12 +739,12 @@ def main() -> None:
         default=None,
         metavar='MM-DD:MM-DD[,MM-DD:MM-DD]',
         help=(
-            "Force fixed calendar season windows (matches seasons.py).\n"
-            "Climate data is still fetched via --source for statistics\n"
-            "and ETO-based onset/cessation analysis within each window.\n\n"
-            "Examples:\n"
-            "  Single season : --fixed-season '03-01:05-31'\n"
-            "  Two seasons   : --fixed-season '03-01:05-31,10-01:12-15'\n"
+            "Force fixed calendar season windows (matches seasons.py)."
+            "Climate data is still fetched via --source for statistics"
+            "and ETO-based onset/cessation analysis within each window."
+            "Examples:"
+            "  Single season : --fixed-season '03-01:05-31'"
+            "  Two seasons   : --fixed-season '03-01:05-31,10-01:12-15'"
             "  Year-crossing : --fixed-season '11-01:02-28'"
         ),
     )
