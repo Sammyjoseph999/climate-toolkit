@@ -375,7 +375,7 @@ if __name__ == "__main__":
     main()
 
 # Auto-detected seasons (no --fixed-season):
-# python -m climate_tookit.compare_periods.periods --location=-1.286,36.817 --baseline-start=1991 --baseline-end=2020 --focal-year=2019 --source=chirps+chirts --output=results/nairobi_2019_vs_1991-2020_auto.json
+# python -m climate_tookit.compare_periods.periods --location=-1.286,36.817 --baseline-start=1991 --baseline-end=2016 --focal-year=2015 --source=chirps+chirts --output=results/nairobi_2015_vs_1991-2016_auto.json
 
 # Single fixed season:
 # python -m climate_tookit.compare_periods.periods --location=-1.286,36.817 --baseline-start=1991 --baseline-end=2020 --focal-year=2019 --source=terraclimate --fixed-season=03-01:05-31 --output=results/nairobi_2019_MAM.json
@@ -384,4 +384,4 @@ if __name__ == "__main__":
 # python -m climate_tookit.compare_periods.periods --location=-1.286,36.817 --baseline-start=1991 --baseline-end=2020 --focal-year=2019 --source=era_5 --fixed-season='03-01:05-31,10-01:12-15' --output=results/nairobi_2019_MAM_OND.json
 
 # Year-crossing single window:
-# python -m climate_tookit.compare_periods.periods --location=-1.286,36.817 --baseline-start=1991 --baseline-end=2020 --focal-year=2019 --source=chirps --fixed-season=11-01:02-28 --output=results/nairobi_2019_NDJF.json
+# python -m climate_tookit.compare_periods.periods --location=-1.286,36.817 --baseline-start=1991 --baseline-end=2016 --focal-year=2016 --source=chirps --fixed-season=11-01:02-28 --output=results/nairobi_2016_NDJF.json
