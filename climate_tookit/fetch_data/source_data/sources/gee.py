@@ -3,7 +3,7 @@ hosted by Google Earth Engine (GEE)."""
 
 import logging
 import os
-from datetime import date, timedelta
+from datetime import date
 from typing import Optional, Union
 
 from dotenv import load_dotenv
@@ -22,6 +22,16 @@ logger = logging.getLogger(__name__)
 
 
 class DownloadData(models.DataDownloadBase):
+    _ee_initialized = False
+
+    @classmethod
+    def _ensure_ee_init(cls):
+        if not cls._ee_initialized:
+            logger.info("Authenticating to GEE...")
+            ee.Authenticate()
+            ee.Initialize(project=os.getenv("GCP_PROJECT_ID"))
+            cls._ee_initialized = True
+
     def __init__(
         self,
         variables: list[Union[models.ClimateVariable, models.SoilVariable]],
@@ -104,9 +114,7 @@ class DownloadData(models.DataDownloadBase):
         ---
         A pandas dataframe containing the static variables from the dataset
         """
-        logger.info("Authenticating to GEE...")
-        ee.Authenticate()
-        ee.Initialize(project=os.getenv("GCP_PROJECT_ID"))
+        self._ensure_ee_init()
 
         lat, lon = location_coord
         location = (
@@ -150,9 +158,7 @@ class DownloadData(models.DataDownloadBase):
     ) -> pd.DataFrame:
         """Internal method to fetch data for a single date range"""
 
-        logger.info("Authenticating to GEE...")
-        ee.Authenticate()
-        ee.Initialize(project=os.getenv("GCP_PROJECT_ID"))
+        self._ensure_ee_init()
 
         # GEE expects [longitude, latitude], but location_coord is (lat, lon)
         lat, lon = location_coord
@@ -233,9 +239,6 @@ class DownloadData(models.DataDownloadBase):
 
         return df
 
-    # NOTE: I did some pretty aggressive chopping here, so test to make sure I didn't break anything downstream,
-    # However, from my testing and understanding - if we are just extracting data for a single point/pixel
-    # there is no need for chunking and other usual optimizations
     def get_gee_data_daily(
         self,
         image_name: str,
@@ -249,9 +252,8 @@ class DownloadData(models.DataDownloadBase):
         cadence: Cadence = Cadence.daily,
         tile_scale: float = 1,
     ) -> pd.DataFrame:
-        """Retrieve daily data from a GEE ImageCollection with automatic chunking for sub-daily datasets."""
+        """Retrieve daily data from a GEE ImageCollection in a single server-side pass."""
 
-        logger.info("Authenticating to GEE...")
         logger.info(f"Retrieving information from GEE Image: {image_name}")
 
         if cadence != Cadence.daily:
@@ -259,41 +261,21 @@ class DownloadData(models.DataDownloadBase):
                 f"Cadence '{cadence}' is not supported. Only daily cadence is currently supported."
             )
 
-        total_days = (to_date - from_date).days
-
-        if total_days < 0:
+        if (to_date - from_date).days < 0:
             logger.warning("from_date is after to_date. Returning empty DataFrame.")
             return pd.DataFrame()
 
-        # IMERG has 48 images/day × 100 days = 4800 elements, safely under GEE's 5000 limit
-        chunk_size = 100
-
-        chunks = []
-        chunk_start = from_date
-
-        while chunk_start <= to_date:
-            chunk_end = min(chunk_start + timedelta(days=chunk_size - 1), to_date)
-            logger.info(f"Fetching chunk: {chunk_start} → {chunk_end}")
-
-            chunk_df = self._get_gee_data_daily_single_range(
-                image_name=image_name,
-                location_coord=location_coord,
-                from_date=chunk_start,
-                to_date=chunk_end,
-                scale=scale,
-                crs=crs,
-                location_name=location_name,
-                max_pixels=max_pixels,
-                tile_scale=tile_scale,
-            )
-
-            chunks.append(chunk_df)
-            chunk_start = chunk_end + timedelta(days=1)
-
-        if not chunks:
-            return pd.DataFrame()
-
-        return pd.concat(chunks, ignore_index=True)
+        return self._get_gee_data_daily_single_range(
+            image_name=image_name,
+            location_coord=location_coord,
+            from_date=from_date,
+            to_date=to_date,
+            scale=scale,
+            crs=crs,
+            location_name=location_name,
+            max_pixels=max_pixels,
+            tile_scale=tile_scale,
+        )
 
     def get_gee_data_monthly(
         self,
@@ -337,8 +319,7 @@ class DownloadData(models.DataDownloadBase):
         A pandas dataframe containing all the variables in that climate dataset
         """
 
-        logger.info("Authenticating to GEE...")
-        ee.Initialize(project=os.environ.get("GCP_PROJECT_ID"))
+        self._ensure_ee_init()
 
         lat, lon = location_coord
         location = (
