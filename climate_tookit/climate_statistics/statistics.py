@@ -2,7 +2,6 @@
 Climate Statistics Module
 Computes agroecology-focused climate statistics by season.
 Supports both automatic detection (ETO-based, from seasons.py) and fixed-season calendar windows (--fixed-season), matching the season_analysis interface.
-
 Outputs three views per run, all sliced per detected/fixed season (no full-period summaries):
     1. Raw Climate Summary by Season -- mean / min / max / std per core variable (precip, tmax, tmin, humidity, solar, wind), one block per season
     2. Overall Statistics by Season  -- essential agro metrics, one block per season
@@ -12,7 +11,6 @@ detect_onset_cessation, reassign_spillover_seasons, remove_duplicate_seasons,
 parse_fixed_seasons, check_humid) so behaviour is identical to seasons.py:
     Per reference year, a 1.5-year window is sliced from the master DataFrame so seasons crossing the year boundary are captured. After detection,
     seasons are reassigned to onset year, filtered to MAM/OND windows for equatorial climates, and de-duplicated.
-
 Data sources accepted: era_5, agera_5, chirps+chirts, nasa_power, nex_gddp, terraclimate, auto. NEX-GDDP requires --model and --scenario.
 
 Dependencies: pandas, numpy, climate_toolkit (preprocess_data, seasons.py)
@@ -135,8 +133,7 @@ def get_climate_data(
     ---------------
       - 'auto'           : resolves directly to CHIRPS + CHIRTS merge
       - 'chirps+chirts'  : merges CHIRPS precip + CHIRTS temperature
-      - any other string : passed straight to preprocess_data (era_5, agera_5,
-                           nasa_power, nex_gddp, chirps, chirts, …)
+      - any other string : passed straight to preprocess_data (era_5, agera_5, nasa_power, nex_gddp, chirps, chirts, …)
     Renames pipeline columns to canonical names: precip, tmax, tmin (humidity, soil_moisture, solar_radiation, wind_speed pass through when the source provides them).
     """
     if not PREPROCESS_AVAILABLE:
@@ -992,10 +989,6 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-# Auto season detection:
-# python climate_tookit/climate_statistics/statistics.py --location="-1.286,36.817" --start-year 2018 --end-year 2020 --source era_5 --format pandas
-# python climate_tookit/climate_statistics/statistics.py --location="-1.286,36.817" --start-year 2015 --end-year 2020 --source agera_5 --format pandas
-
 # Fixed single season:
 # python climate_tookit/climate_statistics/statistics.py --location="-1.286,36.817" --start-year 2018 --end-year 2022 --fixed-season "03-01:05-31" --source era_5 --format pandas
 
@@ -1010,3 +1003,7 @@ if __name__ == "__main__":
 
 # Baseline LTM (standard 1991-2020 window, fixed MAM):
 # python climate_tookit/climate_statistics/statistics.py --location="-1.286,36.817" --start-year 1991 --end-year 2020 --fixed-season "03-01:05-31" --source era_5 --format pandas
+
+# Auto season detection:
+# python climate_tookit/climate_statistics/statistics.py --location="-1.286,36.817" --start-year 2018 --end-year 2020 --source era_5 --format pandas
+# python climate_tookit/climate_statistics/statistics.py --location="-1.286,36.817" --start-year 2015 --end-year 2020 --source agera_5 --format pandas
