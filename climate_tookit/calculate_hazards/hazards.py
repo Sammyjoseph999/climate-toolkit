@@ -162,6 +162,7 @@ def calculate_season_statistics(df: pd.DataFrame) -> Dict[str, Any]:
         (c for c in ['precipitation', 'precip', 'total_precipitation'] if c in df.columns),
         None,
     )
+    p = None
     if precip_col:
         p = df[precip_col].copy()
         stats['total_precipitation_mm']      = float(p.sum())
@@ -169,6 +170,8 @@ def calculate_season_statistics(df: pd.DataFrame) -> Dict[str, Any]:
         stats['max_daily_precipitation_mm']  = float(p.max())
         stats['rainy_days']                  = int((p >= 1.0).sum())
         stats['dry_days']                    = int((p < 1.0).sum())
+        # NDD: Number of Dry Days (precip < 1 mm) -- canonical hazard label
+        stats['NDD']                         = int((p < 1.0).sum())
         stats['dry_spell_statistics']        = calculate_dry_spell_statistics(
             detect_dry_spells(df, min_dry_days=7, precip_threshold=1.0)
         )
@@ -183,7 +186,7 @@ def calculate_season_statistics(df: pd.DataFrame) -> Dict[str, Any]:
     if tmax_col and tmin_col:
         tmax = df[tmax_col].copy()
         tmin = df[tmin_col].copy()
-        if tmax.mean() > 100:     
+        if tmax.mean() > 100:
             tmax -= 273.15
             tmin -= 273.15
         tavg = (tmax + tmin) / 2
@@ -192,6 +195,21 @@ def calculate_season_statistics(df: pd.DataFrame) -> Dict[str, Any]:
         stats['mean_tmin_c']        = float(tmin.mean())
         stats['max_temperature_c']  = float(tmax.max())
         stats['min_temperature_c']  = float(tmin.min())
+        # Canonical hazard labels: Max Tmax and Min Tmin
+        stats['max_tmax_c']         = float(tmax.max())
+        stats['min_tmin_c']         = float(tmin.min())
+        # NTx35 / NTx40: number of days with Tmax above 35C / 40C (heat-stress days)
+        stats['NTx35']              = int((tmax > 35).sum())
+        stats['NTx40']              = int((tmax > 40).sum())
+
+    # Soil-water hazard counts derived from daily water balance (precip - ET0).
+    # NDWS  : Number of Days with Water Stress      (water_balance <  0)
+    # NDWL0 : Number of Days with Water-Logging > 0 (water_balance >= 0)
+    if p is not None and 'ET0_mm_day' in df.columns:
+        et0 = df['ET0_mm_day'].fillna(0)
+        wb  = p.fillna(0) - et0
+        stats['NDWS']  = int((wb <  0).sum())
+        stats['NDWL0'] = int((wb >= 0).sum())
     return stats
 
 def evaluate_threshold(value: float, thresholds: Dict[str, Tuple]) -> str:
@@ -203,6 +221,110 @@ def evaluate_threshold(value: float, thresholds: Dict[str, Tuple]) -> str:
         if lower is not None and upper is not None and lower <= value <= upper:
             return level
     return 'unknown'
+
+# Long-Term Mean (Baseline) aggregation
+_LTM_SCALAR_KEYS = (
+    'total_precipitation_mm', 'mean_daily_precipitation_mm', 'max_daily_precipitation_mm',
+    'rainy_days', 'dry_days', 'NDD',
+    'mean_temperature_c', 'mean_tmax_c', 'mean_tmin_c',
+    'max_temperature_c', 'min_temperature_c', 'max_tmax_c', 'min_tmin_c',
+    'NTx35', 'NTx40', 'NDWS', 'NDWL0',
+)
+
+def _avg_dry_spell_stats(per_season: List[Dict[str, Any]]) -> Dict[str, Any]:
+    counts, max_l, mean_l = [], [], []
+    bucket_sums: Dict[str, float] = {}
+    n_total = 0
+    for stats in per_season:
+        ds = stats.get('dry_spell_statistics')
+        if not ds:
+            continue
+        n_total += 1
+        counts.append(ds.get('number_of_dry_spells', 0))
+        max_l.append(ds.get('max_dry_spell_length_days', 0))
+        if ds.get('number_of_dry_spells', 0) > 0:
+            mean_l.append(ds.get('mean_dry_spell_length_days', 0))
+        for bucket, n in (ds.get('length_distribution') or {}).items():
+            bucket_sums[bucket] = bucket_sums.get(bucket, 0) + n
+    if not counts:
+        return {}
+    out = {
+        'number_of_dry_spells':       round(sum(counts) / len(counts), 2),
+        'max_dry_spell_length_days':  round(sum(max_l)  / len(max_l),  2) if max_l  else 0,
+        'mean_dry_spell_length_days': round(sum(mean_l) / len(mean_l), 2) if mean_l else 0,
+    }
+    if bucket_sums:
+        out['length_distribution'] = {
+            b: round(total / n_total, 2) for b, total in bucket_sums.items()
+        }
+    return out
+
+def compute_ltm_baseline(
+    assessments: List[Dict[str, Any]],
+    crop_name:   str,
+    thresholds:  Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Long-Term Mean baseline across all evaluated seasons.
+
+    When multiple seasons per year exist (fixed-season two-season mode), produces
+    one LTM entry per season slot ('season_number') so the seasonal signal is
+    preserved. Single-season inputs collapse to one overall LTM block.
+    """
+    # Group by season_number (defaults to 1 for explicit/single-season modes)
+    grouped: Dict[int, List[Dict[str, Any]]] = {}
+    for a in assessments:
+        sn = a.get('season_info', {}).get('season_number', 1) or 1
+        grouped.setdefault(sn, []).append(a)
+
+    ltm_blocks: List[Dict[str, Any]] = []
+    for sn in sorted(grouped):
+        bucket = grouped[sn]
+        stats_list = [a.get('season_statistics', {}) for a in bucket]
+        agg: Dict[str, Any] = {}
+        for k in _LTM_SCALAR_KEYS:
+            vals = [s[k] for s in stats_list if k in s and s[k] is not None]
+            if vals:
+                agg[k] = round(sum(vals) / len(vals), 2)
+        ds_agg = _avg_dry_spell_stats(stats_list)
+        if ds_agg:
+            agg['dry_spell_statistics'] = ds_agg
+
+        years   = sorted({a['season_info']['year'] for a in bucket if 'year' in a['season_info']})
+        lengths = [a['season_info'].get('length_days') for a in bucket
+                   if a['season_info'].get('length_days') is not None]
+        total   = max((a['season_info'].get('total_seasons_per_year', 1) for a in bucket), default=1)
+
+        hazard_eval: Dict[str, Any] = {}
+        if 'Total Precip' in thresholds and 'total_precipitation_mm' in agg:
+            pv = agg['total_precipitation_mm']
+            hazard_eval['precipitation'] = {
+                'value_mm': pv,
+                'status':   evaluate_threshold(pv, thresholds['Total Precip']),
+            }
+        if 'TAVG' in thresholds and 'mean_temperature_c' in agg:
+            tv = agg['mean_temperature_c']
+            hazard_eval['temperature'] = {
+                'value_c': tv,
+                'status':  evaluate_threshold(tv, thresholds['TAVG']),
+            }
+
+        ltm_blocks.append({
+            'season_number':          sn,
+            'total_seasons_per_year': total,
+            'n_seasons_averaged':     len(bucket),
+            'years_covered':          years,
+            'mean_length_days':       round(sum(lengths) / len(lengths), 1) if lengths else None,
+            'season_statistics':      agg,
+            'hazard_evaluation':      hazard_eval,
+        })
+
+    return {
+        'crop':            crop_name,
+        'n_total_seasons': len(assessments),
+        'baseline_method': 'long_term_mean',
+        'per_season':      ltm_blocks,
+    }
 
 # Main hazard calculation
 def calculate_hazards(
@@ -288,7 +410,7 @@ def calculate_hazards(
         if not all_results:
             return {'error': 'No seasons produced by fixed-season mode for the given date range.'}
 
-    # auto-detect via fetch_and_analyze_years, always use chirps+chirts for auto-detection 
+    # auto-detect via fetch_and_analyze_years, always use chirps+chirts for auto-detection
     elif SEASON_ANALYSIS_AVAILABLE:
         auto_source = 'chirps+chirts'
         print(f"Detecting growing season for {crop_name} at ({lat}, {lon})")
@@ -298,30 +420,35 @@ def calculate_hazards(
         seasons_dict, _ = fetch_and_analyze_years(
             lat, lon, start_year=start_year, end_year=end_year, source=auto_source
         )
-        flat = [s for seasons in seasons_dict.values() for s in seasons]
-        if not flat:
+        if not any(seasons_dict.values()):
             return {
                 'error': (
                     'No growing season detected. '
                     'Provide --season-start/--season-end or --fixed-season.'
                 )
             }
-        first   = flat[0]
-        s_start = pd.to_datetime(first['onset']).strftime('%Y-%m-%d')
-        s_end   = (
-            pd.to_datetime(first['cessation']).strftime('%Y-%m-%d')
-            if first.get('cessation') else date_to
-        )
-        season_info = {
-            'season_detected': True,
-            'onset_date':      s_start,
-            'cessation_date':  s_end,
-            'length_days':     first['length_days'],
-            'method':          'rainfall_based',
-            'source':          auto_source,     
-        }
-        df = get_climate_data_for_season(lat, lon, s_start, s_end)
-        all_results = [{'season_info': season_info, 'df': df}]
+        all_results = []
+        for year, seasons in sorted(seasons_dict.items()):
+            num_seasons_per_year = len(seasons)
+            for season_idx, s in enumerate(seasons):
+                s_start = pd.to_datetime(s['onset']).strftime('%Y-%m-%d')
+                s_end   = (
+                    pd.to_datetime(s['cessation']).strftime('%Y-%m-%d')
+                    if s.get('cessation') else date_to
+                )
+                season_info = {
+                    'season_detected':        True,
+                    'onset_date':             s_start,
+                    'cessation_date':         s_end,
+                    'length_days':            s['length_days'],
+                    'method':                 'rainfall_based',
+                    'year':                   year,
+                    'season_number':          season_idx + 1,
+                    'total_seasons_per_year': num_seasons_per_year,
+                    'source':                 auto_source,
+                }
+                df = get_climate_data_for_season(lat, lon, s_start, s_end)
+                all_results.append({'season_info': season_info, 'df': df})
     else:
         return {
             'error': (
@@ -355,14 +482,92 @@ def calculate_hazards(
             'hazard_evaluation': hazard_eval,
         })
 
-    # Single season -> flat dict; multiple -> wrapped list
-    return assessments[0] if len(assessments) == 1 else {'assessments': assessments}
+    # Single season -> flat dict; multiple -> wrapped list with Baseline LTM
+    if len(assessments) == 1:
+        return assessments[0]
+    return {
+        'assessments':  assessments,
+        'baseline_ltm': compute_ltm_baseline(assessments, crop_name, thresholds),
+    }
 
 # Pretty printer
 def _fmt_date(d) -> str:
     if isinstance(d, (date, datetime)):
         return d.strftime('%Y-%m-%d')
     return str(d)[:10]
+
+def _print_ltm_block(ltm: Dict[str, Any]) -> None:
+    """Pretty-print the Baseline LTM (Long-Term Mean) summary."""
+    print(f"\n{'='*70}")
+    print(f"  BASELINE LTM (LONG-TERM MEAN): {ltm['crop'].upper()}")
+    print(f"  Averaged across {ltm['n_total_seasons']} season(s)  -- method: {ltm['baseline_method']}")
+    print(f"{'='*70}")
+
+    for blk in ltm['per_season']:
+        sn, total = blk['season_number'], blk['total_seasons_per_year']
+        label = f"Season {sn} of {total}" if total and total > 1 else "Overall"
+        years = blk.get('years_covered') or []
+        year_range = f"{years[0]}-{years[-1]}" if len(years) >= 2 else (str(years[0]) if years else "n/a")
+
+        print(f"\n  {label}  ({blk['n_seasons_averaged']} seasons, years {year_range})")
+        print(f"  {'─'*66}")
+        if blk.get('mean_length_days') is not None:
+            print(f"  Mean season length: {blk['mean_length_days']} days")
+
+        s = blk['season_statistics']
+        if 'total_precipitation_mm' in s:
+            print(f"\n  Precipitation (LTM means)")
+            print(f"  {'─'*66}")
+            print(f"  {'Total':<32} {s['total_precipitation_mm']:>15.2f}  mm")
+            print(f"  {'Daily Mean':<32} {s.get('mean_daily_precipitation_mm', 0):>15.2f}  mm")
+            print(f"  {'Daily Maximum':<32} {s.get('max_daily_precipitation_mm', 0):>15.2f}  mm")
+            print(f"  {'Rainy Days (>=1mm)':<32} {s.get('rainy_days', 0):>15.2f}  days")
+            print(f"  {'NDD (Dry Days)':<32} {s.get('NDD', s.get('dry_days', 0)):>15.2f}  days")
+
+        if 'dry_spell_statistics' in s:
+            ds = s['dry_spell_statistics']
+            print(f"\n  Dry Spell Statistics (LTM means; >=7 consecutive days <1mm)")
+            print(f"  {'─'*66}")
+            print(f"  {'Number of Dry Spells':<32} {ds.get('number_of_dry_spells', 0):>15.2f}  spells")
+            print(f"  {'Max Dry Spell Length':<32} {ds.get('max_dry_spell_length_days', 0):>15.2f}  days")
+            print(f"  {'Mean Dry Spell Length':<32} {ds.get('mean_dry_spell_length_days', 0):>15.2f}  days")
+
+        if 'mean_temperature_c' in s:
+            print(f"\n  Temperature (LTM means)")
+            print(f"  {'─'*66}")
+            print(f"  {'Mean Temperature':<32} {s['mean_temperature_c']:>15.2f}  deg C")
+            print(f"  {'Mean Tmax':<32} {s.get('mean_tmax_c', 0):>15.2f}  deg C")
+            print(f"  {'Mean Tmin':<32} {s.get('mean_tmin_c', 0):>15.2f}  deg C")
+            print(f"  {'Max Tmax':<32} {s.get('max_tmax_c', s.get('max_temperature_c', 0)):>15.2f}  deg C")
+            print(f"  {'Min Tmin':<32} {s.get('min_tmin_c', s.get('min_temperature_c', 0)):>15.2f}  deg C")
+
+        # New hazard counts
+        has_counts = any(k in s for k in ('NTx35', 'NTx40', 'NDWS', 'NDWL0'))
+        if has_counts:
+            print(f"\n  Hazard Indices (LTM means)")
+            print(f"  {'─'*66}")
+            if 'NTx35' in s:
+                print(f"  {'NTx35 (days Tmax > 35C)':<32} {s['NTx35']:>15.2f}  days")
+            if 'NTx40' in s:
+                print(f"  {'NTx40 (days Tmax > 40C)':<32} {s['NTx40']:>15.2f}  days")
+            if 'NDWS' in s:
+                print(f"  {'NDWS (water-stress days)':<32} {s['NDWS']:>15.2f}  days")
+            if 'NDWL0' in s:
+                print(f"  {'NDWL0 (water-logging days)':<32} {s['NDWL0']:>15.2f}  days")
+
+        h = blk.get('hazard_evaluation', {})
+        if h:
+            print(f"\n  Hazard Assessment (vs crop thresholds, LTM-based)")
+            print(f"  {'─'*66}")
+            if 'precipitation' in h:
+                pp  = h['precipitation']
+                sym = 'OK' if 'no_stress' in pp['status'] else '!!' if 'moderate' in pp['status'] else 'XX'
+                print(f"  {'Precipitation':<25} {pp['value_mm']:>16.2f} mm  [{sym}] {pp['status'].replace('_', ' ').upper()}")
+            if 'temperature' in h:
+                tt  = h['temperature']
+                sym = 'OK' if 'no_stress' in tt['status'] else '!!' if 'moderate' in tt['status'] else 'XX'
+                print(f"  {'Temperature':<25} {tt['value_c']:>16.2f} degC [{sym}] {tt['status'].replace('_', ' ').upper()}")
+    print(f"\n{'='*70}\n")
 
 def print_hazard_results(result: Dict[str, Any]) -> None:
     # Multi-season wrapper, label each block as "Year YYYY – Season X of Y" when available
@@ -382,6 +587,8 @@ def print_hazard_results(result: Dict[str, Any]) -> None:
                 label = f"Assessment {i} of {total}"
             print(f"  {label}")
             print_hazard_results(a)
+        if result.get('baseline_ltm'):
+            _print_ltm_block(result['baseline_ltm'])
         return
 
     if 'error' in result:
@@ -450,8 +657,26 @@ def print_hazard_results(result: Dict[str, Any]) -> None:
         print(f"  {'Mean Temperature':<32} {stats['mean_temperature_c']:>15.2f}  deg C")
         print(f"  {'Mean Tmax':<32} {stats['mean_tmax_c']:>15.2f}  deg C")
         print(f"  {'Mean Tmin':<32} {stats['mean_tmin_c']:>15.2f}  deg C")
-        print(f"  {'Maximum Recorded':<32} {stats['max_temperature_c']:>15.2f}  deg C")
-        print(f"  {'Minimum Recorded':<32} {stats['min_temperature_c']:>15.2f}  deg C")
+        print(f"  {'Max Tmax (Maximum Recorded)':<32} {stats['max_temperature_c']:>15.2f}  deg C")
+        print(f"  {'Min Tmin (Minimum Recorded)':<32} {stats['min_temperature_c']:>15.2f}  deg C")
+
+    # Hazard index counts (NTx35, NTx40, NDD, NDWS, NDWL0)
+    has_counts = any(k in stats for k in ('NTx35', 'NTx40', 'NDWS', 'NDWL0'))
+    if has_counts:
+        print(f"\n  Hazard Index Counts")
+        print(f"  {'─'*66}")
+        print(f"  {'Index':<32} {'Value':>15}  Unit")
+        print(f"  {'─'*32} {'─'*15}  {'─'*10}")
+        if 'NTx35' in stats:
+            print(f"  {'NTx35 (days Tmax > 35C)':<32} {stats['NTx35']:>15}  days")
+        if 'NTx40' in stats:
+            print(f"  {'NTx40 (days Tmax > 40C)':<32} {stats['NTx40']:>15}  days")
+        if 'NDD' in stats:
+            print(f"  {'NDD (dry days, <1mm)':<32} {stats['NDD']:>15}  days")
+        if 'NDWS' in stats:
+            print(f"  {'NDWS (water-stress days)':<32} {stats['NDWS']:>15}  days")
+        if 'NDWL0' in stats:
+            print(f"  {'NDWL0 (water-logging days)':<32} {stats['NDWL0']:>15}  days")
 
     hazards = result['hazard_evaluation']
     print(f"\n  Hazard Assessment")
