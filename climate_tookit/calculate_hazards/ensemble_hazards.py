@@ -1,6 +1,5 @@
 """
 Ensemble of hazards.py across NEX-GDDP models x scenarios.
-
 For each (model, scenario) combination, runs the same hazard assessment that hazards.py produces, but with NEX-GDDP daily data. 
 Results are bucketed by (year, season_number) and averaged. No baseline. No CHIRPS. No CHIRTS.
 Modes:
@@ -26,7 +25,12 @@ for p in (HERE, ROOT):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from hazards import CROP_THRESHOLDS, evaluate_threshold, calculate_season_statistics
+from hazards import (
+    CROP_THRESHOLDS,
+    evaluate_threshold,
+    calculate_season_statistics,
+    add_et0,
+)
 
 sys.path.insert(0, os.path.join(PARENT, 'fetch_data', 'preprocess_data'))
 sys.path.insert(0, os.path.join(PARENT, 'fetch_data', 'source_data', 'sources'))
@@ -114,7 +118,15 @@ def _fetch(lat: float, lon: float, start: str, end: str,
     if df is None or df.empty:
         raise RuntimeError(f"no data for {model}/{scenario} {start}->{end}")
     rename = {c: _COLMAP[c] for c in df.columns if c in _COLMAP}
-    return df.rename(columns=rename) if rename else df
+    if rename:
+        df = df.rename(columns=rename)
+
+    # Attach Hargreaves ET0 so calculate_season_statistics can derive NDWS / NDWL0.
+    if {'min_temperature', 'max_temperature', 'date'}.issubset(df.columns):
+        view = df.rename(columns={'min_temperature': 'tmin',
+                                  'max_temperature': 'tmax'})
+        df['ET0_mm_day'] = add_et0(view, lat)['ET0_mm_day'].values
+    return df
 
 def _detect_windows(lat: float, lon: float, sy: int, ey: int,
                     model: str, scenario: str) -> List[Dict]:
@@ -175,7 +187,10 @@ def _evaluate(crop: str, lat: float, lon: float,
 _SCALAR_KEYS = ['total_precipitation_mm', 'mean_daily_precipitation_mm',
                 'max_daily_precipitation_mm', 'rainy_days', 'dry_days',
                 'mean_temperature_c', 'mean_tmax_c', 'mean_tmin_c',
-                'max_temperature_c', 'min_temperature_c']
+                'max_temperature_c', 'min_temperature_c',
+                # Canonical hazard variables added in hazards.py
+                'max_tmax_c', 'min_tmin_c',
+                'NDD', 'NTx35', 'NTx40', 'NDWS', 'NDWL0']
 
 def _avg_stats(rs: List[Dict]) -> Dict:
     out = {}
@@ -198,7 +213,7 @@ def _avg_stats(rs: List[Dict]) -> Dict:
         if ds['number_of_dry_spells'] > 0:
             mean_l.append(ds['mean_dry_spell_length_days'])
         for bucket, n in (ds.get('length_distribution') or {}).items():
-            bucket_sums[bucket] += n   # missing buckets count as 0
+            bucket_sums[bucket] += n
 
     if counts:
         ds_out = {
@@ -371,8 +386,26 @@ def _print_block(a: Dict, crop: str, lat: float, lon: float,
         print(f"  {'Mean Temperature':<32} {s['mean_temperature_c']:>15.2f}  deg C")
         print(f"  {'Mean Tmax':<32} {s.get('mean_tmax_c', 0):>15.2f}  deg C")
         print(f"  {'Mean Tmin':<32} {s.get('mean_tmin_c', 0):>15.2f}  deg C")
-        print(f"  {'Maximum Recorded':<32} {s.get('max_temperature_c', 0):>15.2f}  deg C")
-        print(f"  {'Minimum Recorded':<32} {s.get('min_temperature_c', 0):>15.2f}  deg C")
+        print(f"  {'Max Tmax':<32} {s.get('max_tmax_c', s.get('max_temperature_c', 0)):>15.2f}  deg C")
+        print(f"  {'Min Tmin':<32} {s.get('min_tmin_c', s.get('min_temperature_c', 0)):>15.2f}  deg C")
+
+    # Hazard index counts (NTx35, NTx40, NDD, NDWS, NDWL0) -- ensemble means
+    has_counts = any(k in s for k in ('NTx35', 'NTx40', 'NDD', 'NDWS', 'NDWL0'))
+    if has_counts:
+        print(f"\n  Hazard Index Counts  (ensemble means)")
+        print(f"  {'─'*66}")
+        print(f"  {'Index':<32} {'Value':>15}  Unit")
+        print(f"  {'─'*32} {'─'*15}  {'─'*10}")
+        if 'NTx35' in s:
+            print(f"  {'NTx35 (days Tmax > 35C)':<32} {s['NTx35']:>15.2f}  days")
+        if 'NTx40' in s:
+            print(f"  {'NTx40 (days Tmax > 40C)':<32} {s['NTx40']:>15.2f}  days")
+        if 'NDD' in s:
+            print(f"  {'NDD (dry days, <1mm)':<32} {s['NDD']:>15.2f}  days")
+        if 'NDWS' in s:
+            print(f"  {'NDWS (water-stress days)':<32} {s['NDWS']:>15.2f}  days")
+        if 'NDWL0' in s:
+            print(f"  {'NDWL0 (water-logging days)':<32} {s['NDWL0']:>15.2f}  days")
 
     h = a['hazard_evaluation']
     print(f"\n  Hazard Assessment  (based on ensemble means)")
@@ -421,6 +454,17 @@ def print_results(r: Dict) -> None:
     print(f"  {'─'*66}")
     print(f"  Precipitation (mean): {s.get('total_precipitation_mm', 0):.2f} mm per season")
     print(f"  Temperature   (mean): {s.get('mean_temperature_c', 0):.2f} deg C")
+    if 'max_tmax_c' in s or 'min_tmin_c' in s:
+        print(f"  Max Tmax / Min Tmin : {s.get('max_tmax_c', 0):.2f} / "
+              f"{s.get('min_tmin_c', 0):.2f} deg C")
+    if any(k in s for k in ('NTx35', 'NTx40', 'NDD', 'NDWS', 'NDWL0')):
+        parts = []
+        if 'NTx35' in s: parts.append(f"NTx35={s['NTx35']:.2f}")
+        if 'NTx40' in s: parts.append(f"NTx40={s['NTx40']:.2f}")
+        if 'NDD'   in s: parts.append(f"NDD={s['NDD']:.2f}")
+        if 'NDWS'  in s: parts.append(f"NDWS={s['NDWS']:.2f}")
+        if 'NDWL0' in s: parts.append(f"NDWL0={s['NDWL0']:.2f}")
+        print(f"  Hazard indices      : {'  '.join(parts)}  (mean days per season)")
     if 'dry_spell_statistics' in s:
         ds = s['dry_spell_statistics']
         print(f"  Dry spells    (mean): {ds['number_of_dry_spells']:.2f} per season  "

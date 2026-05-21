@@ -2,7 +2,6 @@
 Climate Statistics Module
 Computes agroecology-focused climate statistics by season.
 Supports both automatic detection (ETO-based, from seasons.py) and fixed-season calendar windows (--fixed-season), matching the season_analysis interface.
-
 Outputs three views per run, all sliced per detected/fixed season (no full-period summaries):
     1. Raw Climate Summary by Season -- mean / min / max / std per core variable (precip, tmax, tmin, humidity, solar, wind), one block per season
     2. Overall Statistics by Season  -- essential agro metrics, one block per season
@@ -12,7 +11,6 @@ detect_onset_cessation, reassign_spillover_seasons, remove_duplicate_seasons,
 parse_fixed_seasons, check_humid) so behaviour is identical to seasons.py:
     Per reference year, a 1.5-year window is sliced from the master DataFrame so seasons crossing the year boundary are captured. After detection,
     seasons are reassigned to onset year, filtered to MAM/OND windows for equatorial climates, and de-duplicated.
-
 Data sources accepted: era_5, agera_5, chirps+chirts, nasa_power, nex_gddp, terraclimate, auto. NEX-GDDP requires --model and --scenario.
 
 Dependencies: pandas, numpy, climate_toolkit (preprocess_data, seasons.py)
@@ -95,6 +93,10 @@ SUMMARY_VARS: List[Tuple[str, str]] = [
     ('wind_speed',      'Wind Speed (m/s)'),
 ]
 
+# LTM (Long-Term Mean) coverage rules
+BASELINE_DEFAULT_PERIOD: Tuple[int, int] = (1991, 2020)
+MIN_LTM_YEARS:           int            = 20
+
 # Data fetching
 def _call_preprocess(source, lat, lon, date_from, date_to, model, scenario):
     """Single preprocess_data call -- isolates the kwargs handling."""
@@ -131,8 +133,7 @@ def get_climate_data(
     ---------------
       - 'auto'           : resolves directly to CHIRPS + CHIRTS merge
       - 'chirps+chirts'  : merges CHIRPS precip + CHIRTS temperature
-      - any other string : passed straight to preprocess_data (era_5, agera_5,
-                           nasa_power, nex_gddp, chirps, chirts, …)
+      - any other string : passed straight to preprocess_data (era_5, agera_5, nasa_power, nex_gddp, chirps, chirts, …)
     Renames pipeline columns to canonical names: precip, tmax, tmin (humidity, soil_moisture, solar_radiation, wind_speed pass through when the source provides them).
     """
     if not PREPROCESS_AVAILABLE:
@@ -310,6 +311,105 @@ def season_statistics(df: pd.DataFrame, season: Dict) -> Dict[str, Any]:
             'surplus_days':  int((wb > 0).sum()),
             'stress_ratio':  _r((wb < 0).mean(), 3),
         },
+    }
+
+# LTM (Long-Term Mean) aggregation across years per season window
+def _is_num(v: Any) -> bool:
+    """Numeric check that excludes bool and NaN/Inf floats."""
+    return (isinstance(v, (int, float))
+            and not isinstance(v, bool)
+            and not (isinstance(v, float) and (math.isnan(v) or math.isinf(v))))
+
+def _avg(values: List[Any], n: int = 2) -> Optional[float]:
+    nums = [float(v) for v in values if _is_num(v)]
+    if not nums:
+        return None
+    return _r(sum(nums) / len(nums), n)
+
+def ltm_season_summary(
+    season_results: List[Dict[str, Any]],
+    fixed_season:   Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Long-term mean across years per season window.
+    Groups per-year season_results by season_number and averages each numeric metric. With --fixed-season "<w1>,<w2>", season_numbers 1..N map to the
+    windows in order; auto-detected runs use the season_number assigned by seasons.py. Aggregates the per-season block AND the per-season views (raw
+    climate summary + overall statistics).
+    """
+    if not season_results:
+        return {'mode': 'fixed' if fixed_season else 'auto', 'windows': []}
+
+    grouped: Dict[int, List[Dict]] = {}
+    for s in season_results:
+        sn = s.get('season_number', 1)
+        grouped.setdefault(sn, []).append(s)
+
+    labels = ([w.strip() for w in fixed_season.split(',')]
+              if fixed_season else None)
+
+    windows: List[Dict[str, Any]] = []
+    for sn in sorted(grouped):
+        seasons = grouped[sn]
+        years   = sorted({s.get('year') for s in seasons
+                          if s.get('year') is not None})
+        label   = (labels[sn - 1] if labels and 0 < sn <= len(labels)
+                   else f"season_{sn}")
+
+        block: Dict[str, Any] = {
+            'window':          label,
+            'season_number':   sn,
+            'n_years':         len(seasons),
+            'years':           years,
+            'length_days_avg': _avg([s.get('length_days') for s in seasons], 1),
+        }
+
+        for cat in ('precipitation', 'temperature', 'water_balance'):
+            pool: Dict[str, List[float]] = {}
+            for s in seasons:
+                for k, v in (s.get(cat) or {}).items():
+                    if _is_num(v):
+                        pool.setdefault(k, []).append(float(v))
+            if pool:
+                block[cat] = {k: _avg(vs, 2) for k, vs in pool.items()}
+
+        ov_pool: Dict[str, Dict[str, List[float]]] = {}
+        for s in seasons:
+            for cat, metrics in (s.get('overall_statistics') or {}).items():
+                if not isinstance(metrics, dict):
+                    continue
+                for k, v in metrics.items():
+                    if _is_num(v):
+                        ov_pool.setdefault(cat, {}).setdefault(k, []).append(float(v))
+        if ov_pool:
+            block['overall_statistics'] = {
+                cat: {k: _avg(vs, 2) for k, vs in mets.items()}
+                for cat, mets in ov_pool.items()
+            }
+
+        raw_pool: Dict[str, Dict[str, List[float]]] = {}
+        for s in seasons:
+            for row in (s.get('raw_climate_summary') or []):
+                var = row.get('Variable')
+                if not var:
+                    continue
+                for stat in ('Mean', 'Min', 'Max', 'Std'):
+                    v = row.get(stat)
+                    if _is_num(v):
+                        raw_pool.setdefault(var, {}).setdefault(stat, []).append(float(v))
+        if raw_pool:
+            block['raw_climate_summary'] = [
+                {'Variable': var,
+                 'Mean':     _avg(mets.get('Mean', []), 3),
+                 'Min':      _avg(mets.get('Min',  []), 3),
+                 'Max':      _avg(mets.get('Max',  []), 3),
+                 'Std':      _avg(mets.get('Std',  []), 3)}
+                for var, mets in raw_pool.items()
+            ]
+        windows.append(block)
+
+    return {
+        'mode':    'fixed' if fixed_season else 'auto',
+        'windows': windows,
     }
 
 # Season detection on a pre-fetched DataFrame
@@ -562,6 +662,19 @@ def analyze_climate_statistics(
         }
         for y, info in annual_dict.items()
     }
+
+    # LTM (long-term mean) across years per season window
+    ltm = ltm_season_summary(season_results, fixed_season)
+    years_span = end_year - start_year + 1
+    coverage_warning: Optional[str] = None
+    if years_span < MIN_LTM_YEARS:
+        coverage_warning = (
+            f"LTM coverage is {years_span} year(s); recommended ≥ "
+            f"{MIN_LTM_YEARS} (standard baseline "
+            f"{BASELINE_DEFAULT_PERIOD[0]}-{BASELINE_DEFAULT_PERIOD[1]})."
+        )
+        print(f"\n  [WARN] {coverage_warning}")
+
     return {
         'location':            {'lat': lat, 'lon': lon},
         'period':              {'start_year': start_year, 'end_year': end_year},
@@ -571,6 +684,8 @@ def analyze_climate_statistics(
         'model':               model,
         'scenario':            scenario,
         'season_statistics':   season_results,
+        'ltm_season_summary':  ltm,
+        'coverage_warning':    coverage_warning,
         'annual_summary':      annual_summary,
         'analysis_date':       datetime.now().isoformat(),
         'methodology':         'preprocess_data + seasons.py detection + water balance',
@@ -678,6 +793,49 @@ def print_seasons(seasons: List[Dict]) -> None:
                       f"rainy={ep['rainy_days']}d | "
                       f"stress_ratio={ew['stress_ratio']}")
 
+def print_ltm_by_season(ltm: Dict[str, Any],
+                        header: str = "LTM SEASON SUMMARY") -> None:
+    """Long-term-mean view (averaged across years per season window)."""
+    print("\n" + "=" * 70)
+    print(header)
+    print("=" * 70)
+    windows = (ltm or {}).get('windows') or []
+    if not windows:
+        print("(no LTM windows)")
+        return
+    for w in windows:
+        years = w.get('years') or []
+        rng   = (f"{years[0]}-{years[-1]}" if len(years) >= 2
+                 else (str(years[0]) if years else "n/a"))
+        n_lbl = (f"n_models={w['n_models']}" if 'n_models' in w
+                 else f"n_years={w.get('n_years')}")
+        print(f"\n  Window {w.get('window')} "
+              f"(season #{w.get('season_number')}, {n_lbl}, years={rng})")
+        if w.get('length_days_avg') is not None:
+            print(f"    avg_length_days={w['length_days_avg']}")
+        p  = w.get('precipitation') or {}
+        t  = w.get('temperature')   or {}
+        wb = w.get('water_balance') or {}
+        if p:
+            print(f"    Precipitation : "
+                  f"total={p.get('total_mm')} mm | "
+                  f"max_daily={p.get('max_daily')} mm | "
+                  f"rainy_days={p.get('rainy_days')} | "
+                  f"intensity={p.get('intensity')} mm/wet-day")
+        if t:
+            print(f"    Temperature   : "
+                  f"mean_tmax={t.get('mean_tmax')}°C | "
+                  f"mean_tmin={t.get('mean_tmin')}°C | "
+                  f"mean_tavg={t.get('mean_tavg')}°C | "
+                  f"max_tmax={t.get('max_tmax')}°C | "
+                  f"min_tmin={t.get('min_tmin')}°C")
+        if wb:
+            print(f"    Water balance : "
+                  f"total={wb.get('total_balance')} mm | "
+                  f"deficit_days={wb.get('deficit_days')} | "
+                  f"surplus_days={wb.get('surplus_days')} | "
+                  f"stress_ratio={wb.get('stress_ratio')}")
+
 def print_annual(annual: Dict[str, Dict]) -> None:
     print("\n" + "=" * 70)
     print("ANNUAL SUMMARY (humid test)")
@@ -697,6 +855,17 @@ def print_annual(annual: Dict[str, Dict]) -> None:
         })
     print(pd.DataFrame(rows).to_string(index=False))
 
+def _ltm_header(result: Dict[str, Any]) -> str:
+    """Pick BASELINE / FUTURE / generic LTM header based on the run window."""
+    end          = (result.get('period') or {}).get('end_year',   0)
+    start        = (result.get('period') or {}).get('start_year', 0)
+    baseline_end = BASELINE_DEFAULT_PERIOD[1]
+    if start > baseline_end:
+        return "FUTURE LTM SEASON SUMMARY (single-source)"
+    if end <= baseline_end:
+        return "BASELINE LTM SEASON SUMMARY (single-source)"
+    return "LTM SEASON SUMMARY (single-source)"
+
 def print_pandas(result: Dict[str, Any]) -> None:
     if 'error' in result:
         print(f"Error: {result['error']}")
@@ -712,10 +881,14 @@ def print_pandas(result: Dict[str, Any]) -> None:
         print(f"Model    : {result['model']}")
     if result.get('scenario'):
         print(f"Scenario : {result['scenario']}")
+    if result.get('coverage_warning'):
+        print(f"Coverage : [WARN] {result['coverage_warning']}")
 
     print_raw_summary_by_season(result['season_statistics'])
     print_overall_by_season(result['season_statistics'])
     print_seasons(result['season_statistics'])
+    print_ltm_by_season(result.get('ltm_season_summary', {}),
+                        header=_ltm_header(result))
     print_annual(result['annual_summary'])
 
 # CLI
@@ -816,10 +989,6 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-# Auto season detection:
-# python climate_tookit/climate_statistics/statistics.py --location="-1.286,36.817" --start-year 2018 --end-year 2020 --source era_5 --format pandas
-# python climate_tookit/climate_statistics/statistics.py --location="-1.286,36.817" --start-year 2015 --end-year 2020 --source agera_5 --format pandas
-
 # Fixed single season:
 # python climate_tookit/climate_statistics/statistics.py --location="-1.286,36.817" --start-year 2018 --end-year 2022 --fixed-season "03-01:05-31" --source era_5 --format pandas
 
@@ -831,3 +1000,10 @@ if __name__ == "__main__":
 
 # NEX-GDDP with fixed season:
 # python climate_tookit/climate_statistics/statistics.py --location="-1.286,36.817" --start-year 2030 --end-year 2032 --fixed-season "03-01:05-31" --source nex_gddp --model ACCESS-CM2 --scenario ssp245 --format pandas
+
+# Baseline LTM (standard 1991-2020 window, fixed MAM):
+# python climate_tookit/climate_statistics/statistics.py --location="-1.286,36.817" --start-year 1991 --end-year 2020 --fixed-season "03-01:05-31" --source era_5 --format pandas
+
+# Auto season detection:
+# python climate_tookit/climate_statistics/statistics.py --location="-1.286,36.817" --start-year 2018 --end-year 2020 --source era_5 --format pandas
+# python climate_tookit/climate_statistics/statistics.py --location="-1.286,36.817" --start-year 2015 --end-year 2020 --source agera_5 --format pandas
