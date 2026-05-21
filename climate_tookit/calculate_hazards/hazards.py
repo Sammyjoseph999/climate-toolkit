@@ -1,6 +1,5 @@
 """
 Calculate Hazards Module
-
 Retrieves crop hazard indices at a specific location by:
 1. Using season_analysis to detect growing seasons or accepting season dates
 2. Calculating total precipitation and average temperature for the season
@@ -203,8 +202,6 @@ def calculate_season_statistics(df: pd.DataFrame) -> Dict[str, Any]:
         stats['NTx40']              = int((tmax > 40).sum())
 
     # Soil-water hazard counts derived from daily water balance (precip - ET0).
-    # NDWS  : Number of Days with Water Stress      (water_balance <  0)
-    # NDWL0 : Number of Days with Water-Logging > 0 (water_balance >= 0)
     if p is not None and 'ET0_mm_day' in df.columns:
         et0 = df['ET0_mm_day'].fillna(0)
         wb  = p.fillna(0) - et0
@@ -266,9 +263,7 @@ def compute_ltm_baseline(
 ) -> Dict[str, Any]:
     """
     Long-Term Mean baseline across all evaluated seasons.
-
-    When multiple seasons per year exist (fixed-season two-season mode), produces
-    one LTM entry per season slot ('season_number') so the seasonal signal is
+    When multiple seasons per year exist (fixed-season two-season mode), produces one LTM entry per season slot ('season_number') so the seasonal signal is
     preserved. Single-season inputs collapse to one overall LTM block.
     """
     # Group by season_number (defaults to 1 for explicit/single-season modes)
@@ -385,10 +380,10 @@ def calculate_hazards(
             end_year=end_year,
             source=source,
         )
-        num_seasons_per_year = len(fixed_defs)   # know how many seasons were defined
+        num_seasons_per_year = len(fixed_defs) 
         all_results = []
         for year, seasons in sorted(seasons_dict.items()):
-            for season_idx, s in enumerate(seasons):   # enumerate for season number
+            for season_idx, s in enumerate(seasons):   
                 s_start = pd.to_datetime(s['onset']).strftime('%Y-%m-%d')
                 s_end   = (
                     pd.to_datetime(s['cessation']).strftime('%Y-%m-%d')
