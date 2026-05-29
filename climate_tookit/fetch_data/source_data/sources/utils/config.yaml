@@ -142,11 +142,14 @@ nasa_power:
   cadence: "daily"
 
 tamsat:
-  rainfall_url: "https://climate-data.jasmin.ac.uk/tamsat/rfe/data/v3.1/monthly"
-  soil_moisture_url: "https://climate-data.jasmin.ac.uk/tamsat/soil_moisture/data/v2.3.1/monthly"
+  # Public TAMSAT tree on JASMIN gws-access. The previous host
+  # `climate-data.jasmin.ac.uk` no longer resolves. We use the per-day NetCDF
+  # tree because monthly files contain a single per-month total, not daily samples.
+  rainfall_url: "https://gws-access.jasmin.ac.uk/public/tamsat/rfe/data/v3.1/daily"
+  soil_moisture_url: "https://gws-access.jasmin.ac.uk/public/tamsat/soil_moisture/data/v2.3.1/daily"
   data_format: "netcdf"
   download_format: "daily"
-  cadence: "monthly"
+  cadence: "daily"
   resolution: 0.05
   variable:
     precipitation: "rfe"
