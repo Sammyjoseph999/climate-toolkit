@@ -84,6 +84,8 @@ SCENARIO_MAPPING = {
     'historical': 'historical',
 }
 
+DEFAULT_NEX_ENSEMBLE_MODELS = list(AVAILABLE_MODELS)
+
 def _fetch_source(source: str, lat: float, lon: float,
                   start, end,
                   model: str | None = None,
@@ -91,7 +93,6 @@ def _fetch_source(source: str, lat: float, lon: float,
     """
     Dispatch a single source to the preprocessed-data pipeline.
     Returns the analysis-ready DataFrame (with a `date` column) that `preprocess_data` produces. Raises if the source key is unknown.
-
     Notes
     -----
     - Variable list is per-source (climate sources get DEFAULT_CLIMATE_VARIABLES; soil_grid gets DEFAULT_SOIL_VARIABLES).
@@ -128,6 +129,20 @@ def _fetch_source(source: str, lat: float, lon: float,
         df = broadcast
     return df
 
+def _build_nex_ensemble(per_model: dict) -> pd.DataFrame:
+    """
+    Collapse several NEX-GDDP model frames into a single ensemble-mean series.
+    The ensemble value for each variable on each date is the across-model mean (NaNs skipped).
+    Models with differing date coverage are aligned on `date`.
+    """
+    frames = [df for df in per_model.values() if df is not None and not df.empty]
+    if not frames:
+        return pd.DataFrame()
+    combined = pd.concat(frames, ignore_index=True)
+    combined["date"] = pd.to_datetime(combined["date"])
+    numeric = combined.select_dtypes(include="number").columns.tolist()
+    return combined.groupby("date", as_index=False)[numeric].mean()
+
 MONTH_LABELS = ["Jan","Feb","Mar","Apr","May","Jun",
                 "Jul","Aug","Sep","Oct","Nov","Dec"]
 
@@ -149,6 +164,18 @@ def _style_ax(ax, title="", xlabel="", ylabel=""):
     if ylabel:
         ax.set_ylabel(ylabel, fontsize=8, color="#555555")
     ax.grid(axis="y", color="#E0E0E0", linewidth=0.6, linestyle="--")
+
+def _autoscale_state_axis(ax, values):
+    """
+    Zoom the y-axis to a state variable's own value range (with padding).
+    """
+    vals = np.asarray(values, dtype="float64")
+    vals = vals[~np.isnan(vals)]
+    if vals.size == 0:
+        return
+    lo, hi = float(vals.min()), float(vals.max())
+    pad = (hi - lo) * 0.1 if hi > lo else max(abs(hi) * 0.05, 0.5)
+    ax.set_ylim(lo - pad, hi + pad)
 
 def _save(fig, path):
     fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
@@ -180,13 +207,11 @@ def compute_annual_stats(series: pd.Series) -> dict:
         "std":  round(std_val, 4),
         "cv":   round(cv, 4),
     }
-
 # 2. Monthly climatology (per variable, single source)
 def compute_monthly_climatology_series(df: pd.DataFrame, col: str) -> pd.Series:
     """
     State variables : mean value per calendar month (mean of daily values).
-    Accumulation vars: mean monthly total per calendar month
-                       (sum within each month-year, then average across years).
+    Accumulation vars: mean monthly total per calendar month (sum within each month-year, then average across years).
     """
     if _is_accum(col):
         return (
@@ -202,14 +227,12 @@ def compute_monthly_climatology(df: pd.DataFrame) -> dict:
         col: compute_monthly_climatology_series(df, col).round(4).to_dict()
         for col in df.select_dtypes(include="number").columns
     }
-
 # Consolidated cross-source tables (one DataFrame per variable)
 def _sources_with_var(results: dict, var: str) -> dict:
     return {
         src: df for src, df in results.items()
         if var in df.select_dtypes(include="number").columns
     }
-
 def build_annual_timeseries_table(results: dict, var: str) -> pd.DataFrame:
     """Years (rows) × sources (columns) table of annual aggregates for *var*."""
     cols = {src: compute_annual_series(df, var)
@@ -291,6 +314,7 @@ def plot_annual_timeseries(df: pd.DataFrame, source: str, output_dir: str):
                  fontweight="bold", color="#111111", y=1.01)
     for idx, col in enumerate(num_cols):
         ax = axes[idx][0]
+        color = PALETTE[idx % len(PALETTE)]
         if _is_accum(col):
             annual      = df.groupby(df["date"].dt.year)[col].sum()
             ylabel_text = f"Annual total {col}"
@@ -298,9 +322,15 @@ def plot_annual_timeseries(df: pd.DataFrame, source: str, output_dir: str):
             annual      = df.groupby(df["date"].dt.year)[col].mean()
             ylabel_text = f"Annual mean {col}"
         ax.plot(annual.index, annual.values, marker="o", linewidth=1.8,
-                markersize=4, color=PALETTE[idx % len(PALETTE)])
-        ax.fill_between(annual.index, annual.values, alpha=0.12,
-                        color=PALETTE[idx % len(PALETTE)])
+                markersize=4, color=color)
+        if _is_accum(col):
+            # Totals are meaningful against a zero baseline.
+            ax.fill_between(annual.index, annual.values, alpha=0.12, color=color)
+        else:
+            # Zoom to the data band first, then fill down to that floor so the shading doesn't drag the axis back to zero.
+            _autoscale_state_axis(ax, annual.values)
+            ax.fill_between(annual.index, annual.values, ax.get_ylim()[0],
+                            alpha=0.12, color=color)
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
         _style_ax(ax, title=col.capitalize(), xlabel="Year", ylabel=ylabel_text)
     fig.tight_layout()
@@ -335,6 +365,9 @@ def plot_monthly_climatology(df: pd.DataFrame, source: str, output_dir: str):
         ax.bar(monthly.index, monthly.values,
                color=PALETTE[idx % len(PALETTE)], alpha=0.82,
                edgecolor="white", linewidth=0.6)
+        if not _is_accum(col):
+            # Zoom the y-axis to the temperature band so monthly variability is visible instead of a row of near-equal full-height bars.
+            _autoscale_state_axis(ax, monthly.values)
         ax.set_xticks(range(1, 13))
         ax.set_xticklabels(MONTH_LABELS, fontsize=7)
         _style_ax(ax, title=col.capitalize(), xlabel="Month", ylabel=ylabel_text)
@@ -413,8 +446,9 @@ def plot_multisource_monthly_climatology(results: dict, output_dir: str):
 # Main processing
 def compare_sources(sources, lat=None, lon=None, start=None, end=None,
                     input_file=None, output_dir="./outputs",
-                    nex_model: str = "MRI-ESM2-0",
-                    nex_scenario: str = "ssp245"):
+                    nex_model: str | None = None,
+                    nex_scenario: str = "ssp245",
+                    nex_models: list[str] | None = None):
     os.makedirs(output_dir, exist_ok=True)
     results = {}
 
@@ -437,15 +471,47 @@ def compare_sources(sources, lat=None, lon=None, start=None, end=None,
                     raise ValueError(
                         f"Unknown scenario '{nex_scenario}'. Valid options: {valid}"
                     )
-                if nex_model not in AVAILABLE_MODELS:
+                if nex_models:
+                    models = nex_models
+                elif nex_model:
+                    models = [nex_model]
+                else:
+                    models = DEFAULT_NEX_ENSEMBLE_MODELS
+                unknown = [m for m in models if m not in AVAILABLE_MODELS]
+                if unknown:
                     raise ValueError(
-                        f"Unknown model '{nex_model}'. "
+                        f"Unknown model(s) '{', '.join(unknown)}'. "
                         f"Available: {', '.join(AVAILABLE_MODELS)}"
                     )
-                print(f"  ℹ️   NEX-GDDP  model={nex_model}  scenario={scenario_key}")
-                df = _fetch_source(source, lat, lon, start, end,
-                                   model=nex_model, scenario=scenario_key)
-                result_key = f"nex_gddp_{nex_model}_{scenario_key}"
+                if len(models) == 1:
+                    only = models[0]
+                    print(f"  ℹ️   NEX-GDDP  model={only}  scenario={scenario_key}")
+                    df = _fetch_source(source, lat, lon, start, end,
+                                       model=only, scenario=scenario_key)
+                    result_key = f"nex_gddp_{only}_{scenario_key}"
+                else:
+                    print(f"  ℹ️   NEX-GDDP ensemble  models={', '.join(models)}  "
+                          f"scenario={scenario_key}")
+                    per_model = {}
+                    for m in models:
+                        print(f"        • fetching {m} …")
+                        try:
+                            mdf = _fetch_source(source, lat, lon, start, end,
+                                                model=m, scenario=scenario_key)
+                        except Exception as exc:
+                            print(f"        ⚠️   {m} failed: {exc}")
+                            continue
+                        if mdf is not None and not mdf.empty and len(mdf.columns) > 1:
+                            per_model[m] = mdf
+                        else:
+                            print(f"        ⚠️   {m}: no usable variables returned.")
+                    if not per_model:
+                        print("  ⚠️   nex_gddp ensemble: no models returned usable data.")
+                        continue
+                    df = _build_nex_ensemble(per_model)
+                    print(f"  ✅  Ensemble mean over {len(per_model)} model(s): "
+                          f"{', '.join(per_model)}")
+                    result_key = f"nex_gddp_ensemble_{scenario_key}"
             else:
                 df = _fetch_source(source, lat, lon, start, end)
                 result_key = source
@@ -567,9 +633,20 @@ def main():
     parser.add_argument("--output-dir", default="./outputs",
                         help="Directory for CSV and PNG outputs")
     parser.add_argument(
-        "--model", default="MRI-ESM2-0", metavar="MODEL",
+        "--model", default=None, metavar="MODEL",
         help=(
-            "NEX-GDDP-CMIP6 model name (only used when 'nex_gddp' is in --sources).\n"
+            "Single NEX-GDDP-CMIP6 model name (only used when 'nex_gddp' is in\n"
+            "--sources). When neither --model nor --models is given, 'nex_gddp'\n"
+            "defaults to the full 16-model ensemble mean.\n"
+            f"Available: {', '.join(AVAILABLE_MODELS)}"
+        ),
+    )
+    parser.add_argument(
+        "--models", nargs="+", default=None, metavar="MODEL",
+        help=(
+            "Two or more NEX-GDDP-CMIP6 model names to ensemble-average into a\n"
+            "single 'nex_gddp_ensemble_<scenario>' series (only used when\n"
+            "'nex_gddp' is in --sources). Overrides --model.\n"
             f"Available: {', '.join(AVAILABLE_MODELS)}"
         ),
     )
@@ -586,9 +663,16 @@ def main():
         parser.error("--lat and --lon are required when using --sources")
 
     if args.sources and "nex_gddp" in args.sources:
-        if args.model not in AVAILABLE_MODELS:
+        if args.models:
+            models_to_check = args.models
+        elif args.model:
+            models_to_check = [args.model]
+        else:
+            models_to_check = DEFAULT_NEX_ENSEMBLE_MODELS
+        invalid = [m for m in models_to_check if m not in AVAILABLE_MODELS]
+        if invalid:
             parser.error(
-                f"Invalid --model '{args.model}'.\n"
+                f"Invalid model(s) '{', '.join(invalid)}'.\n"
                 f"Available models: {', '.join(AVAILABLE_MODELS)}"
             )
         if SCENARIO_MAPPING.get(args.scenario) is None:
@@ -606,6 +690,7 @@ def main():
         output_dir=args.output_dir,
         nex_model=args.model,
         nex_scenario=args.scenario,
+        nex_models=args.models,
     )
     all_stats = print_report(results, output_dir=args.output_dir)
 
@@ -619,5 +704,11 @@ def main():
 if __name__ == "__main__":
     main()
 
-# Example — all sources, specific NEX-GDDP model and scenario:
-# python -m climate_tookit.compare_datasets.compare_datasets --sources era_5 chirps nasa_power imerg nex_gddp agera_5 chirts soil_grid terraclimate tamsat --lat -1.286 --lon 36.817 --start 1990-01-01 --end 2016-12-31 --model MRI-ESM2-0 --scenario ssp245 --format report
+# Example — all sources; 'nex_gddp' alone is the ensemble mean (default models):
+# python -m climate_tookit.compare_datasets.compare_datasets --sources era_5 chirps nasa_power imerg nex_gddp agera_5 chirts soil_grid terraclimate tamsat --lat -1.286 --lon 36.817 --start 1990-01-01 --end 2016-12-31 --scenario ssp245 --format report
+
+# Example — NEX-GDDP ensemble over a custom set of models (one 'nex_gddp_ensemble_<scenario>' series):
+# python -m climate_tookit.compare_datasets.compare_datasets --sources nex_gddp --lat -1.286 --lon 36.817 --start 2015-01-01 --end 2016-12-31 --models ACCESS-CM2 MPI-ESM1-2-LR MRI-ESM2-0 GFDL-ESM4 EC-Earth3 --scenario ssp245 --format report
+
+# Example — NEX-GDDP single model (opt out of the ensemble):
+# python -m climate_tookit.compare_datasets.compare_datasets --sources nex_gddp --lat -1.286 --lon 36.817 --start 2015-01-01 --end 2016-12-31 --model MRI-ESM2-0 --scenario ssp245 --format report

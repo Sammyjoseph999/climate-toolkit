@@ -6,8 +6,7 @@ Outputs three views per run, all sliced per detected/fixed season (no full-perio
     1. Raw Climate Summary by Season -- mean / min / max / std per core variable (precip, tmax, tmin, humidity, solar, wind), one block per season
     2. Overall Statistics by Season  -- essential agro metrics, one block per season
     3. Season Statistics             -- compact agro headline per season (plus ETO sub-seasons inside fixed windows)
-Detection: delegates to seasons.py building blocks (add_et0,
-detect_onset_cessation, reassign_spillover_seasons, remove_duplicate_seasons,
+Detection: delegates to seasons.py building blocks (add_et0, detect_onset_cessation, reassign_spillover_seasons, remove_duplicate_seasons,
 parse_fixed_seasons, check_humid) so behaviour is identical to seasons.py:
     Per reference year, a 1.5-year window is sliced from the master DataFrame so seasons crossing the year boundary are captured. After detection,
     seasons are reassigned to onset year, filtered to MAM/OND windows for equatorial climates, and de-duplicated.
@@ -36,7 +35,6 @@ _parent_dir  = os.path.dirname(_current_dir)
 sys.path.append(os.path.join(_parent_dir, 'fetch_data', 'preprocess_data'))
 sys.path.append(os.path.join(_parent_dir, 'season_analysis'))
 
-# Pipeline import
 try:
     from preprocess_data import preprocess_data
     PREPROCESS_AVAILABLE = True
@@ -44,7 +42,6 @@ except ImportError:
     PREPROCESS_AVAILABLE = False
     print("Warning: preprocess_data pipeline not available")
 
-# Variable enum (optional)
 try:
     from sources.utils.models import ClimateVariable
     CLIMATE_VARS = [
@@ -663,6 +660,12 @@ def analyze_climate_statistics(
         for y, info in annual_dict.items()
     }
 
+    # Period-wide views (whole years start_year..end_year, excluding the fetchtail).
+    period_df = df[(df['date'] >= pd.Timestamp(f"{start_year}-01-01")) &
+                   (df['date'] <= pd.Timestamp(f"{end_year}-12-31"))]
+    raw_period     = raw_climate_summary(period_df)
+    overall_period = overall_statistics(period_df) if not period_df.empty else {}
+
     # LTM (long-term mean) across years per season window
     ltm = ltm_season_summary(season_results, fixed_season)
     years_span = end_year - start_year + 1
@@ -683,6 +686,8 @@ def analyze_climate_statistics(
         'fixed_season':        fixed_season,
         'model':               model,
         'scenario':            scenario,
+        'raw_climate_summary': raw_period,
+        'overall_statistics':  overall_period,
         'season_statistics':   season_results,
         'ltm_season_summary':  ltm,
         'coverage_warning':    coverage_warning,
@@ -995,7 +1000,6 @@ if __name__ == "__main__":
 # Fixed two seasons:
 # python climate_tookit/climate_statistics/statistics.py --location="-1.286,36.817" --start-year 2018 --end-year 2022 --fixed-season "03-01:05-31,10-01:12-15" --source agera_5 --format pandas
 
-# Fixed year-crossing season:
 # python climate_tookit/climate_statistics/statistics.py --location="-1.286,36.817" --start-year 2018 --end-year 2022 --fixed-season "11-01:02-28" --source chirps+chirts --format pandas
 
 # NEX-GDDP with fixed season:

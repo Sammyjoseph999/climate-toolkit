@@ -137,6 +137,7 @@ class DownloadData(models.DataDownloadBase):
         location_name: Optional[str] = None,
         max_pixels: float = 1e9,
         tile_scale: float = 1,
+        bands: Optional[list[str]] = None,
     ) -> pd.DataFrame:
         """Internal method to fetch data for a single date range."""
 
@@ -162,7 +163,7 @@ class DownloadData(models.DataDownloadBase):
                 f"(reducer={self._GEE_DAILY_AGG_REDUCER[image_name]!r})"
             )
             collection = self._daily_aggregated_collection(
-                image_name, start, end, location,
+                image_name, start, end, location, bands=bands,
             )
         else:
             collection = (
@@ -243,17 +244,17 @@ class DownloadData(models.DataDownloadBase):
     # The reducer matters: precipitation must sum across the day; everything
     # else uses mean. Default is mean if the source isn't listed.
     _GEE_DAILY_AGG_REDUCER = {
-        "NASA/GPM_L3/IMERG_V07": "sum",      # precipitation flux mm/hr -> mm/day total
+        "NASA/GPM_L3/IMERG_V07": "sum",      
         "NASA/GPM_L3/IMERG_V06": "sum",
-        "ECMWF/ERA5_LAND/HOURLY": "mean",    # mixed; mean is the safer default
+        "ECMWF/ERA5_LAND/HOURLY": "mean",    
     }
-    # All other GEE collections are daily-cadence (ERA5, CHIRPS, CHIRTS,
-    # AgERA5, TerraClimate). 1 image/day, so a 12-year chunk = ~4380 elements,
+    # All other GEE collections are daily-cadence (ERA5, CHIRPS, CHIRTS, AgERA5, TerraClimate). 1 image/day, so a 12-year chunk = ~4380 elements,
     # comfortably under GEE's 5000 ceiling. 26 years -> 3 chunks.
     _GEE_DEFAULT_CHUNK_DAYS = 4380
     _GEE_MIN_CHUNK_DAYS = 7                  # don't bisect smaller than this
 
-    def _daily_aggregated_collection(self, image_name, start, end, location):
+    def _daily_aggregated_collection(self, image_name, start, end, location,
+                                     bands: Optional[list[str]] = None):
         """
         Build a server-side daily ImageCollection from a sub-daily source.
 
@@ -263,6 +264,15 @@ class DownloadData(models.DataDownloadBase):
         otherwise). The result is an ImageCollection with one image per
         day, so the downstream `collection.map(extract)` returns one
         Feature per day instead of one per sub-daily frame.
+
+        `bands` restricts the raw collection to the bands we actually need
+        before reducing. This is required for IMERG V07, whose half-hourly
+        frames carry a varying band set (some 5-band, some 9-band): the
+        retrieval-only bands (MW*/IR* etc.) make the collection heterogeneous,
+        and `ImageCollection.sum()`/`.mean()` reject heterogeneous collections
+        ("Expected a homogeneous image collection"). Selecting just the
+        requested band(s) — which are present in every frame — makes the
+        collection homogeneous and also lighter to compute.
         """
         reducer_name = self._GEE_DAILY_AGG_REDUCER.get(image_name, "mean")
         n_days = end.difference(start, "day").floor()
@@ -272,6 +282,8 @@ class DownloadData(models.DataDownloadBase):
             .filterDate(start, end)
             .filterBounds(location)
         )
+        if bands:
+            raw = raw.select(bands)
 
         def daily_image(day_offset):
             day_offset = ee.Number(day_offset)
@@ -303,17 +315,14 @@ class DownloadData(models.DataDownloadBase):
         max_pixels: float = 1e9,
         cadence: Cadence = Cadence.daily,
         tile_scale: float = 1,
+        bands: Optional[list[str]] = None,
     ) -> pd.DataFrame:
         """
         Retrieve daily data from a GEE ImageCollection with adaptive chunking.
-
-        - All sources use the same large initial chunk (4380 days); sub-daily
-          sources are pre-aggregated to daily server-side so element counts
+        - All sources use the same large initial chunk (4380 days); sub-daily sources are pre-aggregated to daily server-side so element counts
           match daily.
-        - On a 5000-element / memory error the offending chunk is bisected and
-          retried recursively, down to `_GEE_MIN_CHUNK_DAYS`.
-        - Failed chunks return empty DataFrames (logged); successful chunks
-          are concatenated.
+        - On a 5000-element / memory error the offending chunk is bisected and retried recursively, down to `_GEE_MIN_CHUNK_DAYS`.
+        - Failed chunks return empty DataFrames (logged); successful chunks are concatenated.
         """
         _ensure_gee_initialized()
         logger.info(f"Retrieving information from GEE Image: {image_name}")
@@ -328,8 +337,7 @@ class DownloadData(models.DataDownloadBase):
             logger.warning("from_date is after to_date. Returning empty DataFrame.")
             return pd.DataFrame()
 
-        # All sources use the same large chunk: sub-daily sources are
-        # collapsed to daily server-side (see `_GEE_DAILY_AGG_REDUCER` and
+        # All sources use the same large chunk: sub-daily sources are collapsed to daily server-side (see `_GEE_DAILY_AGG_REDUCER` and
         # `_daily_aggregated_collection`), so element counts match daily.
         chunk_size = self._GEE_DEFAULT_CHUNK_DAYS
         logger.info(f"GEE chunking: image={image_name} initial chunk_size={chunk_size}d "
@@ -349,6 +357,7 @@ class DownloadData(models.DataDownloadBase):
                 location_name=location_name,
                 max_pixels=max_pixels,
                 tile_scale=tile_scale,
+                bands=bands,
             )
             if not df_chunk.empty:
                 chunks.append(df_chunk)
@@ -369,12 +378,11 @@ class DownloadData(models.DataDownloadBase):
         location_name: Optional[str],
         max_pixels: float,
         tile_scale: float,
+        bands: Optional[list[str]] = None,
     ) -> pd.DataFrame:
         """
-        Fetch one chunk. On 5000-element / memory error, bisect the range
-        and retry each half, down to `_GEE_MIN_CHUNK_DAYS`. Below that floor
-        the chunk is given up on (logged + empty DataFrame returned) — much
-        better than failing the entire request.
+        Fetch one chunk. On 5000-element / memory error, bisect the range and retry each half, down to `_GEE_MIN_CHUNK_DAYS`. Below that floor
+        the chunk is given up on (logged + empty DataFrame returned) — much better than failing the entire request.
         """
         span_days = (to_date - from_date).days + 1
         logger.info(f"Fetching chunk: {from_date} -> {to_date} ({span_days}d)")
@@ -389,6 +397,7 @@ class DownloadData(models.DataDownloadBase):
                 location_name=location_name,
                 max_pixels=max_pixels,
                 tile_scale=tile_scale,
+                bands=bands,
             )
         except Exception as e:
             if not self._is_collection_overflow(e):
@@ -408,11 +417,11 @@ class DownloadData(models.DataDownloadBase):
             )
             left = self._fetch_chunk_with_bisect(
                 image_name, location_coord, from_date, mid,
-                scale, crs, location_name, max_pixels, tile_scale,
+                scale, crs, location_name, max_pixels, tile_scale, bands,
             )
             right = self._fetch_chunk_with_bisect(
                 image_name, location_coord, mid + timedelta(days=1), to_date,
-                scale, crs, location_name, max_pixels, tile_scale,
+                scale, crs, location_name, max_pixels, tile_scale, bands,
             )
             parts = [d for d in (left, right) if not d.empty]
             if not parts:
@@ -591,12 +600,20 @@ class DownloadData(models.DataDownloadBase):
                     scale=data_settings.resolution,
                 )
             else:
+                # Bands we actually need (drops null-mapped variables). For sub-daily sources these restrict the server-side daily
+                # aggregation to a homogeneous, lighter band set; ignored by daily-cadence sources.
+                wanted_bands = [
+                    b for b in (data_settings.variable.get_band(v.name)
+                                for v in self.variables)
+                    if b
+                ]
                 climate_data = self.get_gee_data_daily(
                     image_name=data_settings.gee_image,
                     location_coord=self.location_coord,
                     from_date=self.date_from_utc,
                     to_date=self.date_to_utc,
                     scale=data_settings.resolution,
+                    bands=wanted_bands or None,
                 )
         except Exception as e:
             logger.error(f"Error downloading data: {e}")
