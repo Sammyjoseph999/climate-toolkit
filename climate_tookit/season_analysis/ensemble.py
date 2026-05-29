@@ -3,7 +3,6 @@ NEX-GDDP Ensemble Season Analysis
 
 Loops over (scenario × model), calls seasons.py's existing analysis functions for each combination (after monkey-patching get_climate_data to read NEX-GDDP),
 then averages results across models.
-
 Default: ALL 16 NEX-GDDP-CMIP6 models × ALL 4 SSP scenarios.
 Use --models / --scenarios / --exclude-models to narrow.
 Use --fixed-season for fixed calendar windows (single, two-season, year-crossing).
@@ -35,15 +34,6 @@ SSP_SCENARIOS   = ['ssp126', 'ssp245', 'ssp585']
 NEX_GDDP_SOURCE = 'nex_gddp'
 
 # NEX-GDDP-tuned wet-spell confirmation
-# Bias-corrected climate-model precipitation is smoother than observational data
-# (the well-known 'drizzle bias': rainfall spread over more days at lower per-day
-# intensity). seasons.has_wet_confirmation requires `min_wet_days` consecutive
-# days where p >= 0.5*ET0, which under-counts onsets on NEX-GDDP — empirically
-# the same MAM season that's clearly present in fixed-mode (~4.5 mm/day over
-# 92 days) fails to register an onset in auto mode across SSP245/SSP585.
-# The patched version below uses a min_wet_days-day rolling-sum test against
-# the same 0.5*ET0 threshold so sustained moderate rainfall is recognized even
-# when no individual day clears the per-day bar.
 def _nex_gddp_has_wet_confirmation(precip_data, et0_data, start_idx,
                                    min_wet_days=3, annual_rain=800):
     n = len(precip_data) - start_idx
@@ -166,7 +156,7 @@ def _avg_ts_iso(ts_list):
         try:
             ts = pd.Timestamp(t)
             if not pd.isna(ts):
-                valid.append(ts.value)   # int64 nanoseconds
+                valid.append(ts.value)   
         except Exception:
             pass
     if not valid:
@@ -215,65 +205,158 @@ def _aggregate_eto_subseasons(eto_per_model: List[List[Dict]]) -> Dict:
         'subseasons':        sub_slots,
     }
 
-def aggregate(model_results: List[Dict]) -> Dict[int, Dict]:
-    """Average per-model {seasons_dict, annual_dict} into ensemble stats by year."""
-    years = sorted({y for r in model_results for y in r.get('seasons_dict', {})})
-    out   = {}
-    metrics = ['total_rainfall_mm', 'rainy_days', 'dry_days', 'dry_spells', 'length_days']
+_AGG_METRICS = ['total_rainfall_mm', 'rainy_days', 'dry_days', 'dry_spells', 'length_days']
 
-    for year in years:
-        max_n = max((len(r['seasons_dict'].get(year, [])) for r in model_results), default=0)
-        seasons_agg = []
-        for idx in range(max_n):
-            buckets = {k: [] for k in metrics}
-            onsets, cessations, regimes = [], [], []
-            eto_per_model = []
-            n = 0
-            for r in model_results:
-                slist = r['seasons_dict'].get(year, [])
-                if idx < len(slist):
-                    s = slist[idx]; n += 1
-                    for k in metrics: buckets[k].append(s.get(k))
-                    onsets.append(s.get('onset'))
-                    cessations.append(s.get('cessation'))
-                    regimes.append(s.get('regime'))
-                    eto_per_model.append(s.get('eto_seasons') or [])
-            regime_counts = {}
-            for r_ in regimes:
-                if r_: regime_counts[r_] = regime_counts.get(r_, 0) + 1
-            n_open = sum(1 for c in cessations if c is None)
+def _most_common(values):
+    """Most frequent non-null value, or None."""
+    clean = [v for v in values if v]
+    if not clean:
+        return None
+    return max(set(clean), key=clean.count)
 
-            seasons_agg.append({
-                'season_index':     idx + 1,
-                'n_models':         n,
-                'avg_onset':        _avg_ts_iso(onsets),
-                'avg_cessation':    _avg_ts_iso(cessations),
-                'n_open_cessation': n_open,
-                'regime_counts':    regime_counts,
-                'eto_subseasons':   _aggregate_eto_subseasons(eto_per_model),
-                **{k: _avg(buckets[k]) for k in metrics},
-            })
-
-        annual_rain, low_rain_months = [], []
-        humid_n = humid_total = 0
-        for r in model_results:
-            ann = r['annual_dict'].get(year, {})
-            if ann.get('annual_rain_mm') is not None:
-                annual_rain.append(ann['annual_rain_mm'])
-                humid_total += 1
-                if ann.get('low_rain_months') is not None:
-                    low_rain_months.append(ann['low_rain_months'])
-                if ann.get('is_humid'):
-                    humid_n += 1
-
-        out[year] = {
-            'seasons':         seasons_agg,
-            'annual_rain_mm':  _avg(annual_rain),
-            'low_rain_months': _avg(low_rain_months),
-            'humid_n':         humid_n,
-            'humid_total':     humid_total,
-        }
+def _avg_eto_over_years(eto_lists: List[List[Dict]]) -> List[Dict]:
+    """
+    Collapse one model's per-year ETO sub-seasons into period averages. eto_lists is a list (one entry per analysed year) of sub-season lists;
+    sub-seasons are aligned by position. Returns one averaged sub-season per slot.
+    """
+    max_subs = max((len(lst) for lst in eto_lists), default=0)
+    out = []
+    for sub_idx in range(max_subs):
+        buckets = {k: [] for k in _AGG_METRICS}
+        onsets, cessations, regimes = [], [], []
+        for lst in eto_lists:
+            if sub_idx < len(lst):
+                s = lst[sub_idx]
+                for k in _AGG_METRICS: buckets[k].append(s.get(k))
+                onsets.append(s.get('onset'))
+                cessations.append(s.get('cessation'))
+                regimes.append(s.get('regime'))
+        out.append({
+            'onset':     _avg_ts_iso(onsets),
+            'cessation': _avg_ts_iso(cessations),
+            'regime':    _most_common(regimes),
+            **{k: _avg(buckets[k]) for k in _AGG_METRICS},
+        })
     return out
+
+def _average_model_over_period(model_result: Dict, n_slots: int) -> Dict:
+    """
+    Stage 1 of the ensemble: collapse ONE model's per-year results into a single period mean. For each fixed-season slot, the model's per-year metric values
+    are averaged across every analysed year, yielding one value per metric for that model. Annual rainfall / humidity are averaged the same way.
+    """
+    sdict = model_result.get('seasons_dict', {})
+    adict = model_result.get('annual_dict', {})
+
+    season_means = []
+    for idx in range(n_slots):
+        buckets = {k: [] for k in _AGG_METRICS}
+        onsets, cessations, regimes, eto_lists = [], [], [], []
+        n_years = 0
+        for slist in sdict.values():
+            if idx < len(slist):
+                s = slist[idx]; n_years += 1
+                for k in _AGG_METRICS: buckets[k].append(s.get(k))
+                onsets.append(s.get('onset'))
+                cessations.append(s.get('cessation'))
+                regimes.append(s.get('regime'))
+                eto_lists.append(s.get('eto_seasons') or [])
+        if n_years == 0:
+            continue
+        season_means.append({
+            'season_index': idx + 1,
+            'n_years':      n_years,
+            'onset':        _avg_ts_iso(onsets),
+            'cessation':    _avg_ts_iso(cessations),
+            'regime':       _most_common(regimes),
+            'eto_seasons':  _avg_eto_over_years(eto_lists),
+            **{k: _avg(buckets[k]) for k in _AGG_METRICS},
+        })
+
+    annual_rain, low_rain_months = [], []
+    humid_years = humid_total = 0
+    for ann in adict.values():
+        if ann.get('annual_rain_mm') is not None:
+            annual_rain.append(ann['annual_rain_mm'])
+            humid_total += 1
+            if ann.get('low_rain_months') is not None:
+                low_rain_months.append(ann['low_rain_months'])
+            if ann.get('is_humid'):
+                humid_years += 1
+
+    return {
+        'model':           model_result.get('model'),
+        'error':           model_result.get('error'),
+        'n_years':         max((sm['n_years'] for sm in season_means), default=0),
+        'seasons':         season_means,
+        'annual_rain_mm':  _avg(annual_rain),
+        'low_rain_months': _avg(low_rain_months),
+        'humid_years':     humid_years,
+        'humid_total':     humid_total,
+    }
+
+def aggregate_overall(model_results: List[Dict]):
+    """
+    Two-stage ensemble for a fixed season over the whole future period.
+    Stage 1 (per model): average each model's per-year values across the period → one value per metric per model  (the '16 values').
+    Stage 2 (ensemble):  average those per-model means across all models.
+    Returns (ensemble_dict, model_averages). ensemble_dict mirrors the structure of a single year so the existing pretty-printer can render it directly.
+    """
+    n_slots = 0
+    for r in model_results:
+        for slist in r.get('seasons_dict', {}).values():
+            n_slots = max(n_slots, len(slist))
+
+    # Stage 1
+    model_averages = [_average_model_over_period(r, n_slots) for r in model_results]
+
+    # Stage 2
+    seasons_agg = []
+    for idx in range(n_slots):
+        buckets = {k: [] for k in _AGG_METRICS}
+        onsets, cessations, regimes, eto_per_model = [], [], [], []
+        n = 0
+        for ma in model_averages:
+            slot = next((s for s in ma['seasons'] if s['season_index'] == idx + 1), None)
+            if slot is None:
+                continue
+            n += 1
+            for k in _AGG_METRICS: buckets[k].append(slot.get(k))
+            onsets.append(slot.get('onset'))
+            cessations.append(slot.get('cessation'))
+            regimes.append(slot.get('regime'))
+            eto_per_model.append(slot.get('eto_seasons') or [])
+        if n == 0:
+            continue
+        regime_counts = {}
+        for r_ in regimes:
+            if r_: regime_counts[r_] = regime_counts.get(r_, 0) + 1
+        n_open = sum(1 for c in cessations if c is None)
+        seasons_agg.append({
+            'season_index':     idx + 1,
+            'n_models':         n,
+            'avg_onset':        _avg_ts_iso(onsets),
+            'avg_cessation':    _avg_ts_iso(cessations),
+            'n_open_cessation': n_open,
+            'regime_counts':    regime_counts,
+            'eto_subseasons':   _aggregate_eto_subseasons(eto_per_model),
+            **{k: _avg(buckets[k]) for k in _AGG_METRICS},
+        })
+
+    annual_rain     = [ma['annual_rain_mm']  for ma in model_averages if ma['annual_rain_mm']  is not None]
+    low_rain_months = [ma['low_rain_months'] for ma in model_averages if ma['low_rain_months'] is not None]
+    humid_n     = sum(1 for ma in model_averages
+                      if ma['humid_total'] and ma['humid_years'] > ma['humid_total'] / 2)
+    humid_total = sum(1 for ma in model_averages if ma['humid_total'])
+
+    ensemble = {
+        'n_models':        sum(1 for ma in model_averages if ma['seasons']),
+        'seasons':         seasons_agg,
+        'annual_rain_mm':  _avg(annual_rain),
+        'low_rain_months': _avg(low_rain_months),
+        'humid_n':         humid_n,
+        'humid_total':     humid_total,
+    }
+    return ensemble, model_averages
 
 # Top-level orchestrator
 def run_ensemble(lat, lon, start_year, end_year, scenarios, models, fixed_arg=None, verbose=True):
@@ -318,9 +401,11 @@ def run_ensemble(lat, lon, start_year, end_year, scenarios, models, fixed_arg=No
 
         ok = sum(1 for r in per_model if not r.get('error'))
         diagnostics = _aggregate_skip_info(per_model)
+        ensemble, model_averages = aggregate_overall(per_model)
         results[scenario] = {
-            'by_year':       aggregate(per_model),
-            'model_results': per_model,
+            'ensemble':       ensemble,
+            'model_averages': model_averages,
+            'model_results':  per_model,
             'metadata': {
                 'lat': lat, 'lon': lon,
                 'period':         [start_year, end_year],
@@ -330,6 +415,7 @@ def run_ensemble(lat, lon, start_year, end_year, scenarios, models, fixed_arg=No
                 'models_failed':  len(models) - ok,
                 'mode':           mode,
                 'fixed_seasons':  fixed_arg,
+                'aggregation':    'model-first (per-model period mean, then mean across models)',
                 'data_source':    'NEX-GDDP-CMIP6',
                 'source_key':     NEX_GDDP_SOURCE,
                 'analysis_date':  datetime.now().isoformat(),
@@ -386,71 +472,79 @@ def _humid_line(annual, low_months):
 
 def print_summary(results):
     print("\n" + "=" * 70)
-    print("FINAL SEASONS SUMMARY  (ENSEMBLE)")
+    print("FINAL SEASONS SUMMARY  (ENSEMBLE — overall, fixed period)")
     print("=" * 70)
 
     for scenario, payload in results.items():
-        n_models = len(payload['metadata']['models'])
-        mode     = payload['metadata']['mode']
-        diag     = payload['metadata'].get('diagnostics') or {}
+        meta     = payload['metadata']
+        n_models = len(meta['models'])
+        mode     = meta['mode']
+        diag     = meta.get('diagnostics') or {}
+        y0, y1   = meta['period']
+        ens      = payload['ensemble']
+
         print(f"\n{'━' * 70}")
-        print(f"Scenario: {scenario}  (mode={mode}, {n_models} model(s), values are averages)")
+        print(f"Scenario: {scenario}  (mode={mode}, {n_models} model(s))")
+        print(f"Overall ensemble for {y0}–{y1}: each model's per-year values are")
+        print(f"averaged over the period, then averaged across "
+              f"{ens['n_models']} model(s).")
         print('━' * 70)
         if mode == 'auto' and (diag.get('perhumid_model_years') or diag.get('no_season_model_years')):
             ph = diag.get('perhumid_model_years', 0)
             ns = diag.get('no_season_model_years', 0)
             print(f"Detection skips: perhumid={ph} model-year(s), "
-                  f"no-onset={ns} model-year(s) — years with empty 'seasons' below reflect this.")
+                  f"no-onset={ns} model-year(s) — fewer years feed the per-model means.")
 
-        for year in sorted(payload['by_year']):
-            yr = payload['by_year'][year]
-            print(f"\nYear {year}: {len(yr['seasons'])} season(s)")
+        if not ens['seasons']:
+            print("  No seasons to aggregate.")
+            continue
 
-            for s in yr['seasons']:
-                idx    = s['season_index']
-                regime = max(s['regime_counts'], key=s['regime_counts'].get) if s['regime_counts'] else "?"
-                onset  = s['avg_onset'] or "?"
-                cess   = s['avg_cessation'] or "open"
-                if s['n_open_cessation'] and s['n_open_cessation'] > s['n_models'] / 2:
-                    cess = "open"
-                print(f"  Season {idx}: {onset} → {cess} | {regime} | {_len(s['length_days'])}")
-                print(f"    Total rainfall : {_mm(s['total_rainfall_mm'])}")
-                print(f"    Rainy days     : {_d(s['rainy_days'])}  (precip ≥ 1 mm)")
-                print(f"    Dry days       : {_d(s['dry_days'])}  (precip < 1 mm)")
-                print(f"    Dry spells     : {_ct(s['dry_spells'])}  (runs of ≥ 7 consecutive dry days)")
+        for s in ens['seasons']:
+            idx    = s['season_index']
+            regime = max(s['regime_counts'], key=s['regime_counts'].get) if s['regime_counts'] else "?"
+            onset  = s['avg_onset'] or "?"
+            cess   = s['avg_cessation'] or "open"
+            if s['n_open_cessation'] and s['n_open_cessation'] > s['n_models'] / 2:
+                cess = "open"
+            print(f"\n  Season {idx}: {onset} → {cess} | {regime} | {_len(s['length_days'])}  "
+                  f"(from {s['n_models']}/{n_models} models)")
+            print(f"    Total rainfall : {_mm(s['total_rainfall_mm'])}")
+            print(f"    Rainy days     : {_d(s['rainy_days'])}  (precip ≥ 1 mm)")
+            print(f"    Dry days       : {_d(s['dry_days'])}  (precip < 1 mm)")
+            print(f"    Dry spells     : {_ct(s['dry_spells'])}  (runs of ≥ 7 consecutive dry days)")
 
-                # ETO sub-season block — only meaningful in fixed mode
-                if mode == 'fixed':
-                    eto = s.get('eto_subseasons') or {}
-                    if eto.get('n_models_total'):
-                        n_any, n_tot = eto['n_models_with_any'], eto['n_models_total']
-                        print(f"    {'─' * 50}")
-                        print(f"    Season analysis within fixed window:")
-                        if n_any == 0 or not eto['subseasons']:
-                            print(f"      No ETO-based season detected within window")
-                        else:
-                            for sub in eto['subseasons']:
-                                sn, sn_n = sub['subseason_index'], sub['n_models']
-                                if sn_n == 0:
-                                    continue
-                                sub_regime = (max(sub['regime_counts'], key=sub['regime_counts'].get)
-                                              if sub['regime_counts'] else "?")
-                                sub_onset = sub['avg_onset'] or "?"
-                                sub_cess  = sub['avg_cessation'] or "open"
-                                if sub.get('n_open_cessation', 0) > sn_n / 2:
-                                    sub_cess = "open"
-                                print(f"      ETO sub-season {sn}: {sub_onset} → {sub_cess} | "
-                                      f"{sub_regime} | {_len(sub['length_days'])}  "
-                                      f"(detected by {sn_n}/{n_tot} models)")
-                                print(f"        Total rainfall : {_mm(sub['total_rainfall_mm'])}")
-                                print(f"        Rainy days     : {_d(sub['rainy_days'])}  (precip ≥ 1 mm)")
-                                print(f"        Dry days       : {_d(sub['dry_days'])}  (precip < 1 mm)")
-                                print(f"        Dry spells     : {_ct(sub['dry_spells'])}  (runs of ≥ 7 consecutive dry days)")
+            # ETO sub-season block — only meaningful in fixed mode
+            if mode == 'fixed':
+                eto = s.get('eto_subseasons') or {}
+                if eto.get('n_models_total'):
+                    n_any, n_tot = eto['n_models_with_any'], eto['n_models_total']
+                    print(f"    {'─' * 50}")
+                    print(f"    Season analysis within fixed window:")
+                    if n_any == 0 or not eto['subseasons']:
+                        print(f"      No ETO-based season detected within window")
+                    else:
+                        for sub in eto['subseasons']:
+                            sn, sn_n = sub['subseason_index'], sub['n_models']
+                            if sn_n == 0:
+                                continue
+                            sub_regime = (max(sub['regime_counts'], key=sub['regime_counts'].get)
+                                          if sub['regime_counts'] else "?")
+                            sub_onset = sub['avg_onset'] or "?"
+                            sub_cess  = sub['avg_cessation'] or "open"
+                            if sub.get('n_open_cessation', 0) > sn_n / 2:
+                                sub_cess = "open"
+                            print(f"      ETO sub-season {sn}: {sub_onset} → {sub_cess} | "
+                                  f"{sub_regime} | {_len(sub['length_days'])}  "
+                                  f"(detected by {sn_n}/{n_tot} models)")
+                            print(f"        Total rainfall : {_mm(sub['total_rainfall_mm'])}")
+                            print(f"        Rainy days     : {_d(sub['rainy_days'])}  (precip ≥ 1 mm)")
+                            print(f"        Dry days       : {_d(sub['dry_days'])}  (precip < 1 mm)")
+                            print(f"        Dry spells     : {_ct(sub['dry_spells'])}  (runs of ≥ 7 consecutive dry days)")
 
-            # year footer (matches seasons.py format)
-            print(f"  {'─' * 48}")
-            print(f"  Annual total rainfall : {_mm(yr['annual_rain_mm'])}")
-            print(f"  Humid test            : {_humid_line(yr['annual_rain_mm'], yr['low_rain_months'])}")
+        # ensemble footer (matches seasons.py format)
+        print(f"\n  {'─' * 48}")
+        print(f"  Annual total rainfall : {_mm(ens['annual_rain_mm'])}")
+        print(f"  Humid test            : {_humid_line(ens['annual_rain_mm'], ens['low_rain_months'])}")
 
 # CLI 
 def main():
@@ -530,22 +624,23 @@ def main():
 if __name__ == '__main__':
     main()
 
-# NOTE: the 1st command in a section includes all models/scenarios while the 2nd allows selection
+# NOTE: the 1st command in a section runs ALL models with a selected scenario/scenarios
+#       (drop --scenarios to run all scenarios too); the 2nd also selects models.
 
 # Fixed single season
-# python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "03-01:05-31" --output ensemble_mam_all.json
+# python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "03-01:05-31" --scenarios ssp585 --output ensemble_mam_all.json
 # python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "03-01:05-31" --models "ACCESS-CM2,EC-Earth3,MRI-ESM2-0" --scenarios ssp585 --output ensemble_mam.json
 
 # Fixed two seasons
-# python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "03-01:05-31,10-01:12-15" --output ensemble_mam_ond_all.json
+# python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "03-01:05-31,10-01:12-15" --scenarios ssp245,ssp585 --output ensemble_mam_ond_all.json
 # python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "03-01:05-31,10-01:12-15" --models "ACCESS-CM2,EC-Earth3,MRI-ESM2-0" --scenarios ssp245,ssp585 --output ensemble_mam_ond.json
 
 # Fixed year-crossing season
-# python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "11-01:02-28" --output ensemble_njf_all.json
+# python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "11-01:02-28" --scenarios ssp585 --output ensemble_njf_all.json
 # python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --start-year 2040 --end-year 2060 --fixed-season "11-01:02-28" --models "ACCESS-CM2,EC-Earth3,MRI-ESM2-0" --scenarios ssp585 --output ensemble_njf.json
 
 # python climate_tookit/season_analysis/ensemble.py --list-models
 
 # Automatic detection
-# python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --start-year 2040 --end-year 2060 --output ensemble_auto_all.json
+# python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --start-year 2040 --end-year 2060 --scenarios ssp585 --output ensemble_auto_all.json
 # python climate_tookit/season_analysis/ensemble.py --location="-1.286,36.817" --start-year 2040 --end-year 2060 --models "ACCESS-CM2,EC-Earth3,MRI-ESM2-0" --scenarios ssp245,ssp585 --output ensemble_auto.json
