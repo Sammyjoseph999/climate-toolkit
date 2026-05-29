@@ -1,14 +1,12 @@
 """
 Compare Periods
-
 Runs statistics.py for a baseline period and a focal year, then diffs the four
 sections statistics.py produces:
     raw_climate_summary:    per-variable mean/min/max/std
     overall_statistics :    period totals (baseline annualised before diffing)
     season_statistics  :    per-season metrics
                              - lumped 'typical season' when --fixed-season is omitted
-                             - one comparison per window when --fixed-season is given,
-                               so a two-season spec doesn't blend MAM with OND
+                             - one comparison per window when --fixed-season is given, so a two-season spec doesn't blend MAM with OND
     annual_summary     :   humid test (annual rainfall, humid_year ratio)
 
 --fixed-season is passed straight through to statistics.py, so its three flavors work without periods.py knowing about them:
@@ -40,7 +38,7 @@ ANNUALIZABLE = {
 }
 PRECIP_ONLY  = {"chirps"}
 SUPPORTED    = {"era_5", "agera_5", "chirps+chirts", "nasa_power",
-                "chirps", "chirts", "terraclimate", "auto"}
+                "chirps", "chirts", "terraclimate", "imerg", "tamsat", "auto"}
 
 # helpers
 def _is_num(x: Any) -> bool:
