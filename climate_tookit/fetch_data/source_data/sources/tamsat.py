@@ -1,7 +1,12 @@
 """
 TAMSAT Data Downloader
-Downloads daily rainfall (RFE) and soil moisture (SMCL) from TAMSAT JASMIN servers. Each monthly NetCDF file contains a per-day `time` dimension; this
-module selects the gridcell nearest the requested (lat, lon) and returns one value per day, preserving daily resolution.
+Downloads daily rainfall (RFE) and soil moisture (SMCL) from the TAMSAT JASMINpublic tree (`gws-access.jasmin.ac.uk/public/tamsat`). TAMSAT publishes one
+NetCDF file per day at this endpoint; this module fetches one file perrequested day, selects the gridcell nearest the requested (lat, lon), and
+returns the single-time-step value. Missing/failed days return NaN — never 0.
+
+Note: an earlier revision read from the `/monthly/` tree, but those filescontain a single per-month total rather than per-day samples, which produced
+all-NaN (or, before that, all-0) daily output. We now read the `/daily/` tree.
+
 Coordinate convention: `location_coord` is `(lat, lon)`, matching the rest of the toolkit.
 """
 
@@ -14,7 +19,6 @@ import xarray as xr
 import requests
 from datetime import date, timedelta
 from typing import Optional
-from collections import defaultdict
 from sources.utils.models import DataDownloadBase, ClimateVariable
 from sources.utils.settings import Settings
 
@@ -80,21 +84,25 @@ class DownloadTAMSAT(DataDownloadBase):
     def _read_nc_variable(self, prefix: str) -> list[float]:
         """
         Read a TAMSAT variable as a daily series at (lat, lon).
-        Strategy: group the requested dates by (year, month) so we download each monthly NetCDF file only once. For each file, select the gridcell
-        nearest the requested point, then look up each day's value by time index. Days that can't be matched (download error, missing time slice)
-        return NaN — never silently replaced with 0.
+        Strategy: TAMSAT's public JASMIN tree publishes one NetCDF file per day
+        at `…/{year}/{month:02d}/{prefix}{year}_{month:02d}_{day:02d}.{version}.nc`,
+        each containing a single time-step on a (lat, lon) grid. We download
+        one file per requested day, select the gridcell nearest the requested
+        point, and read the single value. Days that can't be fetched or read
+        return NaN — never silently replaced with 0. A single `requests.Session`
+        is reused across days for HTTP keep-alive.
         """
         cfg = self.settings.tamsat
         if prefix == "rfe":
             base_url     = cfg.rainfall_url
-            expected_var = cfg.variable.get_band("precipitation")  
+            expected_var = cfg.variable.get_band("precipitation")
             version      = "v3.1"
-            file_template = f"rfe{{year}}{{month:02d}}_{version}.nc"
+            file_prefix  = "rfe"
         elif prefix == "smcl":
             base_url     = cfg.soil_moisture_url
-            expected_var = cfg.variable.get_band("soil_moisture")  
+            expected_var = cfg.variable.get_band("soil_moisture")
             version      = "v2.3.1"
-            file_template = f"sm{{year}}{{month:02d}}_{version}.nc"
+            file_prefix  = "sm"
         else:
             raise ValueError(f"Unknown prefix {prefix}")
         if not expected_var:
@@ -102,65 +110,60 @@ class DownloadTAMSAT(DataDownloadBase):
                 f"TAMSAT settings missing band name for prefix {prefix!r}"
             )
 
-        lat0, lon0 = self.location_coord                   
-
-        grouped = defaultdict(list)
-        for dt in self.dates:
-            grouped[(dt.year, dt.month)].append(dt)
-
+        lat0, lon0 = self.location_coord
         values_by_date: dict = {}
-        headers = {"User-Agent": "Mozilla/5.0"}
 
-        for (year, month), day_list in grouped.items():
-            file_name = file_template.format(year=year, month=month)
-            url       = f"{base_url.rstrip('/')}/{year}/{file_name}"
-            try:
-                resp = requests.get(url, headers=headers, timeout=30)
-                resp.raise_for_status()
-                ds, tmp_path = self._open_netcdf_bytes(resp.content)
-                if ds is None:
-                    raise RuntimeError(
-                        "no working xarray engine could read the TAMSAT file"
-                    )
-                try:
-                    da = ds[expected_var]
+        session = requests.Session()
+        session.headers.update({"User-Agent": "Mozilla/5.0"})
 
-                    # Spatial selection: nearest gridcell to (lat0, lon0).
-                    sel_kwargs = {}
-                    if "lat" in da.dims:
-                        sel_kwargs["lat"] = lat0
-                    if "lon" in da.dims:
-                        sel_kwargs["lon"] = lon0
-                    if sel_kwargs:
-                        da = da.sel(method="nearest", **sel_kwargs)
-
-                    # Temporal selection: build a date -> value map.
-                    if "time" in da.dims:
-                        times = pd.to_datetime(da["time"].values)
-                        arr   = np.asarray(da.values, dtype=float).ravel()
-                        time_to_val = {
-                            ts.date(): float(v) for ts, v in zip(times, arr)
-                        }
-                        for dt in day_list:
-                            values_by_date[dt] = time_to_val.get(dt, np.nan)
-                    else:
-                        # No time dim — single value applies to the month.
-                        scalar = float(np.asarray(da.values).reshape(-1)[0])
-                        for dt in day_list:
-                            values_by_date[dt] = scalar
-                finally:
-                    ds.close()
-                    try:
-                        if tmp_path:
-                            os.unlink(tmp_path)
-                    except OSError:
-                        pass
-            except Exception as e:
-                logger.warning(
-                    f"TAMSAT fetch failed for {year}-{month:02d} ({url}): {e}"
+        try:
+            for dt in self.dates:
+                file_name = (
+                    f"{file_prefix}{dt.year}_{dt.month:02d}_{dt.day:02d}"
+                    f".{version}.nc"
                 )
-                for dt in day_list:
+                url = (
+                    f"{base_url.rstrip('/')}/{dt.year}/{dt.month:02d}/{file_name}"
+                )
+                try:
+                    resp = session.get(url, timeout=30)
+                    resp.raise_for_status()
+                    ds, tmp_path = self._open_netcdf_bytes(resp.content)
+                    if ds is None:
+                        raise RuntimeError(
+                            "no working xarray engine could read the TAMSAT file"
+                        )
+                    try:
+                        da = ds[expected_var]
+
+                        # Spatial selection: nearest gridcell to (lat0, lon0).
+                        sel_kwargs = {}
+                        if "lat" in da.dims:
+                            sel_kwargs["lat"] = lat0
+                        if "lon" in da.dims:
+                            sel_kwargs["lon"] = lon0
+                        if sel_kwargs:
+                            da = da.sel(method="nearest", **sel_kwargs)
+
+                        # Each daily file has time-dim 1; just read the scalar.
+                        arr = np.asarray(da.values, dtype=float).ravel()
+                        values_by_date[dt] = (
+                            float(arr[0]) if arr.size else np.nan
+                        )
+                    finally:
+                        ds.close()
+                        try:
+                            if tmp_path:
+                                os.unlink(tmp_path)
+                        except OSError:
+                            pass
+                except Exception as e:
+                    logger.warning(
+                        f"TAMSAT fetch failed for {dt.isoformat()} ({url}): {e}"
+                    )
                     values_by_date[dt] = np.nan
+        finally:
+            session.close()
 
         return [values_by_date.get(dt, np.nan) for dt in self.dates]
 
