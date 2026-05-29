@@ -143,6 +143,37 @@ def _build_nex_ensemble(per_model: dict) -> pd.DataFrame:
     numeric = combined.select_dtypes(include="number").columns.tolist()
     return combined.groupby("date", as_index=False)[numeric].mean()
 
+def _print_nex_model_breakdown(per_model: dict) -> None:
+    """
+    Show each model's period-mean per variable before the ensemble mean is built, so the reader can see what each model contributes. The ENSEMBLE row equals the
+    column mean of the per-model rows (matching _build_nex_ensemble's daily mean).
+    """
+    usable = {m: df for m, df in per_model.items()
+              if df is not None and not df.empty}
+    if not usable:
+        return
+    cols = []
+    for df in usable.values():
+        for c in df.select_dtypes(include="number").columns:
+            if c not in cols:
+                cols.append(c)
+    if not cols:
+        return
+    rows = []
+    for m, df in usable.items():
+        row = {"Model": m}
+        for c in cols:
+            row[c] = round(float(df[c].mean()), 3) if c in df.columns else None
+        rows.append(row)
+    ens_row = {"Model": f"ENSEMBLE (mean of {len(usable)})"}
+    for c in cols:
+        vals = [r[c] for r in rows if r.get(c) is not None]
+        ens_row[c] = round(sum(vals) / len(vals), 3) if vals else None
+    rows.append(ens_row)
+    print("        Per-model period means (→ ensemble mean):")
+    for line in pd.DataFrame(rows).fillna("n/a").to_string(index=False).splitlines():
+        print(f"        {line}")
+
 MONTH_LABELS = ["Jan","Feb","Mar","Apr","May","Jun",
                 "Jul","Aug","Sep","Oct","Nov","Dec"]
 
@@ -508,6 +539,7 @@ def compare_sources(sources, lat=None, lon=None, start=None, end=None,
                     if not per_model:
                         print("  ⚠️   nex_gddp ensemble: no models returned usable data.")
                         continue
+                    _print_nex_model_breakdown(per_model)
                     df = _build_nex_ensemble(per_model)
                     print(f"  ✅  Ensemble mean over {len(per_model)} model(s): "
                           f"{', '.join(per_model)}")

@@ -25,6 +25,7 @@ Dependencies: pandas, matplotlib (optional, for plots), preprocess_data pipeline
 
 import sys
 import os
+import math
 from datetime import date
 from typing import Dict, List, Any, Tuple, Optional
 import pandas as pd
@@ -64,6 +65,24 @@ PALETTE = {
     'tmin': '#3BB273',
 }
 
+# NEX-GDDP-CMIP6 ensemble — 16 models + canonical SSP scenario labels.
+NEX_GDDP_MODELS: List[str] = [
+    'ACCESS-CM2', 'ACCESS-ESM1-5', 'CanESM5', 'CMCC-ESM2',
+    'EC-Earth3', 'EC-Earth3-Veg-LR', 'GFDL-ESM4', 'INM-CM4-8',
+    'INM-CM5-0', 'KACE-1-0-G', 'MIROC6', 'MPI-ESM1-2-LR',
+    'MRI-ESM2-0', 'NorESM2-LM', 'NorESM2-MM', 'TaiESM1',
+]
+SSP_SCENARIOS: List[str] = ['ssp126', 'ssp245', 'ssp585', 'historical']
+SCENARIO_ALIASES: Dict[str, str] = {
+    'SSP1-2.6': 'ssp126', 'SSP2-4.5': 'ssp245', 'SSP5-8.5': 'ssp585',
+    'ssp126': 'ssp126', 'ssp245': 'ssp245', 'ssp585': 'ssp585',
+    'historical': 'historical',
+}
+
+def _normalize_scenario(s: str) -> Optional[str]:
+    """Map any accepted SSP alias to the canonical scenario string, else None."""
+    return SCENARIO_ALIASES.get(s.strip()) if isinstance(s, str) else None
+
 def _detect_columns(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Return (precip_col, tmax_col, tmin_col) found in df, or None for each missing."""
     precip = next((c for c in PRECIP_COL_CANDIDATES if c in df.columns), None)
@@ -85,7 +104,10 @@ def calculate_annual_statistics(
     lon: float,
     year: int,
     source: str,
-    variables: Optional[List] = None
+    variables: Optional[List] = None,
+    model: Optional[str] = None,
+    scenario: Optional[str] = None,
+    verbose: bool = True
 ) -> Optional[Dict[str, Any]]:
     """
     Calculate annual statistics for a single year.
@@ -96,33 +118,42 @@ def calculate_annual_statistics(
         year: Year to analyze
         source: Data source
         variables: List of ClimateVariable enums to fetch
+        model: NEX-GDDP model name (only used when source == 'nex_gddp')
+        scenario: NEX-GDDP SSP scenario (only used when source == 'nex_gddp')
     Returns:
         Dictionary with annual statistics or None if failed
     """
     if not PREPROCESS_AVAILABLE:
         raise Exception("Preprocessing pipeline required")
-    
+
     if variables is None:
         variables = [
             ClimateVariable.precipitation,
             ClimateVariable.max_temperature,
             ClimateVariable.min_temperature
         ]
-    
+
     try:
         date_from = date(year, 1, 1)
         date_to = date(year, 12, 31)
-        
+
+        fetch_kwargs: Dict[str, Any] = {}
+        if model is not None:
+            fetch_kwargs['model'] = model
+        if scenario is not None:
+            fetch_kwargs['scenario'] = scenario
         df = preprocess_data(
             source=source,
             location_coord=(lat, lon),
             variables=variables,
             date_from=date_from,
-            date_to=date_to
+            date_to=date_to,
+            **fetch_kwargs
         )
         
-        if df.empty or len(df) < 300:  # At least 300 days for valid annual stats
-            print(f"  ✗ {year}: Insufficient data ({len(df)} days)")
+        if df.empty or len(df) < 300:  
+            if verbose:
+                print(f"  ✗ {year}: Insufficient data ({len(df)} days)")
             return None
 
         precip_col, tmax_col, tmin_col = _detect_columns(df)
@@ -165,7 +196,8 @@ def calculate_annual_statistics(
                 has_data = True
 
         if not has_data:
-            print(f"  ✗ {year}: No valid precipitation or temperature data")
+            if verbose:
+                print(f"  ✗ {year}: No valid precipitation or temperature data")
             return None
 
         stats['year'] = year
@@ -176,7 +208,8 @@ def calculate_annual_statistics(
         return stats
         
     except Exception as e:
-        print(f"  ✗ {year}: {str(e)}")
+        if verbose:
+            print(f"  ✗ {year}: {str(e)}")
         return None
 
 def compute_monthly_climatology(
@@ -382,7 +415,10 @@ def calculate_climatology(
     end_year: int,
     source: str,
     variables: Optional[List] = None,
-    output_dir: Optional[str] = None
+    output_dir: Optional[str] = None,
+    model: Optional[str] = None,
+    scenario: Optional[str] = None,
+    verbose: bool = True
 ) -> Dict[str, Any]:
     """
     Calculate long-term climatology (multi-year normals).
@@ -393,6 +429,9 @@ def calculate_climatology(
         end_year: End year of climatology period (inclusive)
         source: Data source identifier
         variables: Optional list of ClimateVariable enums
+        model: NEX-GDDP model name (only used when source == 'nex_gddp')
+        scenario: NEX-GDDP SSP scenario (only used when source == 'nex_gddp')
+        verbose: Print progress headers (set False for per-model ensemble runs)
     Returns:
         Dictionary containing:
         - annual_statistics: List of annual stats for each year
@@ -401,38 +440,41 @@ def calculate_climatology(
     """
     lat, lon = location_coord
     n_years = end_year - start_year + 1
-    
-    print(f"\n{'='*70}")
-    print(f"  CALCULATING {n_years}-YEAR CLIMATOLOGY")
-    print(f"{'='*70}")
-    print(f"  Location: ({lat:.4f}, {lon:.4f})")
-    print(f"  Period: {start_year}-{end_year}")
-    print(f"  Source: {source}")
-    print(f"{'='*70}\n")
-    
-    print(f"  Processing {n_years} years...\n")
-    
+
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"  CALCULATING {n_years}-YEAR CLIMATOLOGY")
+        print(f"{'='*70}")
+        print(f"  Location: ({lat:.4f}, {lon:.4f})")
+        print(f"  Period: {start_year}-{end_year}")
+        print(f"  Source: {source}")
+        print(f"{'='*70}\n")
+        print(f"  Processing {n_years} years...\n")
+
     annual_stats = []
-    
+
     for year in range(start_year, end_year + 1):
-        print(f"  [{year - start_year + 1}/{n_years}] {year}...", end=' ')
-        
-        stats = calculate_annual_statistics(lat, lon, year, source, variables)
-        
+        if verbose:
+            print(f"  [{year - start_year + 1}/{n_years}] {year}...", end=' ')
+
+        stats = calculate_annual_statistics(lat, lon, year, source, variables,
+                                            model=model, scenario=scenario,
+                                            verbose=verbose)
         if stats:
             annual_stats.append(stats)
-            print("✓")
+            if verbose:
+                print("✓")
+
+    if verbose:
+        print(f"\n  Complete: {len(annual_stats)}/{n_years} years with valid data\n")
     
-    print(f"\n  Complete: {len(annual_stats)}/{n_years} years with valid data\n")
-    
-    if len(annual_stats) < n_years * 0.8:  # Need at least 80% of years
+    if len(annual_stats) < n_years * 0.8:  
         return {
             'error': f'Insufficient data: only {len(annual_stats)}/{n_years} years available',
             'location': {'latitude': lat, 'longitude': lon},
             'period': {'start_year': start_year, 'end_year': end_year},
             'source': source
         }
-    
     # Calculate climatology (long-term means)
     climatology = {}
     
@@ -721,6 +763,305 @@ def print_climatology_report(result: Dict[str, Any]):
 
     print(f"{'='*70}\n")
 
+# NEX-GDDP ensemble: average per-model climatologies and surface the per-model spread
+def _is_number(v: Any) -> bool:
+    return (isinstance(v, (int, float)) and not isinstance(v, bool)
+            and not (isinstance(v, float) and math.isnan(v)))
+
+def _avg_numeric(vals: List[Any], nd: int = 2) -> Optional[float]:
+    nums = [float(v) for v in vals if _is_number(v)]
+    return round(sum(nums) / len(nums), nd) if nums else None
+
+def _avg_flat(dicts: List[Optional[Dict[str, Any]]], nd: int = 2) -> Dict[str, Any]:
+    """Average matching numeric keys across a list of flat {key: number} dicts."""
+    keys: List[str] = []
+    for d in dicts:
+        for k in (d or {}):
+            if k not in keys:
+                keys.append(k)
+    out: Dict[str, Any] = {}
+    for k in keys:
+        avg = _avg_numeric([(d or {}).get(k) for d in dicts], nd)
+        if avg is not None:
+            out[k] = avg
+    return out
+
+def _avg_monthly(dicts: List[Optional[Dict[int, Dict]]], nd: int = 2) -> Dict[int, Dict]:
+    """Average a {month: {metric: value}} structure across models."""
+    months = sorted({m for d in dicts for m in (d or {})})
+    return {m: _avg_flat([(d or {}).get(m, {}) for d in dicts], nd) for m in months}
+
+def _avg_series(dicts: List[Optional[Dict[Any, Any]]], nd: int = 2) -> Dict[Any, float]:
+    """Average a {year: value} series across models."""
+    years = sorted({y for d in dicts for y in (d or {})})
+    out: Dict[Any, float] = {}
+    for y in years:
+        avg = _avg_numeric([(d or {}).get(y) for d in dicts], nd)
+        if avg is not None:
+            out[y] = avg
+    return out
+
+def calculate_climatology_ensemble(
+    location_coord: Tuple[float, float],
+    start_year: int,
+    end_year: int,
+    scenario: str,
+    variables: Optional[List] = None,
+    models: Optional[List[str]] = None,
+    exclude_models: Optional[List[str]] = None,
+    output_dir: Optional[str] = None,
+    verbose: bool = True,
+) -> Dict[str, Any]:
+    """
+    NEX-GDDP-CMIP6 ensemble climatology.
+    Runs calculate_climatology() once per model under the given SSP scenario, then ensemble-averages the per-model climatology / monthly climatology / annual
+    time series / trends. Default model set is all 16 CMIP6 models; pass `models` to subset or `exclude_models` to drop. The per-model results are retained under
+    `per_model_climatology` so the ensemble = mean of per-model values is inspectable.
+    """
+    lat, lon = location_coord
+    canon = _normalize_scenario(scenario) or scenario
+    active = list(models) if models else list(NEX_GDDP_MODELS)
+    if exclude_models:
+        excl = {m.upper() for m in exclude_models}
+        active = [m for m in active if m.upper() not in excl]
+    if not active:
+        return {'error': 'No models selected after filtering.'}
+
+    n_years = end_year - start_year + 1
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"  NEX-GDDP CMIP6 ENSEMBLE CLIMATOLOGY ({n_years}-year)")
+        print(f"{'='*70}")
+        print(f"  Location : ({lat:.4f}, {lon:.4f})")
+        print(f"  Period   : {start_year}-{end_year}")
+        print(f"  Scenario : {canon}")
+        print(f"  Models   : {len(active)}")
+        print(f"{'='*70}\n")
+
+    per_model_results: Dict[str, Dict[str, Any]] = {}
+    failed: List[Dict[str, str]] = []
+    for i, model in enumerate(active, 1):
+        if verbose:
+            print(f"  [{i:02d}/{len(active):02d}] {model:<22}", end=' ', flush=True)
+        try:
+            r = calculate_climatology(
+                location_coord=(lat, lon),
+                start_year=start_year, end_year=end_year,
+                source='nex_gddp', variables=variables,
+                output_dir=None, model=model, scenario=canon,
+                verbose=False,
+            )
+            if 'error' in r:
+                failed.append({'model': model, 'error': r['error']})
+                if verbose:
+                    print(f"✗  {r['error']}")
+                continue
+            per_model_results[model] = r
+            if verbose:
+                yrs = r['period']['years_with_data']
+                print(f"✓  {yrs}/{n_years} years")
+        except Exception as exc:
+            failed.append({'model': model, 'error': str(exc)})
+            if verbose:
+                print(f"✗  {exc}")
+
+    if not per_model_results:
+        return {'error': 'All models failed.', 'failed_models': failed,
+                'location': {'latitude': lat, 'longitude': lon},
+                'period': {'start_year': start_year, 'end_year': end_year},
+                'source': 'nex_gddp', 'scenario': canon}
+
+    models_ok = list(per_model_results)
+    results_list = list(per_model_results.values())
+
+    # Ensemble-average the climatology blocks
+    climatology: Dict[str, Any] = {}
+    precip_blocks = [r['climatology'].get('precipitation') for r in results_list
+                     if r.get('climatology', {}).get('precipitation')]
+    if precip_blocks:
+        climatology['precipitation'] = _avg_flat(precip_blocks)
+    temp_blocks = [r['climatology'].get('temperature') for r in results_list
+                   if r.get('climatology', {}).get('temperature')]
+    if temp_blocks:
+        climatology['temperature'] = _avg_flat(temp_blocks)
+    # years_used is a count, not a mean — report it as an int
+    for _blk in climatology.values():
+        if _is_number(_blk.get('years_used')):
+            _blk['years_used'] = int(round(_blk['years_used']))
+
+    # Monthly climatology
+    monthly: Dict[str, Any] = {}
+    mp = [(r.get('monthly_climatology') or {}).get('precipitation') for r in results_list]
+    mp = [x for x in mp if x]
+    if mp:
+        monthly['precipitation'] = _avg_monthly(mp)
+    mt = [(r.get('monthly_climatology') or {}).get('temperature') for r in results_list]
+    mt = [x for x in mt if x]
+    if mt:
+        monthly['temperature'] = _avg_monthly(mt)
+
+    # Trends
+    trend_dicts = [r.get('trends') for r in results_list if r.get('trends')]
+    trends = _avg_flat(trend_dicts, 4) if trend_dicts else {}
+
+    # Annual time series (per year, averaged across models)
+    series_keys: List[str] = []
+    for r in results_list:
+        for k in (r.get('annual_time_series') or {}):
+            if k not in series_keys:
+                series_keys.append(k)
+    annual_time_series = {
+        k: _avg_series([(r.get('annual_time_series') or {}).get(k, {})
+                        for r in results_list])
+        for k in series_keys
+    }
+
+    available_vars = list(climatology.keys())
+    source_label = f"nex_gddp ensemble ({len(models_ok)} models, {canon})"
+    years_with_data = int(round(mean(r['period']['years_with_data']
+                                     for r in results_list)))
+
+    # Plots from the ensemble-mean series (reconstruct an annual_stats shape)
+    plots_written: List[str] = []
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        period_label = f"{start_year}-{end_year}"
+        pt   = annual_time_series.get('precipitation_total_mm', {})
+        tavg = annual_time_series.get('tavg_c', {})
+        tmax = annual_time_series.get('tmax_c', {})
+        tmin = annual_time_series.get('tmin_c', {})
+        synth: List[Dict[str, Any]] = []
+        for y in sorted({*pt, *tavg, *tmax, *tmin}):
+            s: Dict[str, Any] = {'year': y}
+            if y in pt:
+                s['precipitation'] = {'annual_total_mm': pt[y]}
+            if y in tavg:
+                s['temperature'] = {
+                    'annual_mean_tavg_c': tavg.get(y),
+                    'annual_mean_tmax_c': tmax.get(y),
+                    'annual_mean_tmin_c': tmin.get(y),
+                }
+            synth.append(s)
+        tag = f"nex_gddp_ensemble_{canon}"
+        annual_path = os.path.join(output_dir, f"{tag}_{period_label}_annual_timeseries.png")
+        if synth and plot_annual_timeseries(synth, source_label, period_label, annual_path):
+            plots_written.append(annual_path)
+        monthly_path = os.path.join(output_dir, f"{tag}_{period_label}_monthly_climatology.png")
+        if monthly and plot_monthly_climatology(monthly, source_label, period_label, monthly_path):
+            plots_written.append(monthly_path)
+
+    return {
+        'location': {'latitude': lat, 'longitude': lon},
+        'period': {
+            'start_year': start_year, 'end_year': end_year,
+            'n_years': n_years, 'years_with_data': years_with_data,
+        },
+        'source': source_label,
+        'scenario': canon,
+        'ensemble': True,
+        'models_used': models_ok,
+        'models_failed': failed,
+        'n_models_ok': len(models_ok),
+        'available_variables': available_vars,
+        'climatology': climatology,
+        'monthly_climatology': monthly if monthly else None,
+        'trends': trends if trends else None,
+        'annual_time_series': annual_time_series if annual_time_series else None,
+        'per_model_climatology': {m: r['climatology'] for m, r in per_model_results.items()},
+        'plots': plots_written if plots_written else None,
+        'metadata': {
+            'wmo_standard': n_years == 30,
+            'data_completeness_pct': round(years_with_data / n_years * 100, 1),
+            'variables': ', '.join(available_vars),
+            'ensemble_models': models_ok,
+            'scenario': canon,
+        },
+    }
+
+def _print_per_model_climatology_breakdown(result: Dict[str, Any]) -> None:
+    """
+    Show each model's annual climatology before the ensemble mean, so the reader
+    can verify the ENSEMBLE row equals the column means of the per-model rows.
+    """
+    per_model = result.get('per_model_climatology') or {}
+    if not per_model:
+        return
+    clim = result.get('climatology') or {}
+
+    def _f(v, nd=2):
+        return f"{v:.{nd}f}" if _is_number(v) else "n/a"
+
+    print(f"\n  {'─'*66}")
+    print(f"  PER-MODEL BREAKDOWN ({len(per_model)} model(s)) → feeds the ensemble means")
+    print(f"  {'─'*66}")
+
+    if any((c or {}).get('precipitation') for c in per_model.values()):
+        print(f"\n  Precipitation (annual):")
+        rows = []
+        for name, c in per_model.items():
+            p = (c or {}).get('precipitation') or {}
+            rows.append({
+                'Model':         name,
+                'AnnTotal_mm':   _f(p.get('mean_annual_total_mm')),
+                'MedTotal_mm':   _f(p.get('median_annual_total_mm')),
+                'Std_mm':        _f(p.get('std_annual_total_mm')),
+                'MeanDaily_mm':  _f(p.get('mean_daily_mm')),
+            })
+        ep = clim.get('precipitation') or {}
+        rows.append({
+            'Model':         f"ENSEMBLE (mean of {len(per_model)})",
+            'AnnTotal_mm':   _f(ep.get('mean_annual_total_mm')),
+            'MedTotal_mm':   _f(ep.get('median_annual_total_mm')),
+            'Std_mm':        _f(ep.get('std_annual_total_mm')),
+            'MeanDaily_mm':  _f(ep.get('mean_daily_mm')),
+        })
+        for line in pd.DataFrame(rows).to_string(index=False).splitlines():
+            print(f"    {line}")
+
+    if any((c or {}).get('temperature') for c in per_model.values()):
+        print(f"\n  Temperature (annual):")
+        rows = []
+        for name, c in per_model.items():
+            t = (c or {}).get('temperature') or {}
+            rows.append({
+                'Model':      name,
+                'Tavg_c':     _f(t.get('mean_annual_tavg_c')),
+                'Tmax_c':     _f(t.get('mean_annual_tmax_c')),
+                'Tmin_c':     _f(t.get('mean_annual_tmin_c')),
+                'StdTavg_c':  _f(t.get('std_annual_tavg_c')),
+            })
+        et = clim.get('temperature') or {}
+        rows.append({
+            'Model':      f"ENSEMBLE (mean of {len(per_model)})",
+            'Tavg_c':     _f(et.get('mean_annual_tavg_c')),
+            'Tmax_c':     _f(et.get('mean_annual_tmax_c')),
+            'Tmin_c':     _f(et.get('mean_annual_tmin_c')),
+            'StdTavg_c':  _f(et.get('std_annual_tavg_c')),
+        })
+        for line in pd.DataFrame(rows).to_string(index=False).splitlines():
+            print(f"    {line}")
+
+def print_ensemble_climatology_report(result: Dict[str, Any]) -> None:
+    """Print the per-model breakdown, then the ensemble-mean climatology report."""
+    if 'error' in result:
+        print(f"\nError: {result['error']}")
+        for f in result.get('failed_models', []) or []:
+            print(f"  - {f.get('model')}: {f.get('error')}")
+        return
+
+    n_ok = result.get('n_models_ok', 0)
+    n_fail = len(result.get('models_failed') or [])
+    print(f"\n{'='*70}")
+    print(f"  ENSEMBLE CLIMATOLOGY: NEX-GDDP CMIP6  "
+          f"| scenario={result.get('scenario')}  | {n_ok}/{n_ok + n_fail} models ok")
+    print(f"{'='*70}")
+    if result.get('models_failed'):
+        failed_names = ', '.join(f['model'] for f in result['models_failed'])
+        print(f"  Failed: {failed_names}")
+
+    _print_per_model_climatology_breakdown(result)
+    print_climatology_report(result)
+
 def main():
     """Command-line interface for climatology analysis."""
     parser = argparse.ArgumentParser(
@@ -729,13 +1070,13 @@ def main():
         epilog="""
 Examples:
   # Calculate 1991-2020 climatology (current WMO standard)
-  python3 -m climate_tookit.climatology.long_term_climatology --location="-1.286,36.817" --start-year 1991 --end-year 2020 --source nasa_power
   
   # Calculate with JSON output
-  python3 -m climate_tookit.climatology.long_term_climatology --location="-1.286,36.817" --start-year 1991 --end-year 2020 --source nasa_power --format json --output climatology_1991-2020.json
+
+  # NEX-GDDP runs the 16-model ensemble (averaged); pick scenario(s) and models
         """
     )
-    
+
     parser.add_argument('--location', required=True, type=str,
                        help='Location as "lat,lon" (e.g., "-1.286,36.817")')
     parser.add_argument('--start-year', required=True, type=int,
@@ -743,7 +1084,18 @@ Examples:
     parser.add_argument('--end-year', required=True, type=int,
                        help='End year of climatology period (inclusive)')
     parser.add_argument('--source', required=True, type=str,
-                       help='Data source (e.g., nasa_power, chirps, chirts)')
+                       help='Data source (e.g., nasa_power, chirps, chirts). '
+                            "'nex_gddp' runs the CMIP6 ensemble (averaged across models).")
+    parser.add_argument('--scenarios', type=str, default='ssp245',
+                       metavar='ssp245[,ssp585]',
+                       help='NEX-GDDP only. Comma-separated SSP scenarios. Canonical: '
+                            f"{', '.join(SSP_SCENARIOS)} (default: ssp245). "
+                            'Aliases also accepted: SSP1-2.6, SSP2-4.5, SSP5-8.5.')
+    parser.add_argument('--models', type=str, default=None,
+                       help='NEX-GDDP only. Comma-separated subset of CMIP6 models '
+                            '(default: all 16).')
+    parser.add_argument('--exclude-models', type=str, default=None,
+                       help='NEX-GDDP only. Comma-separated CMIP6 models to drop.')
     parser.add_argument('--format', choices=['text', 'json'], default='text',
                        help='Output format (default: text)')
     parser.add_argument('--output', type=str,
@@ -751,28 +1103,88 @@ Examples:
     parser.add_argument('--output-dir', type=str, default='./outputs',
                        help='Directory for plot PNGs (default: ./outputs). '
                             'Pass empty string to disable plotting.')
-    
+
     args = parser.parse_args()
-    
+
     # Parse location
     try:
         lat, lon = map(float, args.location.split(','))
     except ValueError:
         print("Error: Invalid location format. Use 'lat,lon' format.")
         sys.exit(1)
-    
+
     # Validate years
     if args.end_year < args.start_year:
         print("Error: End year must be >= start year")
         sys.exit(1)
-    
+
     n_years = args.end_year - args.start_year + 1
     if n_years < 10:
         print(f"Warning: {n_years} years may be insufficient for robust climatology")
         print("         WMO recommends 30-year periods for climate normals")
-    
-    # Calculate climatology
+
     plot_dir = args.output_dir if args.output_dir else None
+
+    # NEX-GDDP -> ensemble across models, one result per requested scenario.
+    if args.source == 'nex_gddp':
+        sub_models = [m.strip() for m in args.models.split(',')] if args.models else None
+        excl = [m.strip() for m in args.exclude_models.split(',')] if args.exclude_models else None
+
+        raw_scenarios = [s.strip() for s in args.scenarios.split(',') if s.strip()]
+        scenarios: List[str] = []
+        invalid: List[str] = []
+        for s in raw_scenarios:
+            canon = _normalize_scenario(s)
+            if canon and canon not in scenarios:
+                scenarios.append(canon)
+            elif not canon:
+                invalid.append(s)
+        if invalid:
+            print(f"Error: invalid scenario(s) {invalid}. "
+                  f"Accepted: {sorted(SCENARIO_ALIASES)}")
+            sys.exit(1)
+        if not scenarios:
+            print("Error: no scenarios provided.")
+            sys.exit(1)
+
+        all_results: Dict[str, Any] = {}
+        any_ok = False
+        for scenario in scenarios:
+            result = calculate_climatology_ensemble(
+                location_coord=(lat, lon),
+                start_year=args.start_year,
+                end_year=args.end_year,
+                scenario=scenario,
+                models=sub_models,
+                exclude_models=excl,
+                output_dir=plot_dir,
+                verbose=(args.format != 'json'),
+            )
+            all_results[scenario] = result
+            if 'error' not in result:
+                any_ok = True
+            if args.format != 'json':
+                print_ensemble_climatology_report(result)
+
+        payload = (all_results[scenarios[0]] if len(scenarios) == 1 else all_results)
+        if args.format == 'json':
+            output = json.dumps(payload, indent=2, default=str)
+            if args.output:
+                with open(args.output, 'w') as f:
+                    f.write(output)
+                print(f"\n✓ Climatology saved to {args.output}")
+            else:
+                print(output)
+        elif args.output:
+            with open(args.output, 'w') as f:
+                json.dump(payload, f, indent=2, default=str)
+            print(f"✓ JSON data saved to {args.output}")
+
+        if not any_ok:
+            sys.exit(1)
+        return
+
+    # Single-source climatology (non-NEX-GDDP)
     result = calculate_climatology(
         location_coord=(lat, lon),
         start_year=args.start_year,
@@ -783,7 +1195,7 @@ Examples:
     # Output
     if args.format == 'json':
         output = json.dumps(result, indent=2, default=str)
-        
+
         if args.output:
             with open(args.output, 'w') as f:
                 f.write(output)
@@ -792,7 +1204,7 @@ Examples:
             print(output)
     else:
         print_climatology_report(result)
-        
+
         if args.output:
             with open(args.output, 'w') as f:
                 json.dump(result, f, indent=2, default=str)
@@ -802,7 +1214,11 @@ if __name__ == "__main__":
     main()
     
 # Calculate 1991-2020 climatology (current WMO standard)
-# python -m climate_tookit.climatology.long_term_climatology --location="-1.286,36.817" --start-year 1991 --end-year 2020 --source era_5
+# python -m climate_tookit.climatology.long_term_climatology --location="-1.286,36.817" --start-year 1991 --end-year 2020 --source nasa_power
+
+# NEX-GDDP runs the 16-model CMIP6 ensemble (averaged); the 1st picks scenarios, the 2nd also subsets models:
+# python -m climate_tookit.climatology.long_term_climatology --location="-1.286,36.817" --start-year 2040 --end-year 2069 --source nex_gddp --scenarios ssp245,ssp585
+# python -m climate_tookit.climatology.long_term_climatology --location="-1.286,36.817" --start-year 2040 --end-year 2069 --source nex_gddp --scenarios ssp585 --models "ACCESS-CM2,EC-Earth3,MRI-ESM2-0"
 
 # With JSON output
 # python -m climate_tookit.climatology.long_term_climatology --location="-1.286,36.817" --start-year 1991 --end-year 2020 --source nasa_power --format json --output climatology_1991-2020.json

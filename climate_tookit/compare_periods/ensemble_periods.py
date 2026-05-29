@@ -137,9 +137,7 @@ def _diff_annual_period(future_ann:    Dict[str, Dict],
     return out
 
 # The architecture asks for three season-summary comparisons:
-#   Baseline LTM vs Future LTM -> the main ensemble output below (future_avg - baseline_avg)
-#   Focal vs Baseline LTM      -> the helpers here (focal_vs_baseline)
-#   Focal vs Future LTM        -> the helpers here (focal_vs_future)
+#   Baseline LTM vs Future LTM, Focal vs Baseline LTM, Focal vs Future LTM
 def _diff_value_2level(a: Dict[str, Dict[str, Any]],
                        b: Dict[str, Dict[str, Any]],
                        a_lbl: str, b_lbl: str,
@@ -680,6 +678,7 @@ def ensemble_compare(
         "models_used":     [r["_model"] for r in per_model],
         "models_failed":   failed,
         "n_models_ok":     len(per_model),
+        "per_model_results": per_model,
         "raw_climate_summary": _aggregate_2level(
             [r.get("raw_climate_summary", {}) for r in per_model], round_n=3),
         "overall_statistics":  _aggregate_2level(
@@ -796,6 +795,26 @@ def _print_focal_vs_ltm(avl: Dict[str, Any]) -> None:
         if hs.get("focal_humid_test"):
             print(f"                    test: {hs['focal_humid_test']}")
 
+def _print_per_model_breakdown(per_model: List[Dict[str, Any]]) -> None:
+    """
+    Show each model's own future-vs-baseline diff before the ensemble means.
+    Mirrors the ensemble sections (overall statistics + annual rainfall) so the reader can see what each model contributes to the averages printed below.
+    """
+    if not per_model:
+        return
+    print(f"\n{'=' * 60}")
+    print(f"PER-MODEL BREAKDOWN ({len(per_model)} model(s)) — feeds the ensemble means below")
+    print(f"{'=' * 60}")
+    for r in per_model:
+        print(f"\n  Model: {r.get('_model')}")
+        print(f"  --- Overall statistics (annualised) ---")
+        _print_diff_block(r.get("overall_statistics", {}))
+        arm = (r.get("annual_summary") or {}).get("annual_rain_mm") or {}
+        if _is_num(arm.get("future")) and _is_num(arm.get("baseline_avg")):
+            print(f"  Annual rainfall : future={arm['future']:.1f} mm | "
+                  f"baseline={arm['baseline_avg']:.1f} mm | "
+                  f"Δ={arm.get('diff', 0):+.1f} ({arm.get('pct', 0):+.2f}%)")
+
 def print_report(r: Dict[str, Any]) -> None:
     if "error" in r:
         print(f"\nError: {r['error']}")
@@ -812,6 +831,8 @@ def print_report(r: Dict[str, Any]) -> None:
     print(f"  Δ        : future_ltm - baseline_ltm")
     if r["models_failed"]:
         print(f"  Failed   : {', '.join(f['model'] for f in r['models_failed'])}")
+
+    _print_per_model_breakdown(r.get("per_model_results", []))
 
     print(f"\n--- 1. RAW CLIMATE SUMMARY (ensemble) ---")
     _print_2level(r.get("raw_climate_summary", {}),

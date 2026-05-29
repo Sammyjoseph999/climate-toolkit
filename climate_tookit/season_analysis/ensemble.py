@@ -458,6 +458,61 @@ def _d(v):   return f"{int(round(v))} days" if v is not None else "n/a"
 def _ct(v):  return f"{int(round(v))}" if v is not None else "n/a"
 def _len(v): return f"{int(round(v))}d" if v is not None else "?d"
 
+def _num(v, nd=1):
+    """Format a numeric value, or 'n/a' for None/NaN — used in the per-model tables."""
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return "n/a"
+    return f"{v:.{nd}f}"
+
+def _print_model_breakdown(payload, n_models):
+    """
+    Show each model's per-period season means (Stage 1) before the ensemble (Stage 2).
+    One table per season slot: one row per model, then the ENSEMBLE mean row, so the reader can verify the ensemble row equals the column means of the per-model rows.
+    """
+    model_averages = payload.get('model_averages') or []
+    ens            = payload['ensemble']
+    if not model_averages or not ens.get('seasons'):
+        return
+    print(f"\n  {'─' * 66}")
+    print(f"  PER-MODEL BREAKDOWN (each model's per-year values averaged over the period)")
+    print(f"  {'─' * 66}")
+    for s in ens['seasons']:
+        idx = s['season_index']
+        print(f"\n  Season {idx}:")
+        rows = []
+        for ma in model_averages:
+            slot = next((x for x in ma.get('seasons', []) if x['season_index'] == idx), None)
+            if slot is None:
+                rows.append({'Model': ma.get('model'), 'onset': 'n/a', 'cessation': 'n/a',
+                             'regime': 'n/a', 'rain_mm': 'n/a', 'rainy_d': 'n/a',
+                             'dry_d': 'n/a', 'dry_spells': 'n/a', 'len_d': 'n/a'})
+                continue
+            rows.append({
+                'Model':      ma.get('model'),
+                'onset':      slot.get('onset') or 'n/a',
+                'cessation':  slot.get('cessation') or 'open',
+                'regime':     slot.get('regime') or '?',
+                'rain_mm':    _num(slot.get('total_rainfall_mm'), 1),
+                'rainy_d':    _num(slot.get('rainy_days'), 1),
+                'dry_d':      _num(slot.get('dry_days'), 1),
+                'dry_spells': _num(slot.get('dry_spells'), 1),
+                'len_d':      _num(slot.get('length_days'), 0),
+            })
+        ens_regime = (max(s['regime_counts'], key=s['regime_counts'].get)
+                      if s.get('regime_counts') else '?')
+        rows.append({
+            'Model':      f"ENSEMBLE (mean of {s['n_models']}/{n_models})",
+            'onset':      s.get('avg_onset') or 'n/a',
+            'cessation':  s.get('avg_cessation') or 'open',
+            'regime':     ens_regime,
+            'rain_mm':    _num(s.get('total_rainfall_mm'), 1),
+            'rainy_d':    _num(s.get('rainy_days'), 1),
+            'dry_d':      _num(s.get('dry_days'), 1),
+            'dry_spells': _num(s.get('dry_spells'), 1),
+            'len_d':      _num(s.get('length_days'), 0),
+        })
+        print(pd.DataFrame(rows).to_string(index=False))
+
 def _humid_line(annual, low_months):
     """Apply the humid test (annual > 1400 AND low-rain months ≤ 3) to ensemble means."""
     HUMID_RAIN, HUMID_LRM = 1400, 3
@@ -499,6 +554,11 @@ def print_summary(results):
             print("  No seasons to aggregate.")
             continue
 
+        _print_model_breakdown(payload, n_models)
+
+        print(f"\n  {'─' * 66}")
+        print(f"  ENSEMBLE MEAN (across models)")
+        print(f"  {'─' * 66}")
         for s in ens['seasons']:
             idx    = s['season_index']
             regime = max(s['regime_counts'], key=s['regime_counts'].get) if s['regime_counts'] else "?"
