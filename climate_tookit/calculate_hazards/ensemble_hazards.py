@@ -289,6 +289,18 @@ def calculate_ensemble(crop: str, lat: float, lon: float,
         ends    = sorted(pd.to_datetime(r['season_info']['end'])   for r in bucket)
         lengths = [r['season_info']['length_days'] for r in bucket]
         total   = max(r['season_info']['total'] for r in bucket)
+        projections = []
+        for r in bucket:
+            st = r.get('season_statistics', {})
+            projections.append({
+                'model':                  r['projection']['model'],
+                'scenario':               r['projection']['scenario'],
+                'total_precipitation_mm': st.get('total_precipitation_mm'),
+                'rainy_days':             st.get('rainy_days'),
+                'mean_temperature_c':     st.get('mean_temperature_c'),
+                'mean_tmax_c':            st.get('mean_tmax_c'),
+                'mean_tmin_c':            st.get('mean_tmin_c'),
+            })
         assessments.append({
             'year':                   y,
             'season_number':          sn,
@@ -299,6 +311,7 @@ def calculate_ensemble(crop: str, lat: float, lon: float,
                 'end_median':       ends[len(ends)     // 2].strftime('%Y-%m-%d'),
                 'length_days_mean': round(mean(lengths), 1),
             },
+            'projections':       projections,
             'season_statistics': agg,
             'hazard_evaluation': _avg_hazards(crop, agg),
         })
@@ -332,6 +345,44 @@ def _bucket_key(b: str) -> int:
     except (ValueError, IndexError):
         return 999
 
+def _fmt(v, nd=2):
+    """Format a numeric value, or 'n/a' for None — used in per-projection tables."""
+    return f"{v:.{nd}f}" if isinstance(v, (int, float)) else "n/a"
+
+def _print_projection_breakdown(a: Dict) -> None:
+    """
+    Show each contributing (model, scenario) projection before the ensemble means,
+    so the reader can see what feeds the averages for this year/season.
+    """
+    projections = a.get('projections') or []
+    if not projections:
+        return
+    print(f"\n  Per-Projection Breakdown  ({len(projections)} projection(s) → ensemble mean)")
+    print(f"  {'─'*66}")
+    rows = []
+    for p in projections:
+        rows.append({
+            'Model':    p.get('model'),
+            'Scenario': p.get('scenario'),
+            'Precip_mm': _fmt(p.get('total_precipitation_mm')),
+            'Rainy_d':   _fmt(p.get('rainy_days')),
+            'Tmean_c':   _fmt(p.get('mean_temperature_c')),
+            'Tmax_c':    _fmt(p.get('mean_tmax_c')),
+            'Tmin_c':    _fmt(p.get('mean_tmin_c')),
+        })
+    s = a['season_statistics']
+    rows.append({
+        'Model':     f"ENSEMBLE (mean of {len(projections)})",
+        'Scenario':  '',
+        'Precip_mm': _fmt(s.get('total_precipitation_mm')),
+        'Rainy_d':   _fmt(s.get('rainy_days')),
+        'Tmean_c':   _fmt(s.get('mean_temperature_c')),
+        'Tmax_c':    _fmt(s.get('mean_tmax_c')),
+        'Tmin_c':    _fmt(s.get('mean_tmin_c')),
+    })
+    for line in pd.DataFrame(rows).to_string(index=False).splitlines():
+        print(f"  {line}")
+
 def _print_block(a: Dict, crop: str, lat: float, lon: float,
                  mode: str, n_models: int, n_scenarios: int) -> None:
     y, sn, t = a['year'], a['season_number'], a['total_seasons_per_year']
@@ -350,6 +401,8 @@ def _print_block(a: Dict, crop: str, lat: float, lon: float,
     print(f"  Onset (median):  {w['start_median']:<20} End (median): {w['end_median']}")
     print(f"  Length (mean):   {w['length_days_mean']} days{'':10} Method: {mode}")
     print(f"  Source:          nex_gddp ({n_models} models × {n_scenarios} scenarios)")
+
+    _print_projection_breakdown(a)
 
     s = a['season_statistics']
     if 'total_precipitation_mm' in s:
