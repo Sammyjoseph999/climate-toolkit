@@ -1,12 +1,27 @@
 """
 NEX-GDDP CMIP6 Ensemble Climate Statistics
-- Runs statistics.analyze_climate_statistics() once per NEX-GDDP CMIP6 model under a given SSP scenario, then ensemble-averages each model's output into
-one cross-model result. Use for Future LTM season summaries that draw from the CMIP6 ensemble; for non-NEX-GDDP single-source LTMs, run statistics.py
-directly.
+- Runs statistics.analyze_climate_statistics() once per NEX-GDDP CMIP6 model under a given SSP scenario, then ensemble-averages each model's output
+into one cross-model result. Use for Future LTM season summaries that draw from the CMIP6 ensemble; for non-NEX-GDDP single-source LTMs, run
+statistics.py directly.
 - All climate fetch / season detection / per-season + LTM computation is delegated to statistics.py -- this module only loops over the 16 CMIP6 models
 and ensemble-averages the per-model results, then renders them with statistics.py's display functions so the output mirrors statistics.py.
-- Output shape mirrors statistics.analyze_climate_statistics(): location, period, source='nex_gddp', mode, fixed_season, scenario, season_statistics,
-ltm_season_summary, annual_summary, coverage_warning, analysis_date, methodology. Adds: ensemble=True, models_used, models_failed, n_models_ok.
+
+FUTURE LTM SEASON SUMMARY -- two-step pipeline (NOT annual ensemble / N years):
+    Step 1 (per model, inside statistics.py):
+        For each of the 16 CMIP6 models M:
+            seasons_M  = analyze_climate_statistics(source='nex_gddp', model=M, ...)
+                         -> per-year per-season metric values for the focal period.
+            LTM_M      = statistics.ltm_season_summary(seasons_M, fixed_season)
+                         -> for each season window, the long-term mean of each
+                            metric averaged across the focal years (the same LTM statistics.py prints for a single source).
+    Step 2 (cross-model, in this module):
+        ensemble_LTM   = _ensemble_average_per_model_ltms([LTM_1, ..., LTM_16])
+                         -> for each season window, the simple mean across theper-model LTMs (each model weighted equally).
+The per-model LTMs feeding step 2 are exposed on the result dict under `per_model_ltm` so callers can verify the ensemble = mean of per-model values.
+
+Output shape mirrors statistics.analyze_climate_statistics(): location, period, source='nex_gddp', mode, fixed_season, scenario, season_statistics,
+ltm_season_summary, annual_summary, coverage_warning, analysis_date, methodology. Adds: ensemble=True, models_used, models_failed, n_models_ok,
+per_model_ltm.
 """
 import os
 import sys
@@ -22,9 +37,6 @@ sys.path.insert(0, project_root)
 
 from climate_tookit.climate_statistics.statistics import (
     analyze_climate_statistics,
-    print_raw_summary_by_season,
-    print_overall_by_season,
-    print_seasons,
     print_ltm_by_season,
     print_annual,
     BASELINE_DEFAULT_PERIOD,
@@ -32,6 +44,8 @@ from climate_tookit.climate_statistics.statistics import (
     _is_num,
     _avg,
 )
+
+import pandas as pd
 
 # NEX-GDDP CMIP6 ensemble -- 16 models + canonical SSP labels
 NEX_GDDP_MODELS: List[str] = [
@@ -155,14 +169,18 @@ def _ensemble_annual(per_model_annual: List[Dict[str, Dict]]) -> Dict[str, Dict]
         }
     return out
 
-def _ensemble_ltm(per_model_ltm: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _ensemble_average_per_model_ltms(per_model_ltms: List[Dict[str, Any]]
+                                     ) -> Dict[str, Any]:
     """
-    Ensemble-average per-model LTM windows. Each input is one model's ltm_season_summary() output from statistics.py. Pairing is by season_number
-    so fixed-season windows stay aligned across models.
+    STEP 2 of the FUTURE LTM SEASON SUMMARY pipeline.
+    Average per-model LTM windows across models. This function does NOT touch year-level data -- each input element is one model's
+    `ltm_season_summary` output from statistics.py (already collapsed over the focal years for that model). Each model is weighted equally
+    (1 / n_models); models are paired by season_number so fixed-season windows stay aligned. Returns the cross-model ensemble LTM with the same
+    window shape statistics.py uses.
     """
     win_pool: Dict[int, List[Dict[str, Any]]] = {}
     mode = 'fixed'
-    for ltm in per_model_ltm:
+    for ltm in per_model_ltms:
         mode = ltm.get('mode', mode) if isinstance(ltm, dict) else mode
         for w in (ltm or {}).get('windows', []) or []:
             win_pool.setdefault(w.get('season_number', 1), []).append(w)
@@ -265,8 +283,10 @@ def analyze_ensemble_nex_gddp(
         print(f"  Models   : {len(active)}")
         print(f"{'=' * 60}")
 
+    # Per-model collection. The LTM list is keyed by model name so callers can verify the ensemble = mean of per-model values.
     per_model_seasons: List[List[Dict[str, Any]]] = []
-    per_model_ltm:     List[Dict[str, Any]]      = []
+    per_model_ltm_list: List[Dict[str, Any]]     = []  # ordered, used for step 2 below
+    per_model_ltm_by_name: Dict[str, Dict[str, Any]] = {}
     per_model_annual:  List[Dict[str, Dict]]     = []
     models_ok: List[str]            = []
     failed:    List[Dict[str, str]] = []
@@ -274,6 +294,7 @@ def analyze_ensemble_nex_gddp(
         if verbose:
             print(f"\n  [{i:02d}/{len(active):02d}] {model}", flush=True)
         try:
+            # STEP 1 of the FUTURE LTM pipeline (per-model):
             r = analyze_climate_statistics(
                 location_coord=location_coord,
                 start_year=start_year, end_year=end_year,
@@ -281,17 +302,18 @@ def analyze_ensemble_nex_gddp(
                 model=model, scenario=scenario,
                 extra_months=extra_months,
             )
-            seasons = r.get('season_statistics') or []
-            ltm     = r.get('ltm_season_summary') or {}
-            annual  = r.get('annual_summary') or {}
-            if not seasons and not ltm.get('windows'):
+            seasons    = r.get('season_statistics') or []
+            ltm_model  = r.get('ltm_season_summary') or {}  
+            annual     = r.get('annual_summary') or {}
+            if not seasons and not ltm_model.get('windows'):
                 failed.append({'model': model,
                                'error': 'no seasons or LTM produced'})
                 if verbose:
                     print("    x  no seasons or LTM produced")
                 continue
             per_model_seasons.append(seasons)
-            per_model_ltm.append(ltm)
+            per_model_ltm_list.append(ltm_model)
+            per_model_ltm_by_name[model] = ltm_model
             per_model_annual.append(annual)
             models_ok.append(model)
             if verbose:
@@ -304,8 +326,10 @@ def analyze_ensemble_nex_gddp(
     if not models_ok:
         return {'error': 'All models failed.', 'failed_models': failed}
 
+    # STEP 2 of the FUTURE LTM pipeline (cross-model):
+    ltm_summary = _ensemble_average_per_model_ltms(per_model_ltm_list)
+
     season_statistics = _ensemble_seasons(per_model_seasons)
-    ltm_summary       = _ensemble_ltm(per_model_ltm)
     annual_summary    = _ensemble_annual(per_model_annual)
 
     years_span = end_year - start_year + 1
@@ -329,12 +353,17 @@ def analyze_ensemble_nex_gddp(
         'n_models_ok':        len(models_ok),
         'season_statistics':  season_statistics,
         'ltm_season_summary': ltm_summary,
+        'per_model_ltm':      per_model_ltm_by_name,
         'annual_summary':     annual_summary,
         'coverage_warning':   coverage_warning,
         'analysis_date':      datetime.now().isoformat(),
-        'methodology':        ('NEX-GDDP CMIP6 ensemble; per-season metrics '
-                               'averaged across models, LTM additionally '
-                               'averaged across years per window'),
+        'methodology':        ('FUTURE LTM SEASON SUMMARY computed as: '
+                               'Step 1 -- statistics.ltm_season_summary per model '
+                               '(per-window mean across focal years); '
+                               'Step 2 -- simple mean across models of those per-model '
+                               'LTMs. No annual / N-years shortcut is used. '
+                               'SEASON STATISTICS / RAW / OVERALL sections are '
+                               'per-(year, season_number) ensemble means across models.'),
     }
 
 # Display -- mirrors statistics.py's print_pandas with an ensemble preamble
@@ -348,6 +377,123 @@ def _ltm_header_ensemble(result: Dict[str, Any]) -> str:
     if end <= baseline_end:
         return "BASELINE LTM SEASON SUMMARY (NEX-GDDP CMIP6 ensemble)"
     return "LTM SEASON SUMMARY (NEX-GDDP CMIP6 ensemble)"
+
+def _print_indented_table(df: pd.DataFrame, indent: str = "    ") -> None:
+    for line in df.to_string(index=False).splitlines():
+        print(f"{indent}{line}")
+
+def _window_header(w: Dict[str, Any]) -> str:
+    """One-line header for an LTM window, e.g. 'Window 03-01:05-31 (season #1, n_models=16, n_years_per_model=21)'."""
+    bits = [f"season #{w.get('season_number')}"]
+    if 'n_models' in w:
+        bits.append(f"n_models={w['n_models']}")
+    if w.get('n_years_per_model') is not None:
+        bits.append(f"n_years_per_model={w['n_years_per_model']}")
+    elif w.get('n_years') is not None:
+        bits.append(f"n_years={w['n_years']}")
+    return f"Window {w.get('window')} ({', '.join(bits)})"
+
+def _print_overall_raw_summary(ensemble_ltm: Dict[str, Any]) -> None:
+    """One mean/min/max/std table per LTM window (overall, no per-year repetition)."""
+    print("\n" + "=" * 70)
+    print("RAW CLIMATE SUMMARY (overall, ensemble of models × years)")
+    print("=" * 70)
+    windows = (ensemble_ltm or {}).get('windows') or []
+    if not windows:
+        print("(no LTM windows)")
+        return
+    for w in windows:
+        print(f"\n  {_window_header(w)}")
+        rows = w.get('raw_climate_summary') or []
+        if not rows:
+            print("    (no data)")
+            continue
+        _print_indented_table(pd.DataFrame(rows).fillna("n/a"))
+
+def _print_overall_statistics(ensemble_ltm: Dict[str, Any]) -> None:
+    """One category/metric table per LTM window (overall, no per-year repetition)."""
+    print("\n" + "=" * 70)
+    print("OVERALL STATISTICS (overall, ensemble of models × years)")
+    print("=" * 70)
+    windows = (ensemble_ltm or {}).get('windows') or []
+    if not windows:
+        print("(no LTM windows)")
+        return
+    for w in windows:
+        print(f"\n  {_window_header(w)}")
+        stats = w.get('overall_statistics') or {}
+        if not stats:
+            print("    (no data)")
+            continue
+        if 'total_days' in stats:
+            print(f"    Total days: {stats['total_days']}")
+        rows = []
+        for var_key, var_label in [
+            ('precipitation', 'Precipitation'),
+            ('temperature',   'Temperature'),
+            ('et0',           'ET0'),
+            ('water_balance', 'Water Balance'),
+        ]:
+            block = stats.get(var_key)
+            if not isinstance(block, dict):
+                continue
+            for metric, value in block.items():
+                rows.append({
+                    'Variable': var_label,
+                    'Metric':   metric,
+                    'Value':    value if value is not None else "n/a",
+                })
+        if rows:
+            _print_indented_table(pd.DataFrame(rows))
+
+def _print_per_model_ltm_breakdown(per_model_ltm: Dict[str, Dict[str, Any]],
+                                   ensemble_ltm:  Dict[str, Any]) -> None:
+    """
+    For each season window, print one row per model showing that model's LTM
+    metrics, then the ensemble mean at the bottom. This makes the 2-step pipeline
+    inspectable: the reader can verify the ensemble row equals the column means
+    of the per-model rows.
+    """
+    if not per_model_ltm or not ensemble_ltm.get('windows'):
+        return
+    print("\n" + "─" * 70)
+    print("PER-MODEL LTM BREAKDOWN (Step 1) feeding the ensemble (Step 2)")
+    print("─" * 70)
+    for ens_w in ensemble_ltm.get('windows') or []:
+        sn = ens_w.get('season_number')
+        print(f"\n  Window {ens_w.get('window')} (season #{sn})")
+        rows = []
+        for model_name, m_ltm in per_model_ltm.items():
+            target_w = next((w for w in (m_ltm or {}).get('windows', []) or []
+                             if w.get('season_number') == sn), None)
+            if target_w is None:
+                continue
+            p  = target_w.get('precipitation') or {}
+            t  = target_w.get('temperature')   or {}
+            wb = target_w.get('water_balance') or {}
+            rows.append({
+                'Model':       model_name,
+                'n_years':     target_w.get('n_years'),
+                'precip_mm':   p.get('total_mm'),
+                'rainy_days':  p.get('rainy_days'),
+                'mean_tmax_c': t.get('mean_tmax'),
+                'mean_tmin_c': t.get('mean_tmin'),
+                'wb_total':    wb.get('total_balance'),
+            })
+        # ensemble row
+        ep  = ens_w.get('precipitation') or {}
+        et_ = ens_w.get('temperature')   or {}
+        ewb = ens_w.get('water_balance') or {}
+        rows.append({
+            'Model':       f"ENSEMBLE (mean of {len(per_model_ltm)})",
+            'n_years':     ens_w.get('n_years_per_model'),
+            'precip_mm':   ep.get('total_mm'),
+            'rainy_days':  ep.get('rainy_days'),
+            'mean_tmax_c': et_.get('mean_tmax'),
+            'mean_tmin_c': et_.get('mean_tmin'),
+            'wb_total':    ewb.get('total_balance'),
+        })
+        _print_indented_table(pd.DataFrame(rows).fillna('n/a'))
 
 def print_report(result: Dict[str, Any]) -> None:
     """Render the ensemble result with the same section layout as statistics.print_pandas."""
@@ -375,15 +521,17 @@ def print_report(result: Dict[str, Any]) -> None:
         print(f"  Failed    : {failed_names}")
     if result.get('coverage_warning'):
         print(f"  Coverage  : [WARN] {result['coverage_warning']}")
-    print(f"  Note      : per-season values below are ensemble means "
-          f"across {n_ok} models")
+    print(f"  Note      : per-season tables below are OVERALL values "
+          f"(ensemble means across {n_ok} models × focal years), "
+          f"not per-year repetitions.")
+    print(f"              FUTURE LTM SEASON SUMMARY is the 2-step pipeline -- "
+          f"per-model LTM (over focal years) then mean across {n_ok} models.")
 
-    seasons = result.get('season_statistics') or []
-    print_raw_summary_by_season(seasons)
-    print_overall_by_season(seasons)
-    print_seasons(seasons)
-    print_ltm_by_season(result.get('ltm_season_summary', {}),
-                        header=_ltm_header_ensemble(result))
+    ltm = result.get('ltm_season_summary') or {}
+    _print_overall_raw_summary(ltm)
+    _print_overall_statistics(ltm)
+    print_ltm_by_season(ltm, header=_ltm_header_ensemble(result))
+    _print_per_model_ltm_breakdown(result.get('per_model_ltm') or {}, ltm)
     print_annual(result.get('annual_summary', {}))
 
 # CLI
