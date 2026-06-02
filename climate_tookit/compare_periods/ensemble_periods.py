@@ -798,7 +798,8 @@ def _print_focal_vs_ltm(avl: Dict[str, Any]) -> None:
 def _print_per_model_breakdown(per_model: List[Dict[str, Any]]) -> None:
     """
     Show each model's own future-vs-baseline diff before the ensemble means.
-    Mirrors the ensemble sections (overall statistics + annual rainfall) so the reader can see what each model contributes to the averages printed below.
+    Mirrors the ensemble sections (overall statistics + season statistics + annual rainfall) so the reader can see what each model contributes to the averages
+    printed below — including what each model says about every fixed window/season.
     """
     if not per_model:
         return
@@ -809,6 +810,20 @@ def _print_per_model_breakdown(per_model: List[Dict[str, Any]]) -> None:
         print(f"\n  Model: {r.get('_model')}")
         print(f"  --- Overall statistics (annualised) ---")
         _print_diff_block(r.get("overall_statistics", {}))
+
+        season = r.get("season_statistics")
+        if season:
+            print(f"  --- Season statistics ---")
+            if "windows" in season:
+                for w in season.get("windows", []):
+                    print(f"    Window {w.get('window')} (season #{w.get('season_number')}, "
+                          f"n_baseline={w.get('n_baseline')}, n_future={w.get('n_future')})")
+                    _print_diff_block(w.get("diff", {}))
+            elif season.get("diff"):
+                print(f"    (n_baseline={season.get('n_baseline')}, "
+                      f"n_future={season.get('n_future')})")
+                _print_diff_block(season["diff"])
+
         arm = (r.get("annual_summary") or {}).get("annual_rain_mm") or {}
         if _is_num(arm.get("future")) and _is_num(arm.get("baseline_avg")):
             print(f"  Annual rainfall : future={arm['future']:.1f} mm | "
