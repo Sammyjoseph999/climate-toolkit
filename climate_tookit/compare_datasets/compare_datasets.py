@@ -737,7 +737,7 @@ if __name__ == "__main__":
     main()
 
 # Example — all sources; 'nex_gddp' alone is the ensemble mean (default models):
-# python -m climate_tookit.compare_datasets.compare_datasets --sources era_5 chirps nasa_power imerg nex_gddp agera_5 chirts soil_grid terraclimate tamsat --lat -1.286 --lon 36.817 --start 1990-01-01 --end 2016-12-31 --scenario ssp245 --format report
+# python -m climate_tookit.compare_datasets.compare_datasets --sources era_5 chirps nasa_power imerg nex_gddp agera_5 chirts soil_grid terraclimate --lat -1.286 --lon 36.817 --start 1990-01-01 --end 2016-12-31 --scenario ssp245 --format report
 
 # Example — NEX-GDDP ensemble over a custom set of models (one 'nex_gddp_ensemble_<scenario>' series):
 # python -m climate_tookit.compare_datasets.compare_datasets --sources nex_gddp --lat -1.286 --lon 36.817 --start 2015-01-01 --end 2016-12-31 --models ACCESS-CM2 MPI-ESM1-2-LR MRI-ESM2-0 GFDL-ESM4 EC-Earth3 --scenario ssp245 --format report
