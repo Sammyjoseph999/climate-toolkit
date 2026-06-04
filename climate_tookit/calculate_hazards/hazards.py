@@ -5,6 +5,8 @@ Retrieves crop hazard indices at a specific location by:
 2. Calculating total precipitation and average temperature for the season
 3. Evaluating crop-specific hazard thresholds
 4. Analyzing dry spell patterns
+5. Deriving soil-water hazards (NDWS, NDWL0) from a running soil water balance following the Adaptation Atlas method (ERATIO < 0.5 for NDWS;
+   LOGGING > 0 for NDWL0)
 
 Dependencies: pandas, season_analysis.seasons module
 """
@@ -153,8 +155,66 @@ def calculate_dry_spell_statistics(dry_spells: List[Dict[str, Any]]) -> Dict[str
         'dry_spells':                 dry_spells,
     }
 
+# Soil water balance (Adaptation Atlas algorithm)
+DEFAULT_SOILCP  = 100.0
+DEFAULT_SOILSAT = 100.0
+
+def calc_water_balance(
+    df: pd.DataFrame,
+    soilcp:  float = DEFAULT_SOILCP,
+    soilsat: float = DEFAULT_SOILSAT,
+    kc:      float = 1.0,
+    init_avail: float = 0.0,
+) -> pd.DataFrame:
+    """
+    Run the day-by-day soil water balance used by the Adaptation Atlas (CIAT ERA_dev / AdaptationAtlas/hazards). Returns the input frame with
+    per-day columns: ERATIO (actual/potential ET ratio), LOGGING (water above field capacity, mm) and RUNOFF (water above saturation, mm).
+    PET is taken from the Hargreaves ET0 column ('ET0_mm_day'); actual crop demand is ERATIO * kc * PET.
+    """
+    precip_col = next(
+        (c for c in ['precipitation', 'precip', 'total_precipitation'] if c in df.columns),
+        None,
+    )
+    out = df.sort_values('date').copy() if 'date' in df.columns else df.copy()
+    if not precip_col or 'ET0_mm_day' not in out.columns:
+        out['ERATIO']  = pd.NA
+        out['LOGGING'] = pd.NA
+        out['RUNOFF']  = pd.NA
+        return out
+
+    rain = out[precip_col].fillna(0).to_numpy()
+    pet  = out['ET0_mm_day'].fillna(0).to_numpy()
+
+    eratios, loggings, runoffs = [], [], []
+    avail = float(init_avail)
+    denom = 97.0 - 3.868 * (soilcp ** 0.5)
+    for r, e in zip(rain, pet):
+        avail = min(avail, soilcp)
+        percwt = min(avail / soilcp * 100.0, 100.0) if soilcp > 0 else 1.0
+        percwt = max(percwt, 1.0)
+        eratio = min(percwt / denom, 1.0) if denom > 0 else 1.0
+        demand = eratio * kc * float(e)
+
+        result  = avail + float(r) - demand
+        logging = min(max(result - soilcp, 0.0), soilsat)
+        runoff  = max(result - logging - soilcp, 0.0)
+        avail   = max(min(soilcp, result), 0.0)
+
+        eratios.append(eratio)
+        loggings.append(logging)
+        runoffs.append(runoff)
+
+    out['ERATIO']  = eratios
+    out['LOGGING'] = loggings
+    out['RUNOFF']  = runoffs
+    return out
+
 # Season statistics
-def calculate_season_statistics(df: pd.DataFrame) -> Dict[str, Any]:
+def calculate_season_statistics(
+    df:      pd.DataFrame,
+    soilcp:  float = DEFAULT_SOILCP,
+    soilsat: float = DEFAULT_SOILSAT,
+) -> Dict[str, Any]:
     stats: Dict[str, Any] = {}
 
     precip_col = next(
@@ -201,12 +261,15 @@ def calculate_season_statistics(df: pd.DataFrame) -> Dict[str, Any]:
         stats['NTx35']              = int((tmax > 35).sum())
         stats['NTx40']              = int((tmax > 40).sum())
 
-    # Soil-water hazard counts derived from daily water balance (precip - ET0).
+    # Soil-water hazard counts derived from a running soil water balance (Adaptation Atlas method), NOT a naive daily precip - ET0 comparison.
+    #   NDWS  = days the crop cannot meet half its evaporative demand (ERATIO < 0.5)
+    #   NDWL0 = days soil water exceeds field capacity (LOGGING > 0)
     if p is not None and 'ET0_mm_day' in df.columns:
-        et0 = df['ET0_mm_day'].fillna(0)
-        wb  = p.fillna(0) - et0
-        stats['NDWS']  = int((wb <  0).sum())
-        stats['NDWL0'] = int((wb >= 0).sum())
+        wb = calc_water_balance(df, soilcp=soilcp, soilsat=soilsat)
+        eratio  = wb['ERATIO']
+        logging = wb['LOGGING']
+        stats['NDWS']  = int((eratio < 0.5).sum())
+        stats['NDWL0'] = int((logging > 0).sum())
     return stats
 
 def evaluate_threshold(value: float, thresholds: Dict[str, Tuple]) -> str:
@@ -320,7 +383,6 @@ def compute_ltm_baseline(
         'baseline_method': 'long_term_mean',
         'per_season':      ltm_blocks,
     }
-
 # Main hazard calculation
 def calculate_hazards(
     crop_name:         str,
@@ -334,6 +396,8 @@ def calculate_hazards(
     custom_thresholds: Optional[Dict] = None,
     gap_days:          int            = 30,
     min_season_days:   int            = 30,
+    soilcp:            float          = DEFAULT_SOILCP,
+    soilsat:           float          = DEFAULT_SOILSAT,
 ) -> Dict[str, Any]:
 
     lat, lon = location_coord
@@ -450,11 +514,10 @@ def calculate_hazards(
                 f'Season analysis not available and no season dates provided -- {_IMPORT_ERROR}'
             )
         }
-
     # Evaluate hazards for every resolved season
     assessments = []
     for entry in all_results:
-        stats      = calculate_season_statistics(entry['df'])
+        stats      = calculate_season_statistics(entry['df'], soilcp=soilcp, soilsat=soilsat)
         hazard_eval: Dict[str, Any] = {}
 
         if 'Total Precip' in thresholds and 'total_precipitation_mm' in stats:
@@ -476,7 +539,6 @@ def calculate_hazards(
             'season_statistics': stats,
             'hazard_evaluation': hazard_eval,
         })
-
     # Single season -> flat dict; multiple -> wrapped list with Baseline LTM
     if len(assessments) == 1:
         return assessments[0]
@@ -747,6 +809,12 @@ if __name__ == "__main__":
                         help='Dry-day gap used to end auto-detected season (default: 30)')
     parser.add_argument('--min-season-days', type=int, default=30,
                         help='Minimum season length for auto-detection (default: 30)')
+    parser.add_argument('--soilcp',  type=float, default=DEFAULT_SOILCP,
+                        help=f'Soil available water capacity at field capacity, mm '
+                             f'(water-balance NDWS/NDWL0; default: {DEFAULT_SOILCP})')
+    parser.add_argument('--soilsat', type=float, default=DEFAULT_SOILSAT,
+                        help=f'Extra soil water from field capacity to saturation, mm '
+                             f'(water-balance NDWL0; default: {DEFAULT_SOILSAT})')
     parser.add_argument('--format',          choices=['json', 'text'], default='text',
                         help='Output format (default: text)')
     parser.add_argument('--output',          type=str, default=None,
@@ -770,6 +838,8 @@ if __name__ == "__main__":
         source=args.source,
         gap_days=args.gap_days,
         min_season_days=args.min_season_days,
+        soilcp=args.soilcp,
+        soilsat=args.soilsat,
     )
     if args.format == 'json':
         output_str = json.dumps(result, indent=2, default=str)
