@@ -30,6 +30,8 @@ from hazards import (
     evaluate_threshold,
     calculate_season_statistics,
     add_et0,
+    DEFAULT_SOILCP,
+    DEFAULT_SOILSAT,
 )
 
 sys.path.insert(0, os.path.join(PARENT, 'fetch_data', 'preprocess_data'))
@@ -159,10 +161,12 @@ def _detect_windows(lat: float, lon: float, sy: int, ey: int,
     return out
 
 def _evaluate(crop: str, lat: float, lon: float,
-              w: Dict, model: str, scenario: str) -> Dict:
+              w: Dict, model: str, scenario: str,
+              soilcp: float = DEFAULT_SOILCP,
+              soilsat: float = DEFAULT_SOILSAT) -> Dict:
     """hazards.py-style assessment for a single window using NEX-GDDP."""
     df    = _fetch(lat, lon, w['start'], w['end'], model, scenario)
-    stats = calculate_season_statistics(df)
+    stats = calculate_season_statistics(df, soilcp=soilcp, soilsat=soilsat)
     th    = CROP_THRESHOLDS.get(crop.capitalize(), {})
 
     hazards = {}
@@ -246,7 +250,9 @@ def _avg_hazards(crop: str, agg: Dict) -> Dict:
 def calculate_ensemble(crop: str, lat: float, lon: float,
                        start_year: int, end_year: int,
                        models: List[str], scenarios: List[str],
-                       fixed_season: Optional[str] = None) -> Dict:
+                       fixed_season: Optional[str] = None,
+                       soilcp: float = DEFAULT_SOILCP,
+                       soilsat: float = DEFAULT_SOILSAT) -> Dict:
     mode = 'fixed_season' if fixed_season else 'auto_detect'
     fixed_w = (_expand_windows(start_year, end_year, _parse_fixed(fixed_season))
                if fixed_season else None)
@@ -269,7 +275,8 @@ def calculate_ensemble(crop: str, lat: float, lon: float,
             for w in windows:
                 tag = f"y{w['year']} s{w['season_number']}/{w['total']} {w['start']}->{w['end']}"
                 try:
-                    results.append(_evaluate(crop, lat, lon, w, m, sc))
+                    results.append(_evaluate(crop, lat, lon, w, m, sc,
+                                             soilcp=soilcp, soilsat=soilsat))
                     print(f"      {tag}  ✓")
                 except Exception as e:
                     print(f"      {tag}  ✗ {e}")
@@ -300,6 +307,13 @@ def calculate_ensemble(crop: str, lat: float, lon: float,
                 'mean_temperature_c':     st.get('mean_temperature_c'),
                 'mean_tmax_c':            st.get('mean_tmax_c'),
                 'mean_tmin_c':            st.get('mean_tmin_c'),
+                'max_tmax_c':             st.get('max_tmax_c'),
+                'min_tmin_c':             st.get('min_tmin_c'),
+                'NDD':                    st.get('NDD'),
+                'NTx35':                  st.get('NTx35'),
+                'NTx40':                  st.get('NTx40'),
+                'NDWS':                   st.get('NDWS'),
+                'NDWL0':                  st.get('NDWL0'),
             })
         assessments.append({
             'year':                   y,
@@ -324,6 +338,7 @@ def calculate_ensemble(crop: str, lat: float, lon: float,
         'period':            {'start_year': start_year, 'end_year': end_year},
         'season_mode':       mode,
         'season_definition': fixed_season,
+        'soil_water_balance': {'soilcp': soilcp, 'soilsat': soilsat},
         'models':            models,
         'scenarios':         scenarios,
         'n_total_projections': len(results),
@@ -369,6 +384,11 @@ def _print_projection_breakdown(a: Dict) -> None:
             'Tmean_c':   _fmt(p.get('mean_temperature_c')),
             'Tmax_c':    _fmt(p.get('mean_tmax_c')),
             'Tmin_c':    _fmt(p.get('mean_tmin_c')),
+            'NTx35':     _fmt(p.get('NTx35'), 0),
+            'NTx40':     _fmt(p.get('NTx40'), 0),
+            'NDD':       _fmt(p.get('NDD'), 0),
+            'NDWS':      _fmt(p.get('NDWS'), 0),
+            'NDWL0':     _fmt(p.get('NDWL0'), 0),
         })
     s = a['season_statistics']
     rows.append({
@@ -379,6 +399,11 @@ def _print_projection_breakdown(a: Dict) -> None:
         'Tmean_c':   _fmt(s.get('mean_temperature_c')),
         'Tmax_c':    _fmt(s.get('mean_tmax_c')),
         'Tmin_c':    _fmt(s.get('mean_tmin_c')),
+        'NTx35':     _fmt(s.get('NTx35')),
+        'NTx40':     _fmt(s.get('NTx40')),
+        'NDD':       _fmt(s.get('NDD')),
+        'NDWS':      _fmt(s.get('NDWS')),
+        'NDWL0':     _fmt(s.get('NDWL0')),
     })
     for line in pd.DataFrame(rows).to_string(index=False).splitlines():
         print(f"  {line}")
@@ -549,6 +574,12 @@ if __name__ == "__main__":
                    help='comma-separated GCMs (default: all 16)')
     p.add_argument('--scenarios',    type=str, default=','.join(SCENARIOS),
                    help=f"comma-separated scenarios (default: {','.join(SCENARIOS)})")
+    p.add_argument('--soilcp',  type=float, default=DEFAULT_SOILCP,
+                   help=f'Soil available water capacity at field capacity, mm '
+                        f'(water-balance NDWS/NDWL0; default: {DEFAULT_SOILCP})')
+    p.add_argument('--soilsat', type=float, default=DEFAULT_SOILSAT,
+                   help=f'Extra soil water from field capacity to saturation, mm '
+                        f'(water-balance NDWL0; default: {DEFAULT_SOILSAT})')
     p.add_argument('--format',       choices=['json', 'text'], default='text')
     p.add_argument('--output',       type=str, default=None,
                    help='write full result as JSON to this path')
@@ -575,6 +606,7 @@ if __name__ == "__main__":
         start_year=args.start_year, end_year=args.end_year,
         models=models, scenarios=scenarios,
         fixed_season=args.fixed_season,
+        soilcp=args.soilcp, soilsat=args.soilsat,
     )
 
     if args.format == 'json':
