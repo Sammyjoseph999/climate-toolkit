@@ -30,6 +30,8 @@ from hazards import (
     evaluate_threshold,
     calculate_season_statistics,
     add_et0,
+    water_balance_hazards,
+    _severity_symbol,
     DEFAULT_SOILCP,
     DEFAULT_SOILSAT,
 )
@@ -178,6 +180,8 @@ def _evaluate(crop: str, lat: float, lon: float,
         v = stats['mean_temperature_c']
         hazards['temperature'] = {'value_c': round(v, 2),
                                   'status':  evaluate_threshold(v, th['TAVG'])}
+    # NDWS / NDWL0 water-balance severity (Adaptation Atlas classes)
+    hazards.update(water_balance_hazards(stats))
     length = (datetime.fromisoformat(w['end'])
               - datetime.fromisoformat(w['start'])).days
     return {
@@ -244,6 +248,8 @@ def _avg_hazards(crop: str, agg: Dict) -> Dict:
         v = agg['mean_temperature_c']
         out['temperature'] = {'value_c': v,
                               'status': evaluate_threshold(v, th['TAVG'])}
+    # NDWS / NDWL0 severity on the ensemble-mean day counts
+    out.update(water_balance_hazards(agg))
     return out
 
 # Driver
@@ -498,6 +504,14 @@ def _print_block(a: Dict, crop: str, lat: float, lon: float,
         t_ = h['temperature']
         print(f"  {'Temperature':<25} {t_['value_c']:>16.2f} degC "
               f"[{_sym(t_['status'])}] {t_['status'].replace('_', ' ').upper()}")
+    if 'water_stress' in h:
+        ws = h['water_stress']
+        print(f"  {'Water Stress (NDWS)':<25} {ws['value_days']:>16.2f} d   "
+              f"[{_severity_symbol(ws['status'])}] {ws['status'].replace('_', ' ').upper()}")
+    if 'water_logging' in h:
+        wl = h['water_logging']
+        print(f"  {'Water Logging (NDWL0)':<25} {wl['value_days']:>16.2f} d   "
+              f"[{_severity_symbol(wl['status'])}] {wl['status'].replace('_', ' ').upper()}")
     print(f"\n{'='*70}")
 
 def print_results(r: Dict) -> None:
@@ -553,10 +567,23 @@ def print_results(r: Dict) -> None:
     if 'temperature' in h:
         print(f"  Temp   status:        [{_sym(h['temperature']['status'])}] "
               f"{h['temperature']['status'].replace('_', ' ').upper()}")
+    if 'water_stress' in h:
+        print(f"  NDWS   status:        [{_severity_symbol(h['water_stress']['status'])}] "
+              f"{h['water_stress']['status'].replace('_', ' ').upper()}")
+    if 'water_logging' in h:
+        print(f"  NDWL0  status:        [{_severity_symbol(h['water_logging']['status'])}] "
+              f"{h['water_logging']['status'].replace('_', ' ').upper()}")
     print(f"\n{'='*70}\n")
 
 # CLI
 if __name__ == "__main__":
+    # Ensure Unicode output works on Windows consoles that default to cp1252.
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass
+
     p = argparse.ArgumentParser(
         description='Ensemble of hazards.py across NEX-GDDP models x scenarios.',
     )
@@ -574,6 +601,10 @@ if __name__ == "__main__":
                    help='comma-separated GCMs (default: all 16)')
     p.add_argument('--scenarios',    type=str, default=','.join(SCENARIOS),
                    help=f"comma-separated scenarios (default: {','.join(SCENARIOS)})")
+    p.add_argument('--soil-source', choices=['constant', 'auto'], default='auto',
+                   help="Soil capacity source for NDWS/NDWL0 (default: auto): 'auto' "
+                        "derives per-location values from SoilGrids (needs GEE; falls "
+                        "back to constants); 'constant' uses the fixed --soilcp/--soilsat.")
     p.add_argument('--soilcp',  type=float, default=DEFAULT_SOILCP,
                    help=f'Soil available water capacity at field capacity, mm '
                         f'(water-balance NDWS/NDWL0; default: {DEFAULT_SOILCP})')
@@ -600,13 +631,23 @@ if __name__ == "__main__":
     models    = [s.strip() for s in args.models.split(',')    if s.strip()]
     scenarios = [s.strip() for s in args.scenarios.split(',') if s.strip()]
 
+    # Derive per-location soil capacity once (shared across all model/scenario projections); falls back to constants if SoilGrids/GEE is unavailable.
+    soilcp, soilsat = args.soilcp, args.soilsat
+    if args.soil_source == 'auto':
+        try:
+            from soil_capacity import fetch_soil_capacity
+        except ImportError:
+            from climate_tookit.calculate_hazards.soil_capacity import fetch_soil_capacity
+        print("Deriving per-location soil capacity from SoilGrids...")
+        soilcp, soilsat = fetch_soil_capacity(lat, lon)
+
     result = calculate_ensemble(
         crop=args.crop,
         lat=lat, lon=lon,
         start_year=args.start_year, end_year=args.end_year,
         models=models, scenarios=scenarios,
         fixed_season=args.fixed_season,
-        soilcp=args.soilcp, soilsat=args.soilsat,
+        soilcp=soilcp, soilsat=soilsat,
     )
 
     if args.format == 'json':
