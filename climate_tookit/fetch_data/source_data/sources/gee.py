@@ -21,6 +21,24 @@ set_logging()
 logger = logging.getLogger(__name__)
 
 
+# One-time GEE authentication. `ee.Authenticate()` is interactive and slow
+# (1–3 s per call when cached, much longer cold); `ee.Initialize()` is also
+# not free. They MUST not run per-chunk — when get_gee_data_daily chunks a
+# 26-year range into dozens of sub-queries, repeating auth dominates the
+# runtime. Use this module-level guard so every entry point is idempotent.
+_GEE_READY = False
+
+def _ensure_gee_initialized() -> None:
+    """Authenticate + initialize GEE exactly once per Python process."""
+    global _GEE_READY
+    if _GEE_READY:
+        return
+    logger.info("Authenticating to GEE (first call)...")
+    ee.Authenticate()
+    ee.Initialize(project=os.getenv("GCP_PROJECT_ID"))
+    _GEE_READY = True
+
+
 class DownloadData(models.DataDownloadBase):
     def __init__(
         self,
@@ -77,36 +95,8 @@ class DownloadData(models.DataDownloadBase):
         tile_scale: float = 1,
     ) -> pd.DataFrame:
         """Uses the Google Earth Engine (GEE) API to retrieve static data
-        from datasets that don't have temporal components (like SoilGrids).
-
-        API ref: https://developers.google.com/earth-engine/apidocs/
-
-        **Pre-requisites:**\n
-        - [Register or create](https://www.google.com/url?q=https%3A%2F%2Fcode.earthengine.google.com%2Fregister)
-        a Google Cloud Project
-        - Register your project for commercial or noncommercial use
-        - Enable the "Google Earth Engine API"
-
-        Args
-        ---
-        - image_name: The GEE image name
-        - location_coord: The point geometry (longitude, latitude)
-        - location_name: The name of the location_coord
-        - scale: A nominal scale in meters of the projection to work in.
-        - crs: The projection to work in. If unspecified, the projection of the
-        image's first band is used. If specified in addition to scale, rescaled to the specified scale.
-        - tile_scale: A scaling factor between 0.1 and 16 used to adjust cadence
-        tile size; setting a larger tileScale (e.g., 2 or 4) uses smaller tiles
-        and may enable computations that run out of memory with the default.
-        - max_pixels: The maximum number of pixels to reduce.
-
-        Returns
-        ---
-        A pandas dataframe containing the static variables from the dataset
-        """
-        logger.info("Authenticating to GEE...")
-        ee.Authenticate()
-        ee.Initialize(project=os.getenv("GCP_PROJECT_ID"))
+        from datasets that don't have temporal components (like SoilGrids)."""
+        _ensure_gee_initialized()
 
         lat, lon = location_coord
         location = (
@@ -139,7 +129,7 @@ class DownloadData(models.DataDownloadBase):
     def _get_gee_data_daily_single_range(
         self,
         image_name: str,
-        location_coord: tuple[float],
+        location_coord: tuple[float, float],
         from_date: date,
         to_date: date,
         scale: Optional[float] = None,
@@ -147,81 +137,176 @@ class DownloadData(models.DataDownloadBase):
         location_name: Optional[str] = None,
         max_pixels: float = 1e9,
         tile_scale: float = 1,
+        bands: Optional[list[str]] = None,
     ) -> pd.DataFrame:
-        """Internal method to fetch data for a single date range without chunking."""
-        ee.Authenticate()
-        ee.Initialize(project=os.getenv("GCP_PROJECT_ID"))
+        """Internal method to fetch data for a single date range."""
+
+        _ensure_gee_initialized()
 
         # GEE expects [longitude, latitude], but location_coord is (lat, lon)
         lat, lon = location_coord
         location = ee.Geometry.Point([lon, lat])
 
+        start = ee.Date(from_date.strftime("%Y-%m-%d"))
+        end = ee.Date(to_date.strftime("%Y-%m-%d")).advance(1, "day")
+
         logger.info(f"Fetching data for location: lat={lat}, lon={lon} (GEE Point: [{lon}, {lat}])")
         logger.info(f"Using scale: {scale} meters")
 
-        # Fetch data day by day for maximum reliability
-        data_list = []
-        current_date = from_date
+        # For sub-daily collections, pre-aggregate to daily on the server.
+        # This is the difference between 3 round-trips and ~100 for a long
+        # IMERG fetch. Daily-cadence sources skip this and use the raw
+        # collection unchanged.
+        if image_name in self._GEE_DAILY_AGG_REDUCER:
+            logger.info(
+                f"Server-side daily aggregation enabled for {image_name} "
+                f"(reducer={self._GEE_DAILY_AGG_REDUCER[image_name]!r})"
+            )
+            collection = self._daily_aggregated_collection(
+                image_name, start, end, location, bands=bands,
+            )
+        else:
+            collection = (
+                ee.ImageCollection(image_name)
+                .filterDate(start, end)
+                .filterBounds(location)
+            )
 
-        while current_date <= to_date:
-            try:
-                date_str = current_date.strftime("%Y-%m-%d")
-                start = ee.Date(date_str)
-                end = start.advance(1, "day")
+        def extract(image):
+            reduce_args = {
+                "reducer": ee.Reducer.first(),
+                "geometry": location,
+                "maxPixels": max_pixels,
+                "tileScale": tile_scale,
+            }
 
-                # Get the image collection for this single day
-                collection = (
-                    ee.ImageCollection(image_name)
-                    .filterDate(start, end)
-                    .filterBounds(location)
-                )
+            if scale is not None:
+                reduce_args["scale"] = scale
 
+            if crs is not None:
+                reduce_args["crs"] = crs
 
-                if collection.size().getInfo() == 0:
-                    data_list.append({'date': date_str})
-                    current_date += timedelta(days=1)
-                    continue
+            values = image.reduceRegion(**reduce_args)
+            return ee.Feature(None, values).set(
+                "date", image.date().format("YYYY-MM-dd")
+            )
 
-                img = collection.first()
+        feature_collection = collection.map(extract)
 
-                actual_scale = scale if scale is not None else 5000
+        # Single server call for result rather than one per day
+        result = feature_collection.getInfo()
 
-                result = img.reduceRegion(
-                    reducer=ee.Reducer.first(),
-                    geometry=location,
-                    scale=actual_scale,
-                    maxPixels=max_pixels,
-                    bestEffort=True,
-                    tileScale=tile_scale,
-                ).getInfo()
+        features = result.get("features", [])
+        records = [f["properties"] for f in features]
 
-                result['date'] = date_str
+        df = pd.DataFrame(records) if records else pd.DataFrame()
 
-                if result and any(v is not None for k, v in result.items() if k != 'date'):
-                    data_list.append(result)
-                else:
-                    data_list.append({'date': date_str})
-
-            except Exception as e:
-                logger.warning(f"Failed to fetch {date_str}: {e}")
-                data_list.append({'date': date_str})
-
-            current_date += timedelta(days=1)
-
-        df = pd.DataFrame(data_list) if data_list else pd.DataFrame()
-
-        # DIAGNOSTIC: Log what we actually got from GEE
         if not df.empty:
             logger.info(f"=== GEE RETURNED COLUMNS: {list(df.columns)}")
-            if len(df) > 0:
-                logger.info(f"=== SAMPLE ROW (first): {df.iloc[0].to_dict()}")
+            logger.info(f"=== SAMPLE ROW (first): {df.iloc[0].to_dict()}")
+
+            df = df.sort_values("date").reset_index(drop=True)
+
+            # Defensive: with server-side daily aggregation there should be
+            # no duplicates, but keep the dedup path for any sub-daily source
+            # not yet in `_GEE_DAILY_AGG_REDUCER`.
+            if df.duplicated("date").any():
+                logger.info("Duplicate dates detected — aggregating sub-daily data to daily totals/means.")
+                numeric_cols = df.select_dtypes(include="number").columns.tolist()
+                agg_dict = {col: 'sum' if 'precipitation' in col.lower() else 'mean' for col in numeric_cols}
+                df = df.groupby("date", as_index=False).agg(agg_dict)
+
+            # Ensure full daily index (GEE skips missing days)
+            full_range = pd.date_range(from_date, to_date, freq="D")
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+            df = (
+                df.set_index("date")
+                  .reindex(full_range)
+                  .rename_axis("date")
+                  .reset_index()
+            )
+
+            df["date"] = df["date"].dt.strftime("%Y-%m-%d")
+        else:
+            full_range = pd.date_range(from_date, to_date, freq="D")
+            df = pd.DataFrame({"date": full_range.strftime("%Y-%m-%d")})
 
         return df
+
+    # Sub-daily collections that should be aggregated to daily on the SERVER
+    # before any download. Without this, IMERG (half-hourly, 48 imgs/day) and
+    # ERA5-Land hourly (24 imgs/day) require tiny client chunks (~90 d) which
+    # costs ~106 round-trips for a 26-year IMERG fetch. Aggregating to daily
+    # server-side collapses 48x or 24x elements per day to 1x, so the default
+    # 4380-day chunk works for them too -> ~35x fewer round-trips.
+    #
+    # The reducer matters: precipitation must sum across the day; everything
+    # else uses mean. Default is mean if the source isn't listed.
+    _GEE_DAILY_AGG_REDUCER = {
+        "NASA/GPM_L3/IMERG_V07": "sum",      
+        "NASA/GPM_L3/IMERG_V06": "sum",
+        "ECMWF/ERA5_LAND/HOURLY": "mean",    
+    }
+    # All other GEE collections are daily-cadence (ERA5, CHIRPS, CHIRTS, AgERA5, TerraClimate). 1 image/day, so a 12-year chunk = ~4380 elements,
+    # comfortably under GEE's 5000 ceiling. 26 years -> 3 chunks.
+    _GEE_DEFAULT_CHUNK_DAYS = 4380
+    _GEE_MIN_CHUNK_DAYS = 7                  # don't bisect smaller than this
+
+    def _daily_aggregated_collection(self, image_name, start, end, location,
+                                     bands: Optional[list[str]] = None):
+        """
+        Build a server-side daily ImageCollection from a sub-daily source.
+
+        For each calendar day in [start, end), filters the raw sub-daily
+        collection to that day and reduces it with the source-appropriate
+        reducer (`sum` for precipitation accumulators like IMERG, `mean`
+        otherwise). The result is an ImageCollection with one image per
+        day, so the downstream `collection.map(extract)` returns one
+        Feature per day instead of one per sub-daily frame.
+
+        `bands` restricts the raw collection to the bands we actually need
+        before reducing. This is required for IMERG V07, whose half-hourly
+        frames carry a varying band set (some 5-band, some 9-band): the
+        retrieval-only bands (MW*/IR* etc.) make the collection heterogeneous,
+        and `ImageCollection.sum()`/`.mean()` reject heterogeneous collections
+        ("Expected a homogeneous image collection"). Selecting just the
+        requested band(s) — which are present in every frame — makes the
+        collection homogeneous and also lighter to compute.
+        """
+        reducer_name = self._GEE_DAILY_AGG_REDUCER.get(image_name, "mean")
+        n_days = end.difference(start, "day").floor()
+        days_seq = ee.List.sequence(0, n_days.subtract(1))
+        raw = (
+            ee.ImageCollection(image_name)
+            .filterDate(start, end)
+            .filterBounds(location)
+        )
+        if bands:
+            raw = raw.select(bands)
+
+        def daily_image(day_offset):
+            day_offset = ee.Number(day_offset)
+            d      = start.advance(day_offset, "day")
+            d_next = d.advance(1, "day")
+            slice_ = raw.filterDate(d, d_next)
+            agg = slice_.sum() if reducer_name == "sum" else slice_.mean()
+            return agg.set("system:time_start", d.millis())
+
+        return ee.ImageCollection.fromImages(days_seq.map(daily_image))
+
+    @staticmethod
+    def _is_collection_overflow(err: Exception) -> bool:
+        """Detect GEE's '5000 elements' / memory ceiling errors for retry."""
+        msg = str(err).lower()
+        return ("5000 elements" in msg
+                or "user memory limit exceeded" in msg
+                or "computation timed out" in msg)
 
     def get_gee_data_daily(
         self,
         image_name: str,
-        location_coord: tuple[float],
+        location_coord: tuple[float, float],
         from_date: date,
         to_date: date,
         scale: Optional[float] = None,
@@ -230,190 +315,78 @@ class DownloadData(models.DataDownloadBase):
         max_pixels: float = 1e9,
         cadence: Cadence = Cadence.daily,
         tile_scale: float = 1,
+        bands: Optional[list[str]] = None,
     ) -> pd.DataFrame:
-        """Uses the Google Earth Engine (GEE) API to retrieve weather information
-        from a weather dataset. Used for dataset whose cadence is daily.
-
-        NOW WITH AUTOMATIC CHUNKING for large date ranges to avoid memory limits!
-
-        API ref: https://developers.google.com/earth-engine/apidocs/
-
-        **Pre-requisites:**\n
-        - [Register or create](https://www.google.com/url?q=https%3A%2F%2Fcode.earthengine.google.com%2Fregister)
-        a Google Cloud Project
-        - Register your project for commercial or noncommercial use
-        - Enable the "Google Earth Engine API"
-
-        Args
-        ---
-        - image_name: The GEE image collection name
-        - location_coord: The point geometry (longitude, latitude)
-        - from_date, to_date: The date range
-        - location_name: The name of the location_coord
-        - cadence: cadence type (daily, monthly, etc). Only daily is currently supported
-        - scale: A nominal scale in meters of the projection to work in.
-        - crs: The projection to work in. If unspecified, the projection of the
-        image's first band is used. If specified in addition to scale, rescaled to the specified scale.
-        - tile_scale: A scaling factor between 0.1 and 16 used to adjust cadence
-        tile size; setting a larger tileScale (e.g., 2 or 4) uses smaller tiles
-        and may enable computations that run out of memory with the default.
-        - max_pixels: The maximum number of pixels to reduce.
-
-        Returns
-        ---
-        A pandas dataframe containing all the variables in that climate dataset
         """
-
-        logger.info("Authenticating to GEE...")
+        Retrieve daily data from a GEE ImageCollection with adaptive chunking.
+        - All sources use the same large initial chunk (4380 days); sub-daily sources are pre-aggregated to daily server-side so element counts
+          match daily.
+        - On a 5000-element / memory error the offending chunk is bisected and retried recursively, down to `_GEE_MIN_CHUNK_DAYS`.
+        - Failed chunks return empty DataFrames (logged); successful chunks are concatenated.
+        """
+        _ensure_gee_initialized()
         logger.info(f"Retrieving information from GEE Image: {image_name}")
 
+        if cadence != Cadence.daily:
+            raise NotImplementedError(
+                f"Cadence '{cadence}' is not supported. Only daily cadence is currently supported."
+            )
+
         total_days = (to_date - from_date).days
+        if total_days < 0:
+            logger.warning("from_date is after to_date. Returning empty DataFrame.")
+            return pd.DataFrame()
 
-        # Warn about large date ranges
-        if total_days > 5000:
-            logger.warning(f"Date range is large ({total_days} days). This may cause memory issues or timeouts.")
+        # All sources use the same large chunk: sub-daily sources are collapsed to daily server-side (see `_GEE_DAILY_AGG_REDUCER` and
+        # `_daily_aggregated_collection`), so element counts match daily.
+        chunk_size = self._GEE_DEFAULT_CHUNK_DAYS
+        logger.info(f"GEE chunking: image={image_name} initial chunk_size={chunk_size}d "
+                    f"over {total_days+1}d total")
 
-        # Determine if chunking is needed based on dataset and date range
-        # High-memory datasets need smaller chunks
-        memory_intensive_datasets = [
-            'NASA/GPM_L3/IMERG',
-            'NASA/GDDP-CMIP6',
-        ]
+        chunks: list[pd.DataFrame] = []
+        chunk_start = from_date
+        while chunk_start <= to_date:
+            chunk_end = min(chunk_start + timedelta(days=chunk_size - 1), to_date)
+            df_chunk = self._fetch_chunk_with_bisect(
+                image_name=image_name,
+                location_coord=location_coord,
+                from_date=chunk_start,
+                to_date=chunk_end,
+                scale=scale,
+                crs=crs,
+                location_name=location_name,
+                max_pixels=max_pixels,
+                tile_scale=tile_scale,
+                bands=bands,
+            )
+            if not df_chunk.empty:
+                chunks.append(df_chunk)
+            chunk_start = chunk_end + timedelta(days=1)
 
-        needs_chunking = False
-        chunk_years = 10  
+        if not chunks:
+            return pd.DataFrame()
+        return pd.concat(chunks, ignore_index=True)
 
-        # Check if this is a memory-intensive dataset
-        for dataset_pattern in memory_intensive_datasets:
-            if dataset_pattern in image_name:
-                needs_chunking = True
-                chunk_years = 2 
-                break
-
-        # Also chunk if date range is very large (>10 years) regardless of dataset
-        if total_days > 3650:  
-            needs_chunking = True
-            if chunk_years == 10:  
-                chunk_years = 5
-
-        # Use chunking if needed
-        if needs_chunking:
-            logger.info(f"Using chunked download with {chunk_years}-year chunks to avoid memory limits")
-
-            chunks = []
-            current_start = from_date
-            chunk_num = 1
-
-            while current_start < to_date:
-                # Calculate chunk end
-                try:
-                    chunk_end = date(
-                        current_start.year + chunk_years,
-                        current_start.month,
-                        current_start.day
-                    )
-                except ValueError:
-                    # Handle leap year edge case (Feb 29)
-                    chunk_end = date(
-                        current_start.year + chunk_years,
-                        current_start.month,
-                        28
-                    )
-
-                # Don't exceed final end date
-                if chunk_end > to_date:
-                    chunk_end = to_date
-
-                chunk_days = (chunk_end - current_start).days
-                logger.info(f"Fetching chunk {chunk_num}: {current_start} to {chunk_end} ({chunk_days} days)")
-
-                try:
-                    chunk_df = self._get_gee_data_daily_single_range(
-                        image_name=image_name,
-                        location_coord=location_coord,
-                        from_date=current_start,
-                        to_date=chunk_end,
-                        scale=scale,
-                        crs=crs,
-                        location_name=location_name,
-                        max_pixels=max_pixels,
-                        tile_scale=tile_scale,
-                    )
-
-                    if not chunk_df.empty:
-                        chunks.append(chunk_df)
-                        logger.info(f"Chunk {chunk_num} returned {len(chunk_df)} records")
-                    else:
-                        logger.warning(f"Chunk {chunk_num} returned no data")
-
-                except Exception as e:
-                    logger.error(f"Error fetching chunk {chunk_num}: {e}")
-
-                    # Try splitting this chunk further if it failed
-                    if chunk_years > 1:
-                        logger.info(f"Retrying chunk {chunk_num} with smaller sub-chunks...")
-                        smaller_chunk_years = max(1, chunk_years // 2)
-
-                        sub_start = current_start
-                        while sub_start < chunk_end:
-                            try:
-                                sub_end = date(
-                                    sub_start.year + smaller_chunk_years,
-                                    sub_start.month,
-                                    sub_start.day
-                                )
-                            except ValueError:
-                                sub_end = date(
-                                    sub_start.year + smaller_chunk_years,
-                                    sub_start.month,
-                                    28
-                                )
-
-                            if sub_end > chunk_end:
-                                sub_end = chunk_end
-
-                            try:
-                                sub_df = self._get_gee_data_daily_single_range(
-                                    image_name=image_name,
-                                    location_coord=location_coord,
-                                    from_date=sub_start,
-                                    to_date=sub_end,
-                                    scale=scale,
-                                    crs=crs,
-                                    location_name=location_name,
-                                    max_pixels=max_pixels,
-                                    tile_scale=tile_scale,
-                                )
-
-                                if not sub_df.empty:
-                                    chunks.append(sub_df)
-                                    logger.info(f"Sub-chunk {sub_start} to {sub_end} succeeded")
-                            except Exception as sub_e:
-                                logger.error(f"Sub-chunk {sub_start} to {sub_end} also failed: {sub_e}")
-
-                            sub_start = sub_end + timedelta(days=1)
-
-                # Move to next chunk
-                current_start = chunk_end + timedelta(days=1)
-                chunk_num += 1
-
-            # Combine all chunks
-            if not chunks:
-                logger.warning("No data retrieved from any chunk")
-                return pd.DataFrame()
-
-            combined_df = pd.concat(chunks, ignore_index=True)
-
-            # Sort by date and remove duplicates
-            if 'date' in combined_df.columns:
-                combined_df['date'] = pd.to_datetime(combined_df['date'])
-                combined_df = combined_df.sort_values('date').drop_duplicates(subset='date').reset_index(drop=True)
-
-            logger.info(f"Combined {len(chunks)} chunks into {len(combined_df)} total records")
-            return combined_df
-
-        else:
-            # Small date range - use original single-query method
+    def _fetch_chunk_with_bisect(
+        self,
+        image_name: str,
+        location_coord: tuple[float, float],
+        from_date: date,
+        to_date: date,
+        scale: Optional[float],
+        crs: Optional[str],
+        location_name: Optional[str],
+        max_pixels: float,
+        tile_scale: float,
+        bands: Optional[list[str]] = None,
+    ) -> pd.DataFrame:
+        """
+        Fetch one chunk. On 5000-element / memory error, bisect the range and retry each half, down to `_GEE_MIN_CHUNK_DAYS`. Below that floor
+        the chunk is given up on (logged + empty DataFrame returned) — much better than failing the entire request.
+        """
+        span_days = (to_date - from_date).days + 1
+        logger.info(f"Fetching chunk: {from_date} -> {to_date} ({span_days}d)")
+        try:
             return self._get_gee_data_daily_single_range(
                 image_name=image_name,
                 location_coord=location_coord,
@@ -424,12 +397,41 @@ class DownloadData(models.DataDownloadBase):
                 location_name=location_name,
                 max_pixels=max_pixels,
                 tile_scale=tile_scale,
+                bands=bands,
             )
+        except Exception as e:
+            if not self._is_collection_overflow(e):
+                logger.error(f"GEE chunk {from_date}->{to_date} failed: {e}")
+                return pd.DataFrame()
+
+            if span_days <= self._GEE_MIN_CHUNK_DAYS:
+                logger.error(
+                    f"GEE chunk {from_date}->{to_date} ({span_days}d) "
+                    f"still overflows at minimum chunk size; giving up on this window."
+                )
+                return pd.DataFrame()
+
+            mid = from_date + timedelta(days=span_days // 2 - 1)
+            logger.warning(
+                f"GEE overflow on {from_date}->{to_date}; bisecting at {mid}."
+            )
+            left = self._fetch_chunk_with_bisect(
+                image_name, location_coord, from_date, mid,
+                scale, crs, location_name, max_pixels, tile_scale, bands,
+            )
+            right = self._fetch_chunk_with_bisect(
+                image_name, location_coord, mid + timedelta(days=1), to_date,
+                scale, crs, location_name, max_pixels, tile_scale, bands,
+            )
+            parts = [d for d in (left, right) if not d.empty]
+            if not parts:
+                return pd.DataFrame()
+            return pd.concat(parts, ignore_index=True)
 
     def get_gee_data_monthly(
         self,
         image_name: str,
-        location_coord: tuple[float],
+        location_coord: tuple[float, float],
         from_date: date,
         to_date: date,
         scale: Optional[float] = None,
@@ -438,38 +440,9 @@ class DownloadData(models.DataDownloadBase):
         max_pixels: float = 1e9,
         tile_scale: float = 1,
     ):
-        """Uses the Google Earth Engine (GEE) API to retrieve weather information
-        from a weather dataset. Used for dataset whose cadence is monthly.
+        """Uses the GEE API to retrieve weather information for monthly-cadence datasets."""
 
-        API ref: https://developers.google.com/earth-engine/apidocs/
-
-        **Pre-requisites:**\n
-        - [Register or create](https://www.google.com/url?q=https%3A%2F%2Fcode.earthengine.google.com%2Fregister)
-        a Google Cloud Project
-        - Register your project for commercial or noncommercial use
-        - Enable the "Google Earth Engine API"
-
-        Args
-        ---
-        - image_name: The GEE image collection name
-        - location_coord: The point geometry (longitude, latitude)
-        - from_date, to_date: The date range
-        - location_name: The name of the location_coord
-        - scale: A nominal scale in meters of the projection to work in.
-        - crs: The projection to work in. If unspecified, the projection of the
-        image's first band is used. If specified in addition to scale, rescaled to the specified scale.
-        - tile_scale: A scaling factor between 0.1 and 16 used to adjust cadence
-        tile size; setting a larger tileScale (e.g., 2 or 4) uses smaller tiles
-        and may enable computations that run out of memory with the default.
-        - max_pixels: The maximum number of pixels to reduce.
-
-        Returns
-        ---
-        A pandas dataframe containing all the variables in that climate dataset
-        """
-
-        logger.info("Authenticating to GEE...")
-        ee.Initialize(project=os.environ.get("GCP_PROJECT_ID"))
+        _ensure_gee_initialized()
 
         lat, lon = location_coord
         location = (
@@ -478,56 +451,62 @@ class DownloadData(models.DataDownloadBase):
             else ee.Geometry.Point([lon, lat], {"location": location_name})
         )
 
-        months = ee.List.sequence(
-            0,
-            to_date.year * 12 + to_date.month - (from_date.year * 12 + from_date.month),
-        )
         start_date = ee.Date.fromYMD(from_date.year, from_date.month, 1)
+        end_date = ee.Date.fromYMD(to_date.year, to_date.month, 1).advance(1, "month")
+
+        nMonths = end_date.difference(start_date, "month").ceil()
+        months = ee.List.sequence(0, nMonths.subtract(1))
+
+        # Filter full range once
+        collection = (
+            ee.ImageCollection(image_name)
+            .filterDate(start_date, end_date)
+            .filterBounds(location)
+        )
 
         def get_single_data(month_offset):
             current_month_start = start_date.advance(month_offset, "month")
             current_month_end = current_month_start.advance(1, "month")
 
-            dataset = ee.ImageCollection(image_name).filterDate(
-                current_month_start, current_month_end
-            )
-            image = dataset.filterBounds(location).first()
+            monthly_images = collection.filterDate(current_month_start, current_month_end)
+            monthly_image = monthly_images.mean()
+            reduce_args = {
+                "reducer": ee.Reducer.first(),
+                "geometry": location,
+            }
 
-            # Don't select bands - reduceRegion will get all bands automatically
-            expression = image.reduceRegion(
-                reducer=ee.Reducer.mean(),
-                geometry=location,
-                scale=scale,
-                maxPixels=max_pixels,
-                crs=crs,
-                bestEffort=True,
-                tileScale=tile_scale,
-            )
+            if scale is not None:
+                reduce_args["scale"] = scale
 
-            return ee.Feature(
-                None, {"date": current_month_start.format("YYYY-MM-dd")}
-            ).set(expression)
+            if crs is not None:
+                reduce_args["crs"] = crs
+
+            if max_pixels is not None:
+                reduce_args["maxPixels"] = max_pixels
+
+            if tile_scale is not None:
+                reduce_args["tileScale"] = tile_scale
+
+            values = monthly_image.reduceRegion(**reduce_args)
+
+            return ee.Feature(None, values).set(
+                "date", current_month_start.format("YYYY-MM-dd")
+            )
 
         logger.info(f"Retrieving information from GEE Image: {image_name}")
+        features = months.map(get_single_data)
+        result = features.getInfo()
 
-        # Process results and return DataFrame
-        results = months.map(get_single_data)
-        features = results.getInfo()
+        data_list = [f["properties"] for f in result] if result else []
+        df = pd.DataFrame(data_list) if data_list else pd.DataFrame()
 
-        data_list = [f["properties"] for f in features] if features else []
-        return pd.DataFrame(data_list) if data_list else pd.DataFrame()
+        if not df.empty:
+            df = df.sort_values("date").reset_index(drop=True)
+
+        return df
 
     def _handle_soil_grid(self, data_settings) -> pd.DataFrame:
-        """Handle soil_grid with multiple images.
-
-        Args
-        ---
-        - data_settings: The settings object containing GEE image configurations
-
-        Returns
-        ---
-        A pandas dataframe containing soil variables from their respective datasets
-        """
+        """Handle soil_grid with multiple images."""
         result_data = {}
 
         for variable in self.variables:
@@ -579,15 +558,10 @@ class DownloadData(models.DataDownloadBase):
     def download_variables(self) -> pd.DataFrame:
         """Download and process variables from the configured data source.
 
-        This method handles different types of climate datasets including:
+        Handles:
         - Static datasets (like soil grids)
         - Daily time series datasets
         - Monthly time series datasets
-
-        Returns
-        ---
-        A pandas dataframe containing the requested variables, with proper
-        column mapping and date handling based on the dataset type.
         """
 
         try:
@@ -598,10 +572,16 @@ class DownloadData(models.DataDownloadBase):
 
         # Handle soil_grid special case with multiple images
         if self.source.name == "soil_grid" and hasattr(data_settings, "gee_images"):
-            logger.info(
-                "Using enhanced soil variable download with multiple GEE images"
-            )
-            return self._handle_soil_grid(data_settings)
+            logger.info("Using enhanced soil variable download with multiple GEE images")
+            df_soil = self._handle_soil_grid(data_settings)
+            for v in self.variables:
+                mapped_col = data_settings.variable.get_band(v.name)
+                var_meta = getattr(data_settings.variable, v.name, None)
+                if mapped_col in df_soil.columns and var_meta is not None:
+                    scale = getattr(var_meta, "scale", 1.0)
+                    df_soil[mapped_col] = df_soil[mapped_col] * scale
+                    logger.info(f"Applied scaling to {mapped_col} (scale={scale})")
+            return df_soil
 
         # Standard climate data handling
         try:
@@ -620,12 +600,20 @@ class DownloadData(models.DataDownloadBase):
                     scale=data_settings.resolution,
                 )
             else:
+                # Bands we actually need (drops null-mapped variables). For sub-daily sources these restrict the server-side daily
+                # aggregation to a homogeneous, lighter band set; ignored by daily-cadence sources.
+                wanted_bands = [
+                    b for b in (data_settings.variable.get_band(v.name)
+                                for v in self.variables)
+                    if b
+                ]
                 climate_data = self.get_gee_data_daily(
                     image_name=data_settings.gee_image,
                     location_coord=self.location_coord,
                     from_date=self.date_from_utc,
                     to_date=self.date_to_utc,
                     scale=data_settings.resolution,
+                    bands=wanted_bands or None,
                 )
         except Exception as e:
             logger.error(f"Error downloading data: {e}")
@@ -635,7 +623,7 @@ class DownloadData(models.DataDownloadBase):
             logger.warning("No data retrieved from GEE")
             return pd.DataFrame()
 
-        # Map columns to variable names and log information
+        # Map columns to variable names
         dataset_cols = list(climate_data.columns)
         req_vars = [v.name for v in self.variables]
 
@@ -643,13 +631,11 @@ class DownloadData(models.DataDownloadBase):
         missing_vars = []
 
         for v in self.variables:
-            mapped_col = getattr(data_settings.variable, v.name, None)
+            mapped_col = data_settings.variable.get_band(v.name)
             if mapped_col and mapped_col in climate_data.columns:
                 available_cols.append(mapped_col)
             else:
-                logger.warning(
-                    f"{self.source.name.upper()} does not have {v.name} data"
-                )
+                logger.warning(f"{self.source.name.upper()} does not have {v.name} data")
                 missing_vars.append(v.name)
 
         logger.info(f"Available columns: {dataset_cols}")
@@ -657,6 +643,15 @@ class DownloadData(models.DataDownloadBase):
         logger.info(f"Mapped available columns: {available_cols}")
         if missing_vars:
             logger.info(f"Missing variables: {missing_vars}")
+
+        # Apply scaling for each variable that has a scale factor
+        for v in self.variables:
+            mapped_col = data_settings.variable.get_band(v.name)
+            var_meta = getattr(data_settings.variable, v.name, None)
+            if mapped_col in climate_data.columns and var_meta is not None:
+                scale = getattr(var_meta, "scale", 1.0)
+                climate_data[mapped_col] = climate_data[mapped_col] * scale
+                logger.info(f"Applied scaling to {mapped_col} (scale={scale})")
 
         base_cols = ["date"] if "date" in climate_data.columns else []
         return climate_data[base_cols + available_cols]

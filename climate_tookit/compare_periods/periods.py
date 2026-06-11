@@ -1,378 +1,385 @@
 """
-Compare Periods Module
+Compare Periods
+Runs statistics.py for a baseline period and a focal year, then diffs the four
+sections statistics.py produces:
+    raw_climate_summary:    per-variable mean/min/max/std
+    overall_statistics :    period totals (baseline annualised before diffing)
+    season_statistics  :    per-season metrics
+                             - lumped 'typical season' when --fixed-season is omitted
+                             - one comparison per window when --fixed-season is given, so a two-season spec doesn't blend MAM with OND
+    annual_summary     :   humid test (annual rainfall, humid_year ratio)
 
-Compares climate statistics between different time periods:
-1. Baseline (entire period as one dataset)
-2. Actual season vs Baseline
-3. Future period vs Baseline
+--fixed-season is passed straight through to statistics.py, so its three flavors work without periods.py knowing about them:
+    Single        : '03-01:05-31'
+    Two seasons   : '03-01:05-31,10-01:12-15'
+    Year-crossing : '11-01:02-28'
+Plain `chirps` source defaults tmax=25/tmin=15 in statistics.py, so temperature is excluded from every diff section when chirps is the source.
 """
 
 import sys
 import os
-from datetime import datetime
-import pandas as pd
 import json
 import argparse
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional, List
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
+import pandas as pd
+
+current_dir  = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(os.path.dirname(current_dir))
 sys.path.insert(0, project_root)
 
 from climate_tookit.climate_statistics.statistics import analyze_climate_statistics
 
-# Set pandas display options for 2 decimal places
-pd.set_option('display.float_format', lambda x: f'{x:.2f}')
+CATEGORIES   = ["precipitation", "temperature", "et0", "water_balance"]
+ANNUALIZABLE = {
+    "precipitation": ["total_mm", "rainy_days", "dry_days"],
+    "et0":           ["total_mm"],
+    "water_balance": ["total_balance", "deficit_days", "surplus_days"],
+}
+PRECIP_ONLY  = {"chirps"}
+SUPPORTED    = {"era_5", "agera_5", "chirps+chirts", "nasa_power",
+                "chirps", "chirts", "terraclimate", "imerg", "tamsat", "auto"}
 
+# helpers
+def _is_num(x: Any) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
 
-def round_nested_dict(data: Dict[str, Any], decimals: int = 2) -> Dict[str, Any]:
-    """Recursively round all numeric values in a nested dictionary."""
-    result = {}
-    for key, value in data.items():
-        if isinstance(value, dict):
-            result[key] = round_nested_dict(value, decimals)
-        elif isinstance(value, (int, float)) and not isinstance(value, bool):
-            result[key] = round(value, decimals)
+def _round(d: Any, n: int = 2) -> Any:
+    if isinstance(d, dict):  return {k: _round(v, n) for k, v in d.items()}
+    if isinstance(d, list):  return [_round(v, n) for v in d]
+    return round(d, n) if _is_num(d) else d
+
+def _annualize(stats: Dict[str, Any], n_years: int) -> Dict[str, Any]:
+    """Period totals -> per-year averages. Means/maxes/mins untouched."""
+    if n_years <= 0:
+        return stats
+    out: Dict[str, Any] = {}
+    for cat, metrics in stats.items():
+        if not isinstance(metrics, dict):
+            out[cat] = metrics
+            continue
+        annz = ANNUALIZABLE.get(cat, [])
+        out[cat] = {m: round(v / n_years, 2) if (m in annz and _is_num(v)) else v
+                    for m, v in metrics.items()}
+    return out
+
+def _agg_seasons(seasons: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Average season metrics into a single 'typical season' block."""
+    if not seasons:
+        return {"_n": 0}
+    sums: Dict[str, List[float]] = {}
+    for s in seasons:
+        for cat in ("precipitation", "temperature", "water_balance"):
+            for m, v in (s.get(cat) or {}).items():
+                if _is_num(v):
+                    sums.setdefault(f"{cat}.{m}", []).append(float(v))
+    out: Dict[str, Any] = {"_n": len(seasons)}
+    for k, vs in sums.items():
+        cat, m = k.split(".", 1)
+        out.setdefault(cat, {})[m] = round(sum(vs) / len(vs), 2)
+    return out
+
+def _diff_block(a: Dict, b: Dict, a_lbl: str, b_lbl: str,
+                drop_temp: bool = False) -> Dict[str, Any]:
+    """Diff two category-keyed blocks: {category: {metric: {a_lbl, b_lbl, diff, pct}}}"""
+    out: Dict[str, Any] = {}
+    for cat in CATEGORIES:
+        if drop_temp and cat == "temperature":
+            continue
+        ab, bb = a.get(cat), b.get(cat)
+        if not (isinstance(ab, dict) and isinstance(bb, dict)):
+            continue
+        cat_out = {}
+        for m, av in ab.items():
+            bv = bb.get(m)
+            if not (_is_num(av) and _is_num(bv)):
+                continue
+            d = av - bv
+            p = (d / bv * 100.0) if bv != 0 else 0.0
+            cat_out[m] = {a_lbl:    round(av, 2), b_lbl:    round(bv, 2),
+                          "diff":   round(d,  2), "pct":    round(p,  2)}
+        if cat_out:
+            out[cat] = cat_out
+    return out
+
+def _diff_raw(focal_raw: List[Dict], baseline_raw: List[Dict],
+              drop_temp: bool = False) -> Dict[str, Any]:
+    """Diff raw_climate_summary lists: {variable: {stat: {focal, baseline, diff, pct}}}"""
+    fd = {r.get("Variable"): r for r in focal_raw    if r.get("Variable")}
+    bd = {r.get("Variable"): r for r in baseline_raw if r.get("Variable")}
+    out: Dict[str, Any] = {}
+    for var, fr in fd.items():
+        if drop_temp and "Temperature" in var:
+            continue
+        br = bd.get(var)
+        if not br:
+            continue
+        per_stat = {}
+        for s in ("Mean", "Min", "Max", "Std"):
+            fv, bv = fr.get(s), br.get(s)
+            if not (_is_num(fv) and _is_num(bv)):
+                continue
+            d = fv - bv
+            p = (d / bv * 100.0) if bv != 0 else 0.0
+            per_stat[s] = {"focal":    round(fv, 3), "baseline": round(bv, 3),
+                           "diff":     round(d,  3), "pct":      round(p,  2)}
+        if per_stat:
+            out[var] = per_stat
+    return out
+
+def _diff_annual(focal_ann: Dict[str, Dict], baseline_ann: Dict[str, Dict],
+                 focal_year: int) -> Dict[str, Any]:
+    """Diff annual_summary: focal year value vs baseline aggregate."""
+    fi = focal_ann.get(str(focal_year)) or {}
+    rains  = [v["annual_rain_mm"] for v in baseline_ann.values()
+              if v and _is_num(v.get("annual_rain_mm"))]
+    humid  = sum(1 for v in baseline_ann.values() if v and v.get("is_humid"))
+    total  = sum(1 for v in baseline_ann.values() if v)
+
+    out: Dict[str, Any] = {}
+    fr = fi.get("annual_rain_mm")
+    if _is_num(fr) and rains:
+        b_avg = sum(rains) / len(rains)
+        d, p = fr - b_avg, ((fr - b_avg) / b_avg * 100.0) if b_avg else 0.0
+        out["annual_rain_mm"] = {"focal":    round(float(fr), 1),
+                                  "baseline_avg": round(b_avg, 1),
+                                  "diff":     round(d, 1),
+                                  "pct":      round(p, 2)}
+    out["humid_status"] = {
+        "focal_is_humid":    fi.get("is_humid"),
+        "focal_humid_test":  fi.get("humid_test"),
+        "baseline_humid":    f"{humid}/{total}" + (
+            f" ({humid/total*100:.1f}%)" if total else ""),
+    }
+    return out
+
+# main API 
+def compare(
+    location:       Tuple[float, float],
+    baseline_start: int,
+    baseline_end:   int,
+    focal_year:     int,
+    source:         str,
+    fixed_season:   Optional[str] = None,
+) -> Dict[str, Any]:
+    """Run statistics.py for baseline + focal, diff the four sections."""
+    if source.lower() not in SUPPORTED:
+        return {"error": f"Source '{source}' not supported. "
+                         f"Use one of: {', '.join(sorted(SUPPORTED))}"}
+    if baseline_end < baseline_start:
+        return {"error": "baseline_end must be >= baseline_start"}
+
+    n_years   = baseline_end - baseline_start + 1
+    drop_temp = source.lower() in PRECIP_ONLY
+    fs_kw     = {"fixed_season": fixed_season} if fixed_season else {}
+
+    print(f"\nFetching baseline {baseline_start}-{baseline_end} | source={source}")
+    base = analyze_climate_statistics(
+        location_coord=location,
+        start_year=baseline_start, end_year=baseline_end,
+        source=source, **fs_kw)
+
+    print(f"\nFetching focal year {focal_year} | source={source}")
+    focal = analyze_climate_statistics(
+        location_coord=location,
+        start_year=focal_year, end_year=focal_year,
+        source=source, **fs_kw)
+
+    # 1. raw_climate_summary
+    raw_diff = _diff_raw(focal.get("raw_climate_summary", []),
+                         base.get("raw_climate_summary",  []),
+                         drop_temp)
+
+    # 2. overall_statistics (annualise baseline)
+    base_overall  = _annualize(_round(base.get("overall_statistics", {}), 2), n_years)
+    focal_overall = _round(focal.get("overall_statistics", {}), 2)
+    overall_diff  = _diff_block(focal_overall, base_overall,
+                                "focal_year", "baseline_avg", drop_temp)
+
+    # 3. season_statistics
+    base_seasons  = _round(base.get("season_statistics",  []), 2)
+    focal_seasons = _round(focal.get("season_statistics", []), 2)
+    season_diff: Optional[Dict[str, Any]] = None
+    if base_seasons or focal_seasons:
+        if fixed_season:
+            # Per-window: group by season_number (statistics.py assigns 1,2,...
+            # in the order of windows in --fixed-season, year-crossing included).
+            labels = [w.strip() for w in fixed_season.split(",")]
+            base_grp:  Dict[int, List[Dict]] = {}
+            focal_grp: Dict[int, List[Dict]] = {}
+            for s in base_seasons:
+                base_grp.setdefault(s.get("season_number", 1), []).append(s)
+            for s in focal_seasons:
+                focal_grp.setdefault(s.get("season_number", 1), []).append(s)
+
+            windows = []
+            for sn in sorted(set(base_grp) | set(focal_grp)):
+                label = labels[sn - 1] if 0 < sn <= len(labels) else f"window_{sn}"
+                fb    = _agg_seasons(focal_grp.get(sn, []))
+                bb    = _agg_seasons(base_grp.get(sn, []))
+                windows.append({
+                    "window":         label,
+                    "season_number":  sn,
+                    "n_baseline":     bb["_n"],
+                    "n_focal":        fb["_n"],
+                    "diff":           _diff_block(fb, bb, "focal", "baseline_avg",
+                                                  drop_temp),
+                })
+            season_diff = {"windows": windows}
         else:
-            result[key] = value
-    return result
-
-
-def calculate_baseline_statistics(
-    location_coord: Tuple[float, float],
-    baseline_years: Tuple[int, int],
-    source: str
-) -> Dict[str, Any]:
-    """Calculate baseline statistics for entire period as one dataset."""
-    lat, lon = location_coord
-    start_year, end_year = baseline_years
-
-    print(f"\n{'='*60}")
-    print(f"CALCULATING BASELINE ({start_year}-{end_year})")
-    print(f"Source: {source}")
-    print(f"{'='*60}\n")
-
-    start_date = f"{start_year}-01-01"
-    end_date = f"{end_year}-12-31"
-
-    print(f"Processing entire period {start_year}-{end_year}...")
-
-    try:
-        result = analyze_climate_statistics(
-            location_coord=(lat, lon),
-            date_range=(start_date, end_date),
-            source=source
-        )
-
-        if 'error' in result:
-            return {'error': result['error']}
-
-        baseline = result['statistics']['overall_statistics']
-        
-        # Round all numeric values to 2 decimal places
-        baseline = round_nested_dict(baseline, decimals=2)
-        
-        baseline['baseline_period'] = f"{start_year}-{end_year}"
-        baseline['source'] = source
-        baseline['total_days'] = baseline.get('total_days', 0)
-
-        print(f"✓ Baseline calculated ({baseline['total_days']:.0f} days)")
-        return baseline
-
-    except Exception as e:
-        return {'error': str(e)}
-
-
-def compare_actual_vs_baseline(
-    location_coord: Tuple[float, float],
-    actual_year: int,
-    baseline_stats: Dict[str, Any],
-    source: str
-) -> Dict[str, Any]:
-    """Compare actual year against baseline."""
-    lat, lon = location_coord
-
-    print(f"\n{'='*60}")
-    print(f"COMPARING ACTUAL YEAR {actual_year} VS BASELINE")
-    print(f"Source: {source}")
-    print(f"{'='*60}\n")
-
-    start_date = f"{actual_year}-01-01"
-    end_date = f"{actual_year}-12-31"
-
-    print(f"Processing {actual_year}...", end=" ")
-
-    try:
-        actual_result = analyze_climate_statistics(
-            location_coord=(lat, lon),
-            date_range=(start_date, end_date),
-            source=source
-        )
-
-        if 'error' in actual_result:
-            return {'error': actual_result['error']}
-
-        print("✓")
-        actual_stats = actual_result['statistics']['overall_statistics']
-        
-        # Round all numeric values to 2 decimal places
-        actual_stats = round_nested_dict(actual_stats, decimals=2)
-
-    except Exception as e:
-        return {'error': str(e)}
-
-    comparison = {
-        'actual_year': actual_year,
-        'actual_source': source,
-        'baseline_period': baseline_stats.get('baseline_period', 'Unknown'),
-        'baseline_source': baseline_stats.get('source', 'Unknown'),
-        'variables': {}
+            fb = _agg_seasons(focal_seasons)
+            bb = _agg_seasons(base_seasons)
+            season_diff = {
+                "n_baseline": bb["_n"],
+                "n_focal":    fb["_n"],
+                "diff":       _diff_block(fb, bb, "focal_avg", "baseline_avg",
+                                          drop_temp),
+            }
+    # 4. annual_summary
+    annual_diff = _diff_annual(focal.get("annual_summary", {}),
+                               base.get("annual_summary",  {}),
+                               focal_year)
+    return {
+        "focal_year":           focal_year,
+        "baseline_period":      f"{baseline_start}-{baseline_end}",
+        "baseline_years":       n_years,
+        "source":               source,
+        "fixed_season":         fixed_season,
+        "temperature_excluded": drop_temp,
+        "raw_climate_summary":  raw_diff,
+        "overall_statistics":   overall_diff,
+        "season_statistics":    season_diff,
+        "annual_summary":       annual_diff,
     }
 
-    for category in ['precipitation', 'temperature', 'et0', 'water_balance']:
-        if category in actual_stats and category in baseline_stats:
-            comparison['variables'][category] = {}
+#  printing 
+def _print_block(diff: Dict[str, Any]) -> None:
+    if not diff:
+        print("  (no comparable metrics)")
+        return
+    rows = []
+    for cat, metrics in diff.items():
+        for metric, vals in metrics.items():
+            row = {"Category": cat, "Metric": metric}
+            for k, v in vals.items():
+                if k == "diff":  row["Δ"]  = f"{v:+.2f}"
+                elif k == "pct": row["Δ%"] = f"{v:+.2f}%"
+                else:            row[k]    = f"{v:.2f}"
+            rows.append(row)
+    print(pd.DataFrame(rows).to_string(index=False))
 
-            for metric, actual_value in actual_stats[category].items():
-                if metric in baseline_stats[category]:
-                    baseline_value = baseline_stats[category][metric]
-                    diff = actual_value - baseline_value
-                    pct = (diff / baseline_value * 100) if baseline_value != 0 else 0
-
-                    comparison['variables'][category][metric] = {
-                        'actual': round(actual_value, 2),
-                        'baseline': round(baseline_value, 2),
-                        'difference': round(diff, 2),
-                        'percent_change': round(pct, 2)
-                    }
-
-    return comparison
-
-
-def compare_future_vs_baseline(
-    location_coord: Tuple[float, float],
-    future_years: Tuple[int, int],
-    baseline_stats: Dict[str, Any],
-    source: str
-) -> Dict[str, Any]:
-    """Compare future period against baseline."""
-    lat, lon = location_coord
-    start_year, end_year = future_years
-
-    print(f"\n{'='*60}")
-    print(f"COMPARING FUTURE ({start_year}-{end_year}) VS BASELINE")
-    print(f"Source: {source}")
-    print(f"{'='*60}\n")
-
-    start_date = f"{start_year}-01-01"
-    end_date = f"{end_year}-12-31"
-
-    print(f"Processing entire period {start_year}-{end_year}...")
-
-    try:
-        future_result = analyze_climate_statistics(
-            location_coord=(lat, lon),
-            date_range=(start_date, end_date),
-            source=source
-        )
-
-        if 'error' in future_result:
-            return {'error': future_result['error']}
-
-        future_stats = future_result['statistics']['overall_statistics']
-        
-        # Round all numeric values to 2 decimal places
-        future_stats = round_nested_dict(future_stats, decimals=2)
-        
-        total_days = future_stats.get('total_days', 0)
-        print(f"✓ Future period calculated ({total_days:.0f} days)")
-
-    except Exception as e:
-        return {'error': str(e)}
-
-    comparison = {
-        'future_period': f"{start_year}-{end_year}",
-        'future_source': source,
-        'baseline_period': baseline_stats.get('baseline_period', 'Unknown'),
-        'baseline_source': baseline_stats.get('source', 'Unknown'),
-        'variables': {}
-    }
-
-    for category in ['precipitation', 'temperature', 'et0', 'water_balance']:
-        if category in future_stats and category in baseline_stats:
-            comparison['variables'][category] = {}
-
-            for metric, future_value in future_stats[category].items():
-                if metric in baseline_stats[category]:
-                    baseline_value = baseline_stats[category][metric]
-                    diff = future_value - baseline_value
-                    pct = (diff / baseline_value * 100) if baseline_value != 0 else 0
-
-                    comparison['variables'][category][metric] = {
-                        'future': round(future_value, 2),
-                        'baseline': round(baseline_value, 2),
-                        'difference': round(diff, 2),
-                        'percent_change': round(pct, 2)
-                    }
-
-    return comparison
-
-
-def print_comparison_report(comparison: Dict[str, Any], comparison_type: str):
-    """Print formatted comparison report."""
-    print(f"\n{'='*60}")
-    print(f"COMPARISON REPORT")
-    print(f"{'='*60}")
-
-    if 'error' in comparison:
-        print(f"Error: {comparison['error']}")
+def print_report(r: Dict[str, Any]) -> None:
+    if "error" in r:
+        print(f"\nError: {r['error']}")
         return
 
-    if comparison_type == 'actual_vs_baseline':
-        print(f"Actual: {comparison['actual_year']} ({comparison.get('actual_source', 'N/A')})")
-        print(f"Baseline: {comparison['baseline_period']} ({comparison.get('baseline_source', 'N/A')})")
-    elif comparison_type == 'future_vs_baseline':
-        print(f"Future: {comparison['future_period']} ({comparison.get('future_source', 'N/A')})")
-        print(f"Baseline: {comparison['baseline_period']} ({comparison.get('baseline_source', 'N/A')})")
+    print(f"\n{'=' * 60}")
+    print(f"COMPARISON: focal {r['focal_year']} vs baseline {r['baseline_period']}")
+    print(f"{'=' * 60}")
+    print(f"  Source        : {r['source']}")
+    if r.get("fixed_season"):
+        print(f"  Fixed seasons : {r['fixed_season']}")
+    if r.get("temperature_excluded"):
+        print("  [!] precipitation-only source -- temperature excluded.")
 
+    print(f"\n--- 1. RAW CLIMATE SUMMARY ---")
+    raw = r.get("raw_climate_summary", {})
+    if raw:
+        rows = [{"Variable": var, "Stat": stat,
+                 "focal":    f"{v['focal']:.3f}",
+                 "baseline": f"{v['baseline']:.3f}",
+                 "Δ":        f"{v['diff']:+.3f}",
+                 "Δ%":       f"{v['pct']:+.2f}%"}
+                for var, stats in raw.items() for stat, v in stats.items()]
+        print(pd.DataFrame(rows).to_string(index=False))
+    else:
+        print("  (no data)")
+
+    print(f"\n--- 2. OVERALL STATISTICS  (baseline annualised) ---")
+    _print_block(r.get("overall_statistics", {}))
+
+    season = r.get("season_statistics")
+    if season:
+        print(f"\n--- 3. SEASON STATISTICS ---")
+        if "windows" in season:
+            for w in season["windows"]:
+                print(f"\n  Window {w['window']} (season #{w['season_number']}, "
+                      f"n_baseline={w['n_baseline']}, n_focal={w['n_focal']})")
+                _print_block(w["diff"])
+        else:
+            print(f"  (n_baseline={season['n_baseline']}, n_focal={season['n_focal']})")
+            _print_block(season["diff"])
+
+    print(f"\n--- 4. ANNUAL SUMMARY ---")
+    ann = r.get("annual_summary", {})
+    arm = ann.get("annual_rain_mm")
+    if arm:
+        print(f"  Annual rainfall : focal={arm['focal']} mm | "
+              f"baseline_avg={arm['baseline_avg']} mm | "
+              f"Δ={arm['diff']:+.1f} ({arm['pct']:+.2f}%)")
+    hs = ann.get("humid_status") or {}
+    if hs:
+        focal_state = ("humid" if hs.get("focal_is_humid") else
+                       "not humid" if hs.get("focal_is_humid") is False else "n/a")
+        print(f"  Humid status    : focal={focal_state} | "
+              f"baseline={hs.get('baseline_humid', 'n/a')}")
+        if hs.get("focal_humid_test"):
+            print(f"                    test: {hs['focal_humid_test']}")
     print()
 
-    data = []
-    key_metrics = ['total_mm', 'mean_daily', 'mean_tmax', 'mean_tmin', 'mean_tavg', 'total_balance']
+# CLI 
+def main() -> None:
+    p = argparse.ArgumentParser(
+        description="Compare a focal year against a baseline period using statistics.py.",
+        formatter_class=argparse.RawTextHelpFormatter)
+    p.add_argument("--location", required=True, help="lat,lon (e.g. -1.286,36.817)")
+    p.add_argument("--baseline-start", type=int, required=True)
+    p.add_argument("--baseline-end",   type=int, required=True)
+    p.add_argument("--focal-year",     type=int, required=True)
+    p.add_argument("--source", required=True,
+                   help=f"One of: {', '.join(sorted(SUPPORTED))}")
+    p.add_argument("--fixed-season", default=None,
+                   metavar="MM-DD:MM-DD[,MM-DD:MM-DD]",
+                   help=("Optional. Passed through to statistics.py.\n"
+                         "  Single        : '03-01:05-31'\n"
+                         "  Two seasons   : '03-01:05-31,10-01:12-15'\n"
+                         "  Year-crossing : '11-01:02-28'"))
+    p.add_argument("--output", default=None, help="Write JSON results to this path")
+    args = p.parse_args()
 
-    for category, metrics in comparison['variables'].items():
-        for metric, values in metrics.items():
-            if metric in key_metrics:
-                row = {
-                    'Category': category.title(),
-                    'Metric': metric,
-                    'Baseline': f"{values['baseline']:.2f}",
-                    'Difference': f"{values['difference']:+.2f}",
-                    'Change %': f"{values['percent_change']:+.2f}%"
-                }
-
-                if comparison_type == 'actual_vs_baseline':
-                    row['Actual'] = f"{values['actual']:.2f}"
-                else:
-                    row['Future'] = f"{values['future']:.2f}"
-
-                data.append(row)
-
-    if data:
-        df = pd.DataFrame(data)
-        print(df.to_string(index=False))
-        print()
-
-
-def main():
-    parser = argparse.ArgumentParser(description='Compare climate periods')
-
-    parser.add_argument('--location', required=True, type=str,
-                       help='Location as lat,lon (e.g., -1.286,36.817)')
-    parser.add_argument('--comparison-type', required=True,
-                       choices=['baseline-only', 'actual-vs-baseline', 'future-vs-baseline'],
-                       help='Type of comparison')
-
-    parser.add_argument('--baseline-start', type=int, required=True,
-                       help='Baseline start year')
-    parser.add_argument('--baseline-end', type=int, required=True,
-                       help='Baseline end year')
-    parser.add_argument('--baseline-source', required=True,
-                       help='Baseline data source')
-
-    parser.add_argument('--actual-year', type=int,
-                       help='Actual year (required for actual-vs-baseline)')
-    parser.add_argument('--actual-source',
-                       help='Actual year data source (required for actual-vs-baseline)')
-
-    parser.add_argument('--future-start', type=int,
-                       help='Future start year (required for future-vs-baseline)')
-    parser.add_argument('--future-end', type=int,
-                       help='Future end year (required for future-vs-baseline)')
-    parser.add_argument('--future-source',
-                       help='Future data source (required for future-vs-baseline)')
-
-    parser.add_argument('--output', help='Output JSON file')
-
-    args = parser.parse_args()
-
-    # Parse location
     try:
-        parts = [p.strip() for p in args.location.replace(' ', ',').split(',') if p.strip()]
-        if len(parts) != 2:
-            raise ValueError("Need exactly 2 coordinates")
-        lat, lon = map(float, parts)
-    except (ValueError, AttributeError):
-        print("Error: Invalid location. Use format: lat,lon")
-        sys.exit(1)
+        lat, lon = (float(x) for x in args.location.replace(" ", ",").split(","))
+    except ValueError:
+        print("Error: --location must be 'lat,lon'"); sys.exit(1)
 
-    # Validate required arguments per comparison type
-    if args.comparison_type == 'actual-vs-baseline':
-        if not args.actual_year or not args.actual_source:
-            print("Error: --actual-year and --actual-source required")
-            sys.exit(1)
-    elif args.comparison_type == 'future-vs-baseline':
-        if not args.future_start or not args.future_end or not args.future_source:
-            print("Error: --future-start, --future-end, and --future-source required")
-            sys.exit(1)
-
-    results = {}
-
-    print(f"\nLocation: {lat}, {lon}")
-
-    # Calculate baseline
-    baseline = calculate_baseline_statistics(
-        location_coord=(lat, lon),
-        baseline_years=(args.baseline_start, args.baseline_end),
-        source=args.baseline_source
+    result = compare(
+        location=(lat, lon),
+        baseline_start=args.baseline_start,
+        baseline_end=args.baseline_end,
+        focal_year=args.focal_year,
+        source=args.source,
+        fixed_season=args.fixed_season,
     )
-
-    if 'error' in baseline:
-        print(f"\nError: {baseline['error']}")
+    print_report(result)
+    if "error" in result:
         sys.exit(1)
-
-    results['baseline'] = baseline
-
-    if args.comparison_type == 'baseline-only':
-        print(f"\n✓ Baseline complete")
-        print(f"Period: {baseline['baseline_period']}")
-        print(f"Days: {baseline.get('total_days', 0):.0f}")
-        print(f"Source: {baseline['source']}")
-
-    elif args.comparison_type == 'actual-vs-baseline':
-        comparison = compare_actual_vs_baseline(
-            location_coord=(lat, lon),
-            actual_year=args.actual_year,
-            baseline_stats=baseline,
-            source=args.actual_source
-        )
-        results['comparison'] = comparison
-        print_comparison_report(comparison, 'actual_vs_baseline')
-
-    elif args.comparison_type == 'future-vs-baseline':
-        comparison = compare_future_vs_baseline(
-            location_coord=(lat, lon),
-            future_years=(args.future_start, args.future_end),
-            baseline_stats=baseline,
-            source=args.future_source
-        )
-        results['comparison'] = comparison
-        print_comparison_report(comparison, 'future_vs_baseline')
 
     if args.output:
-        with open(args.output, 'w') as f:
-            json.dump(results, indent=2, fp=f, default=str)
-        print(f"\n✓ Saved: {args.output}")
-
+        with open(args.output, "w") as f:
+            json.dump(result, f, indent=2, default=str)
+        print(f"✓ Saved: {args.output}")
 
 if __name__ == "__main__":
     main()
 
-# # Baseline only
-# python -m climate_tookit.compare_periods.periods --location=-1.286,36.817 --comparison-type=baseline-only --baseline-start=1991 --baseline-end=2020 --baseline-source=nasa_power
+# Auto-detected seasons (no --fixed-season):
+# python -m climate_tookit.compare_periods.periods --location=-1.286,36.817 --baseline-start=1991 --baseline-end=2016 --focal-year=2015 --source=chirps+chirts --output=results/nairobi_2015_vs_1991-2016_auto.json
 
-# # Actual vs baseline
-# python -m climate_tookit.compare_periods.periods --location=-1.286,36.817 --comparison-type=actual-vs-baseline --baseline-start=1991 --baseline-end=2020 --baseline-source=nasa_power --actual-year=2019 --actual-source=nasa_power
+# Single fixed season:
+# python -m climate_tookit.compare_periods.periods --location=-1.286,36.817 --baseline-start=1991 --baseline-end=2020 --focal-year=2019 --source=terraclimate --fixed-season=03-01:05-31 --output=results/nairobi_2019_MAM.json
 
-# # Future vs baseline
-# python -m climate_tookit.compare_periods.periods --location=-1.286,36.817 --comparison-type=future-vs-baseline --baseline-start=1991 --baseline-end=2020 --baseline-source=nasa_power --future-start=2030 --future-end=2060 --future-source=nex_gddp
+# Two fixed seasons:
+# python -m climate_tookit.compare_periods.periods --location=-1.286,36.817 --baseline-start=1991 --baseline-end=2020 --focal-year=2019 --source=era_5 --fixed-season='03-01:05-31,10-01:12-15' --output=results/nairobi_2019_MAM_OND.json
+
+# Year-crossing single window:
+# python -m climate_tookit.compare_periods.periods --location=-1.286,36.817 --baseline-start=1991 --baseline-end=2016 --focal-year=2016 --source=chirps --fixed-season=11-01:02-28 --output=results/nairobi_2016_NDJF.json

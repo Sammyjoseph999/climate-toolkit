@@ -68,12 +68,14 @@ def apply_unit_conversions(df: pd.DataFrame, source: str) -> pd.DataFrame:
                     print(f"Converted {col} from Kelvin to Celsius")
 
     if 'precipitation' in converted_df.columns:
-        if converted_df['precipitation'].max() < 1:
-            converted_df['precipitation'] = converted_df['precipitation'] * 1000
-            print("Converted precipitation from meters to millimeters")
-
+        if source in ['agera_5', 'era_5', 'nex_gddp']:
+            if converted_df['precipitation'].max() < 1:
+                converted_df['precipitation'] = converted_df['precipitation'] * 1000
+                print("Converted precipitation from meters to millimeters")
+        elif source == 'imerg':
+            converted_df['precipitation'] = converted_df['precipitation'] * 0.5
+            print("Converted IMERG precipitation from mm/hr to mm/day")
     return converted_df
-
 
 def quality_control_checks(df: pd.DataFrame) -> pd.DataFrame:
     """Perform quality control checks and flag suspicious data."""
@@ -146,9 +148,9 @@ def preprocess_data(
         print("ERROR: No data columns retrieved")
         return pd.DataFrame()
 
-    cleaned_df = clean_climate_data(transformed_df)
-    converted_df = apply_unit_conversions(cleaned_df, source)
-    final_df = quality_control_checks(converted_df).round(2)
+    converted_df = apply_unit_conversions(transformed_df, source)
+    cleaned_df = clean_climate_data(converted_df)
+    final_df = quality_control_checks(cleaned_df).round(2)
 
     return final_df
 

@@ -2,8 +2,9 @@
 This module provides functionality to download DAILY climate data
 from the NASA POWER API.
 
-FIXED VERSION: Now fetches daily data instead of monthly aggregates.
-COORDINATE FIX: Properly handles (lon, lat) tuple order.
+Coordinate convention: `location_coord` is `(lat, lon)`, matching every other
+source module and every caller in the toolkit (compare_datasets, climatology,
+calculate_hazards, season_analysis, etc.).
 """
 
 import logging
@@ -75,7 +76,8 @@ class DownloadData(models.DataDownloadBase):
         if not params:
             raise ValueError("No valid parameters to request from NASA POWER.")
 
-        lon, lat = self.location_coord
+        # Toolkit-wide convention: location_coord is (lat, lon).
+        lat, lon = self.location_coord
 
         # Format dates as YYYYMMDD for daily data
         start_date = self.date_from_utc.strftime("%Y%m%d")
