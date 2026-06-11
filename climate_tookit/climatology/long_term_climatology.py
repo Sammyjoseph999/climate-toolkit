@@ -35,7 +35,6 @@ import json
 import argparse
 from statistics import mean, stdev, median
 
-
 @contextlib.contextmanager
 def _quiet_fetch_logs():
     """
@@ -303,6 +302,29 @@ def _style_ax(ax, title="", xlabel="", ylabel=""):
         ax.set_ylabel(ylabel, fontsize=8, color="#555555")
     ax.grid(axis="y", color="#E0E0E0", linewidth=0.6, linestyle="--")
 
+def _tight_ylim(ax, values: List[Any], pad_pct: float = 0.15,
+                min_span_pct: float = 0.02) -> Optional[Tuple[float, float]]:
+    """
+    Set y-limits to bracket actual data with `pad_pct` padding above/below.
+    Guarantees a minimum visible span (`min_span_pct` of the mid value) so a near-flat series still shows year-to-year wobble. Returns (lo, hi).
+    """
+    vals = [v for v in values if v is not None and not (isinstance(v, float) and math.isnan(v))]
+    if not vals:
+        return None
+    lo, hi = float(min(vals)), float(max(vals))
+    span = hi - lo
+    mid = (lo + hi) / 2
+    floor_span = abs(mid) * min_span_pct if mid != 0 else max(abs(lo), 1.0) * min_span_pct
+    if span < floor_span:
+        # Series is essentially flat — expand around the mean
+        half = floor_span / 2
+        lo, hi = mid - half, mid + half
+        span = hi - lo
+    pad = span * pad_pct
+    y_lo, y_hi = lo - pad, hi + pad
+    ax.set_ylim(y_lo, y_hi)
+    return (y_lo, y_hi)
+
 def plot_annual_timeseries(
     annual_stats: List[Dict[str, Any]],
     source: str,
@@ -330,7 +352,11 @@ def plot_annual_timeseries(
                 for s in annual_stats]
         ax.plot(years, vals, marker="o", linewidth=1.8, markersize=4,
                 color=PALETTE['precip'])
-        ax.fill_between(years, vals, alpha=0.12, color=PALETTE['precip'])
+        # Tight y-limits first, then fill from the lower y-limit (not from 0, which would crush the year-to-year signal into a thin band at the top).
+        ylim = _tight_ylim(ax, vals)
+        if ylim is not None:
+            ax.fill_between(years, vals, y2=ylim[0], alpha=0.12,
+                            color=PALETTE['precip'])
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
         _style_ax(ax, title="Precipitation",
                   xlabel="Year", ylabel="Annual total (mm)")
@@ -350,6 +376,8 @@ def plot_annual_timeseries(
                 color=PALETTE['tavg'], label='Tavg')
         ax.plot(years, tmin, marker="o", linewidth=1.5, markersize=3,
                 color=PALETTE['tmin'], label='Tmin')
+        # Tight y-limits across all three series so the trend is visible.
+        _tight_ylim(ax, (tmax or []) + (tavg or []) + (tmin or []), pad_pct=0.10)
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
         ax.legend(fontsize=8, framealpha=0.7)
         _style_ax(ax, title="Temperature",
@@ -1128,7 +1156,6 @@ Examples:
   # NEX-GDDP runs the 16-model ensemble (averaged); pick scenario(s) and models
         """
     )
-
     parser.add_argument('--location', required=True, type=str,
                        help='Location as "lat,lon" (e.g., "-1.286,36.817")')
     parser.add_argument('--start-year', required=True, type=int,
