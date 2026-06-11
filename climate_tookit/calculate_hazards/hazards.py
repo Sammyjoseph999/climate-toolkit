@@ -7,7 +7,6 @@ Retrieves crop hazard indices at a specific location by:
 4. Analyzing dry spell patterns
 5. Deriving soil-water hazards (NDWS, NDWL0) from a running soil water balance following the Adaptation Atlas method (ERATIO < 0.5 for NDWS;
    LOGGING > 0 for NDWL0)
-
 Dependencies: pandas, season_analysis.seasons module
 """
 
@@ -282,6 +281,48 @@ def evaluate_threshold(value: float, thresholds: Dict[str, Tuple]) -> str:
             return level
     return 'unknown'
 
+# Water-balance hazard severity classes (unit: days), per the Adaptation Atlas
+NDWS_SEVERITY  = (15, 20, 25)
+NDWL0_SEVERITY = (2, 5, 8)
+
+def classify_water_hazard(value: float, bounds: Tuple[int, int, int]) -> str:
+    """Map a day count to a severity class using the Atlas water-balance bands."""
+    moderate_floor, severe_floor, extreme_floor = bounds
+    if value < moderate_floor:
+        return 'no_significant_stress'
+    if value <= severe_floor:
+        return 'moderate_stress'
+    if value <= extreme_floor:
+        return 'severe_stress'
+    return 'extreme_stress'
+
+def water_balance_hazards(stats: Dict[str, Any]) -> Dict[str, Any]:
+    """Build NDWS / NDWL0 severity assessment entries from season statistics."""
+    out: Dict[str, Any] = {}
+    if stats.get('NDWS') is not None:
+        v = stats['NDWS']
+        out['water_stress'] = {
+            'index':      'NDWS',
+            'value_days': round(float(v), 2),
+            'status':     classify_water_hazard(v, NDWS_SEVERITY),
+        }
+    if stats.get('NDWL0') is not None:
+        v = stats['NDWL0']
+        out['water_logging'] = {
+            'index':      'NDWL0',
+            'value_days': round(float(v), 2),
+            'status':     classify_water_hazard(v, NDWL0_SEVERITY),
+        }
+    return out
+
+def _severity_symbol(status: str) -> str:
+    """Console marker for a hazard status (handles severe/extreme classes too)."""
+    if 'no_stress' in status or 'no_significant' in status:
+        return 'OK'
+    if 'moderate' in status:
+        return '!!'
+    return 'XX'  # severe or extreme
+
 # Long-Term Mean (Baseline) aggregation
 _LTM_SCALAR_KEYS = (
     'total_precipitation_mm', 'mean_daily_precipitation_mm', 'max_daily_precipitation_mm',
@@ -366,6 +407,8 @@ def compute_ltm_baseline(
                 'value_c': tv,
                 'status':  evaluate_threshold(tv, thresholds['TAVG']),
             }
+        # NDWS / NDWL0 water-balance severity on the LTM means
+        hazard_eval.update(water_balance_hazards(agg))
 
         ltm_blocks.append({
             'season_number':          sn,
@@ -532,6 +575,8 @@ def calculate_hazards(
                 'value_c': round(tv, 2),
                 'status':  evaluate_threshold(tv, thresholds['TAVG']),
             }
+        # NDWS / NDWL0 water-balance severity (Adaptation Atlas classes)
+        hazard_eval.update(water_balance_hazards(stats))
         assessments.append({
             'crop':              crop_name,
             'location':          {'latitude': lat, 'longitude': lon},
@@ -624,6 +669,14 @@ def _print_ltm_block(ltm: Dict[str, Any]) -> None:
                 tt  = h['temperature']
                 sym = 'OK' if 'no_stress' in tt['status'] else '!!' if 'moderate' in tt['status'] else 'XX'
                 print(f"  {'Temperature':<25} {tt['value_c']:>16.2f} degC [{sym}] {tt['status'].replace('_', ' ').upper()}")
+            if 'water_stress' in h:
+                ws  = h['water_stress']
+                sym = _severity_symbol(ws['status'])
+                print(f"  {'Water Stress (NDWS)':<25} {ws['value_days']:>16.2f} d   [{sym}] {ws['status'].replace('_', ' ').upper()}")
+            if 'water_logging' in h:
+                wl  = h['water_logging']
+                sym = _severity_symbol(wl['status'])
+                print(f"  {'Water Logging (NDWL0)':<25} {wl['value_days']:>16.2f} d   [{sym}] {wl['status'].replace('_', ' ').upper()}")
     print(f"\n{'='*70}\n")
 
 def print_hazard_results(result: Dict[str, Any]) -> None:
@@ -748,11 +801,26 @@ def print_hazard_results(result: Dict[str, Any]) -> None:
         t   = hazards['temperature']
         sym = 'OK' if 'no_stress' in t['status'] else '!!' if 'moderate' in t['status'] else 'XX'
         print(f"  {'Temperature':<25} {t['value_c']:>16.2f} degC [{sym}] {t['status'].replace('_', ' ').upper()}")
+    if 'water_stress' in hazards:
+        ws  = hazards['water_stress']
+        sym = _severity_symbol(ws['status'])
+        print(f"  {'Water Stress (NDWS)':<25} {ws['value_days']:>16.2f} d   [{sym}] {ws['status'].replace('_', ' ').upper()}")
+    if 'water_logging' in hazards:
+        wl  = hazards['water_logging']
+        sym = _severity_symbol(wl['status'])
+        print(f"  {'Water Logging (NDWL0)':<25} {wl['value_days']:>16.2f} d   [{sym}] {wl['status'].replace('_', ' ').upper()}")
 
     print(f"\n{'='*70}\n")
 
 # CLI
 if __name__ == "__main__":
+    # Ensure Unicode output (box-drawing chars, degree sign, etc.)
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass
+
     parser = argparse.ArgumentParser(
         description='Calculate crop hazard indices',
         formatter_class=argparse.RawTextHelpFormatter,
@@ -809,6 +877,12 @@ if __name__ == "__main__":
                         help='Dry-day gap used to end auto-detected season (default: 30)')
     parser.add_argument('--min-season-days', type=int, default=30,
                         help='Minimum season length for auto-detection (default: 30)')
+    parser.add_argument('--soil-source', choices=['constant', 'auto'], default='auto',
+                        help=("Soil water capacity source for NDWS/NDWL0 (default: auto).\n"
+                              "  auto     -- derive per-location soilcp/soilsat from\n"
+                              "              SoilGrids via the Adaptation Atlas pedotransfer\n"
+                              "              (needs GEE credentials; falls back to constants)\n"
+                              "  constant -- use the fixed --soilcp/--soilsat values"))
     parser.add_argument('--soilcp',  type=float, default=DEFAULT_SOILCP,
                         help=f'Soil available water capacity at field capacity, mm '
                              f'(water-balance NDWS/NDWL0; default: {DEFAULT_SOILCP})')
@@ -827,6 +901,16 @@ if __name__ == "__main__":
 
     lat, lon = map(float, args.location.split(','))
 
+    # Resolve soil water capacities. 'auto' derives them per location from SoilGrids; on any failure it returns the constants, so the run never breaks for users without GEE credentials.
+    soilcp, soilsat = args.soilcp, args.soilsat
+    if args.soil_source == 'auto':
+        try:
+            from soil_capacity import fetch_soil_capacity
+        except ImportError:
+            from climate_tookit.calculate_hazards.soil_capacity import fetch_soil_capacity
+        print("Deriving per-location soil capacity from SoilGrids...")
+        soilcp, soilsat = fetch_soil_capacity(lat, lon)
+
     result = calculate_hazards(
         crop_name=args.crop,
         location_coord=(lat, lon),
@@ -838,8 +922,8 @@ if __name__ == "__main__":
         source=args.source,
         gap_days=args.gap_days,
         min_season_days=args.min_season_days,
-        soilcp=args.soilcp,
-        soilsat=args.soilsat,
+        soilcp=soilcp,
+        soilsat=soilsat,
     )
     if args.format == 'json':
         output_str = json.dumps(result, indent=2, default=str)
