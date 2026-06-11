@@ -14,9 +14,9 @@ from sources.gee import DownloadData as DownloadGEE
 from sources.tamsat import DownloadTAMSAT
 from sources.nasa_power import DownloadData as DownloadNASA
 from sources.nex_gddp import DownloadData as DownloadNEXGDDP
+from sources.soil_grid import DownloadData as DownloadSoilGrid
 from sources.utils.models import ClimateDataset, ClimateVariable, SoilVariable, Location
 from sources.utils.settings import Settings
-
 
 class SourceData:
     """The main class for retrieving data via a standardised interface."""
@@ -45,6 +45,15 @@ class SourceData:
                 model=model,
                 scenario=scenario
             )
+        elif source == ClimateDataset.soil_grid:
+            client = DownloadSoilGrid(
+                variables=variables,
+                location_coord=location_coord,
+                date_from_utc=date_from_utc,
+                date_to_utc=date_to_utc,
+                settings=settings,
+                source=source
+            )
         elif source in (
             ClimateDataset.era_5,
             ClimateDataset.terraclimate,
@@ -53,7 +62,6 @@ class SourceData:
             ClimateDataset.cmip_6,
             ClimateDataset.chirts,
             ClimateDataset.agera_5,
-            ClimateDataset.soil_grid,
         ):
             client = DownloadGEE(
                 variables=variables,
@@ -90,7 +98,6 @@ class SourceData:
         """Download climate data from the remote location."""
         return self.client.download_variables()
 
-
 def save_output(data, output_path, fmt):
     if fmt == "csv":
         data.to_csv(output_path, index=False)
@@ -98,7 +105,6 @@ def save_output(data, output_path, fmt):
         data.to_json(output_path, orient="records", date_format="iso", indent=2)
     else:
         raise ValueError(fmt)
-
 
 def main():
     parser = argparse.ArgumentParser(description='Download climate data')
@@ -168,7 +174,6 @@ def main():
         print(f"Saved to {args.output}")
 
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
