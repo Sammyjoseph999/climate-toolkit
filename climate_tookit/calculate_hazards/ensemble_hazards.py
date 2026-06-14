@@ -252,6 +252,27 @@ def _avg_hazards(crop: str, agg: Dict) -> Dict:
     out.update(water_balance_hazards(agg))
     return out
 
+def _agg_hazard_statuses(bucket: List[Dict]) -> Dict:
+    """
+    Aggregate pre-computed per-projection hazard statuses by majority vote.
+    Returns the modal status for each hazard indicator plus a counts breakdown.
+    """
+    from collections import Counter
+    indicators = ['precipitation', 'temperature', 'water_stress', 'water_logging']
+    out = {}
+    for ind in indicators:
+        statuses = [
+            r['hazard_evaluation'][ind]['status']
+            for r in bucket
+            if ind in r.get('hazard_evaluation', {})
+        ]
+        if not statuses:
+            continue
+        counts = Counter(statuses)
+        majority = counts.most_common(1)[0][0]
+        out[ind] = {'status': majority, 'status_counts': dict(counts)}
+    return out
+
 # Driver
 def calculate_ensemble(crop: str, lat: float, lon: float,
                        start_year: int, end_year: int,
@@ -289,14 +310,14 @@ def calculate_ensemble(crop: str, lat: float, lon: float,
     if not results:
         return {'error': 'No projections succeeded.'}
 
-    # Bucket by (year, season_number)
-    buckets: Dict[Tuple[int, int], List[Dict]] = defaultdict(list)
+    # Bucket by (scenario, year, season_number) to keep scenarios separate
+    buckets: Dict[Tuple[str, int, int], List[Dict]] = defaultdict(list)
     for r in results:
         si = r['season_info']
-        buckets[(si['year'], si['season_number'])].append(r)
+        buckets[(r['projection']['scenario'], si['year'], si['season_number'])].append(r)
 
     assessments = []
-    for (y, sn), bucket in sorted(buckets.items()):
+    for (sc, y, sn), bucket in sorted(buckets.items()):
         agg     = _avg_stats(bucket)
         onsets  = sorted(pd.to_datetime(r['season_info']['start']) for r in bucket)
         ends    = sorted(pd.to_datetime(r['season_info']['end'])   for r in bucket)
@@ -322,6 +343,7 @@ def calculate_ensemble(crop: str, lat: float, lon: float,
                 'NDWL0':                  st.get('NDWL0'),
             })
         assessments.append({
+            'scenario':               sc,
             'year':                   y,
             'season_number':          sn,
             'total_seasons_per_year': total,
@@ -333,7 +355,7 @@ def calculate_ensemble(crop: str, lat: float, lon: float,
             },
             'projections':       projections,
             'season_statistics': agg,
-            'hazard_evaluation': _avg_hazards(crop, agg),
+            'hazard_evaluation': _agg_hazard_statuses(bucket),
         })
 
     overall = _avg_stats(results)
@@ -352,7 +374,7 @@ def calculate_ensemble(crop: str, lat: float, lon: float,
         'overall_ensemble': {
             'n_projections':     len(results),
             'season_statistics': overall,
-            'hazard_evaluation': _avg_hazards(crop, overall),
+            'hazard_evaluation': _agg_hazard_statuses(results),
         },
     }
 
