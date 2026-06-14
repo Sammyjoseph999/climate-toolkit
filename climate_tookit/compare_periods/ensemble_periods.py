@@ -422,7 +422,7 @@ def _compare_one_model(
         location_coord=location,
         start_year=baseline_start, end_year=baseline_end,
         source="nex_gddp",
-        model=model, scenario=scenario,
+        model=model, scenario="historical",
         **fs_kw,
     )
     future = analyze_climate_statistics(
