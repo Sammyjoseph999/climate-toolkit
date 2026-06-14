@@ -49,7 +49,7 @@ except Exception as _e:
     HAS_FAY = False
     _FAY_ERR = str(_e)
 
-SCENARIOS = ['ssp126', 'ssp245', 'ssp370', 'ssp585']
+SCENARIOS = ['ssp126', 'ssp245', 'ssp585']
 MODELS = [
     'ACCESS-CM2', 'ACCESS-ESM1-5', 'CanESM5', 'CMCC-ESM2',
     'EC-Earth3', 'EC-Earth3-Veg-LR', 'GFDL-ESM4', 'INM-CM4-8',
