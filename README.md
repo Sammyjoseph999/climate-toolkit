@@ -71,6 +71,27 @@ climate_toolkit/
 
 ---
 
+## Performance: Cold-Cache vs Warm-Cache
+
+GEE-backed sources (ERA5, AgERA5, CHIRPS, CHIRTS, TerraClimate, IMERG, NEX-GDDP) fetch data over the network from Google Earth Engine. Runtime differs significantly depending on whether the GEE tile cache is warm:
+
+| Scenario | Typical runtime |
+|---|---|
+| Cold-cache fetch (first run, 1 site, 1 year) | 20 – 80 seconds |
+| Warm-cache rerun (same request shortly after) | < 1 second |
+| Multi-source historical path (CHIRPS + AgERA5) | 60 – 120 seconds cold |
+
+**What this means in practice:**
+- The first run after starting a session or switching locations will always be slower — this is normal, not a hang or failure.
+- Repeat runs against the same date range and location are much faster once GEE tiles are cached.
+- NEX-GDDP fetches over long date ranges (30 years) are chunked into ~13-year windows internally; expect proportionally longer cold-cache times.
+
+**To reduce cold-cache impact:**
+- Use a project-local cache directory (e.g. `outputs/cache/`) and reuse downloaded CSVs where possible rather than re-fetching.
+- Keep GEE authenticated (`earthengine authenticate`) and `GCP_PROJECT_ID` set in `.env` to avoid auth overhead on every call.
+
+---
+
 ## How to Use
 
 To download climate data from the terminal, run:

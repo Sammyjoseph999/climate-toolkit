@@ -376,6 +376,23 @@ def compute_ltm_baseline(
         sn = a.get('season_info', {}).get('season_number', 1) or 1
         grouped.setdefault(sn, []).append(a)
 
+    # Warn when auto-detected season counts differ across years — slot aggregation
+    # becomes semantically unstable (season_number=1 in a 1-season year vs a 2-season
+    # year refers to different climatological windows).
+    yearly_totals = {
+        a['season_info']['year']: a['season_info'].get('total_seasons_per_year', 1)
+        for a in assessments if 'year' in a.get('season_info', {})
+    }
+    if len(set(yearly_totals.values())) > 1:
+        import warnings as _warnings
+        _warnings.warn(
+            f"Auto-detected season counts differ across years: "
+            f"{yearly_totals}. LTM aggregation by season_number may mix "
+            f"incomparable seasonal windows. Use fixed-season mode for reliable "
+            f"cross-year comparisons.",
+            UserWarning, stacklevel=2,
+        )
+
     ltm_blocks: List[Dict[str, Any]] = []
     for sn in sorted(grouped):
         bucket = grouped[sn]
