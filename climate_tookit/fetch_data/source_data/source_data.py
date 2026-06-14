@@ -55,8 +55,8 @@ class SourceData:
                 source=source
             )
         elif source in (
-            # ERA5 is intentionally served via GEE (ECMWF/ERA5_LAND/DAILY_AGGR).
-            # The CDS-based era_5.py client was removed — GEE is the sole backend.
+            # ERA5 and AgERA5 are intentionally served via GEE.
+            # Dedicated era_5.py and agera_5.py stubs were removed — GEE is the sole backend for both.
             ClimateDataset.era_5,
             ClimateDataset.terraclimate,
             ClimateDataset.imerg,
