@@ -337,6 +337,23 @@ def ltm_season_summary(
         sn = s.get('season_number', 1)
         grouped.setdefault(sn, []).append(s)
 
+    if not fixed_season:
+        yearly_counts: Dict[int, int] = {}
+        for s in season_results:
+            y = s.get('year')
+            if y is not None:
+                yearly_counts[y] = max(yearly_counts.get(y, 0), s.get('season_number', 1))
+        counts = set(yearly_counts.values())
+        if len(counts) > 1:
+            import warnings as _warnings
+            _warnings.warn(
+                f"Auto-detected season counts differ across years {sorted(yearly_counts)}: "
+                f"counts={sorted(yearly_counts.values())}. Season-slot aggregation by "
+                f"season_number may mix incomparable windows. Use --fixed-season for "
+                f"reliable cross-year comparisons.",
+                UserWarning, stacklevel=2,
+            )
+
     labels = ([w.strip() for w in fixed_season.split(',')]
               if fixed_season else None)
 
