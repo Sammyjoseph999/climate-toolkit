@@ -8,7 +8,8 @@ import os
 import argparse
 from datetime import datetime, date
 
-sys.path.append(os.path.dirname(__file__))
+if '__file__' in dir():
+    sys.path.append(os.path.dirname(__file__))
 
 from sources.gee import DownloadData as DownloadGEE
 from sources.tamsat import DownloadTAMSAT
