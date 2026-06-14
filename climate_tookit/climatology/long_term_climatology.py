@@ -63,13 +63,9 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, os.path.join(parent_dir, 'fetch_data', 'preprocess_data'))
 sys.path.insert(0, os.path.join(parent_dir, 'fetch_data', 'source_data', 'sources'))
 
-try:
-    from preprocess_data import preprocess_data
-    from utils.models import ClimateVariable
-    PREPROCESS_AVAILABLE = True
-except ImportError:
-    PREPROCESS_AVAILABLE = False
-    print("Warning: Preprocessing pipeline not available")
+from preprocess_data import preprocess_data
+from utils.models import ClimateVariable
+PREPROCESS_AVAILABLE = True
 
 try:
     import matplotlib.pyplot as plt

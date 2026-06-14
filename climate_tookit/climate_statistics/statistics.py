@@ -35,12 +35,8 @@ _parent_dir  = os.path.dirname(_current_dir)
 sys.path.append(os.path.join(_parent_dir, 'fetch_data', 'preprocess_data'))
 sys.path.append(os.path.join(_parent_dir, 'season_analysis'))
 
-try:
-    from preprocess_data import preprocess_data
-    PREPROCESS_AVAILABLE = True
-except ImportError:
-    PREPROCESS_AVAILABLE = False
-    print("Warning: preprocess_data pipeline not available")
+from preprocess_data import preprocess_data
+PREPROCESS_AVAILABLE = True
 
 try:
     from sources.utils.models import ClimateVariable
