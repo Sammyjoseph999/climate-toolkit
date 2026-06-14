@@ -368,13 +368,14 @@ def analyze_ensemble_nex_gddp(
 
 # Display -- mirrors statistics.py's print_pandas with an ensemble preamble
 def _ltm_header_ensemble(result: Dict[str, Any]) -> str:
-    """Pick FUTURE / BASELINE / generic ensemble LTM header by run window."""
+    """Pick FUTURE / BASELINE / generic ensemble LTM header by scenario and run window."""
     end          = (result.get('period') or {}).get('end_year',   0)
     start        = (result.get('period') or {}).get('start_year', 0)
+    scenario     = result.get('scenario', '')
     baseline_end = BASELINE_DEFAULT_PERIOD[1]
-    if start > baseline_end:
+    if scenario != 'historical' and start > baseline_end:
         return "FUTURE LTM SEASON SUMMARY (NEX-GDDP CMIP6 ensemble)"
-    if end <= baseline_end:
+    if scenario == 'historical' and end <= baseline_end:
         return "BASELINE LTM SEASON SUMMARY (NEX-GDDP CMIP6 ensemble)"
     return "LTM SEASON SUMMARY (NEX-GDDP CMIP6 ensemble)"
 
