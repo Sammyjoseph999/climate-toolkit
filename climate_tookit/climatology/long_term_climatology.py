@@ -945,8 +945,9 @@ def calculate_climatology_ensemble(
 
     per_model_results: Dict[str, Dict[str, Any]] = {}
     failed: List[Dict[str, str]] = []
-    # max_workers <= 0 -> auto: one worker per model, capped at 16.
-    workers = max(1, min(len(active), 16) if max_workers <= 0 else min(max_workers, len(active)))
+    # max_workers <= 0 -> auto: one worker per model, capped at 10 to match the
+    # GEE HTTP connection pool (avoids "connection pool is full" churn).
+    workers = max(1, min(len(active), 10) if max_workers <= 0 else min(max_workers, len(active)))
 
     def _record(model: str, r: Optional[Dict[str, Any]], err: Optional[str], idx: int) -> None:
         if err is not None or r is None:

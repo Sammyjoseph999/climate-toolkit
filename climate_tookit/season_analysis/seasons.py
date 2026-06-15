@@ -615,35 +615,48 @@ def fetch_and_analyze_years_fixed(
     annual_dict  : Dict[int, Dict]       = {}
     force = None if source == "auto" else source
 
+    # Resolve all season windows up front so we know the full span to fetch.
+    resolved_by_year: Dict[int, List] = {}
+    max_cess = date(end_year, 12, 31)
     for year in range(start_year, end_year + 1):
-        print(f"\nFixed-season year {year} | source={source}")
-
-        # Resolve all season dates for this year
         resolved = []
         for sd in fixed_seasons:
             (o_m, o_d) = sd["onset_md"]
             (c_m, c_d) = sd["cessation_md"]
             cess_year   = year + 1 if (c_m, c_d) < (o_m, o_d) else year
             try:
-                resolved.append((date(year, o_m, o_d), date(cess_year, c_m, c_d)))
+                cd = date(cess_year, c_m, c_d)
+                resolved.append((date(year, o_m, o_d), cd))
+                if cd > max_cess:
+                    max_cess = cd
             except ValueError as exc:
                 print(f"  [WARNING] Invalid date: {exc}")
+        resolved_by_year[year] = resolved
+
+    # Fetch the entire period (plus any year-crossing tail) in ONE call, then
+    # slice per year in memory. The per-year helpers filter internally by year
+    # / window, so passing the full master frame yields identical results
+    # while replacing N_years fetches with one.
+    overall_start = f"{start_year}-01-01"
+    overall_end   = max_cess.strftime("%Y-%m-%d")
+    print(f"  Fetching {overall_start} to {overall_end} (full span, one call) ...")
+    try:
+        master = get_climate_data(lat, lon, overall_start, overall_end, force_source=force)
+        master = add_et0(master, lat)
+        print(f"  Retrieved {len(master)} days")
+    except Exception as exc:
+        print(f"  ✗ Data fetch failed: {exc} — stats will be n/a")
+        master = None
+
+    for year in range(start_year, end_year + 1):
+        print(f"\nFixed-season year {year} | source={source}")
+
+        resolved = resolved_by_year.get(year, [])
         if not resolved:
             annual_dict[year] = {}
             continue
 
-        # Fetch data: full calendar year + any year-crossing tail, in one call
-        fetch_start = f"{year}-01-01"
-        fetch_end   = max(date(year, 12, 31), max(c for _, c in resolved)).strftime("%Y-%m-%d")
-        print(f"  Fetching {fetch_start} to {fetch_end} ...")
-
-        try:
-            df = get_climate_data(lat, lon, fetch_start, fetch_end, force_source=force)
-            df = add_et0(df, lat)
-            print(f"  Retrieved {len(df)} days")
-        except Exception as exc:
-            print(f"  ✗ Data fetch failed: {exc} — stats will be n/a")
-            df = None
+        df = master  # helpers slice to the year / window internally
 
         # Annual stats (calendar year only)
         if df is not None and not df.empty:
