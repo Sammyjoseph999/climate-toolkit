@@ -359,7 +359,7 @@ def aggregate_overall(model_results: List[Dict]):
     return ensemble, model_averages
 
 # Top-level orchestrator
-def run_ensemble(lat, lon, start_year, end_year, scenarios, models, fixed_arg=None, verbose=True, max_workers=0):
+def run_ensemble(lat, lon, start_year, end_year, scenarios, models, fixed_arg=None, verbose=True):
     results = {}
     mode    = 'fixed' if fixed_arg else 'auto'
 
@@ -370,61 +370,42 @@ def run_ensemble(lat, lon, start_year, end_year, scenarios, models, fixed_arg=No
                   f"{start_year}–{end_year}  |  mode={mode}")
             print('=' * 70)
 
-        # Each model is an independent, I/O-bound GEE run; fetch them
-        # concurrently and restore the input order afterwards.
-        def _run_model(model):
+        # NOTE: models are processed SERIALLY here on purpose. analyze_one_model
+        # relies on process-global state — use_nex_gddp() monkeypatches
+        # seasons.get_climate_data and redirect_stdout() swaps sys.stdout — which
+        # is not thread-safe: concurrent models would clobber each other's
+        # model/scenario binding (e.g. a fetch running under the wrong scenario).
+        # The big speed win for this path comes from the single span-fetch in
+        # seasons.fetch_and_analyze_years_fixed (one GEE call per model instead
+        # of one per year), which applies regardless of concurrency.
+        per_model = []
+        for i, model in enumerate(models, 1):
+            if verbose:
+                print(f"  [{i:02d}/{len(models):02d}] {model:<22}", end=' ', flush=True)
             try:
                 s_dict, a_dict, skip_info = analyze_one_model(
                     lat, lon, start_year, end_year, model, scenario, fixed_arg)
-                return model, {
+                per_model.append({
                     'model':        model,
                     'seasons_dict': s_dict,
                     'annual_dict':  a_dict,
                     'skip_info':    skip_info,
-                }, None
+                })
+                if verbose:
+                    n_seasons = sum(len(v) for v in s_dict.values())
+                    n_years   = sum(1 for v in s_dict.values() if v)
+                    extra     = ''
+                    if mode == 'auto' and skip_info['perhumid_years']:
+                        extra = f"  [perhumid: {len(skip_info['perhumid_years'])}y]"
+                    print(f"✓  {n_seasons} season(s) over {n_years} year(s){extra}")
             except Exception as exc:
-                return model, {
+                per_model.append({
                     'model': model, 'seasons_dict': {}, 'annual_dict': {},
                     'skip_info': {'perhumid_years': [], 'no_season_years': [], 'analyzed_years': []},
                     'error': f"{type(exc).__name__}: {exc}",
-                }, f"{type(exc).__name__}: {exc}"
-
-        def _log(idx, entry, err):
-            if not verbose:
-                return
-            if err:
-                print(f"  [{idx:02d}/{len(models):02d}] {model_name(entry):<22} ✗  {err}", flush=True)
-            else:
-                s_dict = entry['seasons_dict']
-                n_seasons = sum(len(v) for v in s_dict.values())
-                n_years   = sum(1 for v in s_dict.values() if v)
-                extra     = ''
-                if mode == 'auto' and entry['skip_info'].get('perhumid_years'):
-                    extra = f"  [perhumid: {len(entry['skip_info']['perhumid_years'])}y]"
-                print(f"  [{idx:02d}/{len(models):02d}] {model_name(entry):<22} "
-                      f"✓  {n_seasons} season(s) over {n_years} year(s){extra}", flush=True)
-
-        def model_name(entry):
-            return entry.get('model', '?')
-
-        by_model = {}
-        # max_workers <= 0 -> auto: one worker per model, capped at 16.
-        workers = max(1, min(len(models), 16) if max_workers <= 0 else min(max_workers, len(models)))
-        if workers == 1:
-            for i, model in enumerate(models, 1):
-                _, entry, err = _run_model(model)
-                by_model[model] = entry
-                _log(i, entry, err)
-        else:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            order = {m: i for i, m in enumerate(models, 1)}
-            with ThreadPoolExecutor(max_workers=workers) as ex:
-                futs = {ex.submit(_run_model, m): m for m in models}
-                for fut in as_completed(futs):
-                    m, entry, err = fut.result()
-                    by_model[m] = entry
-                    _log(order[m], entry, err)
-        per_model = [by_model[m] for m in models if m in by_model]
+                })
+                if verbose:
+                    print(f"✗  {type(exc).__name__}: {exc}")
 
         ok = sum(1 for r in per_model if not r.get('error'))
         diagnostics = _aggregate_skip_info(per_model)
@@ -667,8 +648,6 @@ def main():
     p.add_argument('--list-models',  action='store_true', help='Print models and exit')
     p.add_argument('--output',       help='Save JSON result here')
     p.add_argument('--quiet',        action='store_true')
-    p.add_argument('--workers',      type=int, default=0,
-        help='Parallel GEE fetch workers across models (default: auto = one per model, capped at 16; use 1 to disable)')
     args = p.parse_args()
 
     if args.source_key:
@@ -705,7 +684,6 @@ def main():
         scenarios = scenarios, models = models,
         fixed_arg = args.fixed_season,
         verbose   = not args.quiet,
-        max_workers = args.workers,
     )
 
     if not args.quiet:
