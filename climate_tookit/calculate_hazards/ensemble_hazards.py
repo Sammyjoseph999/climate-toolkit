@@ -109,6 +109,18 @@ def _expand_windows(sy: int, ey: int,
     return out
 
 # NEX-GDDP fetching & per-window assessment
+def _prepare(df: pd.DataFrame, lat: float) -> pd.DataFrame:
+    """Canonicalise NEX-GDDP columns and attach Hargreaves ET0."""
+    rename = {c: _COLMAP[c] for c in df.columns if c in _COLMAP}
+    if rename:
+        df = df.rename(columns=rename)
+    # Attach Hargreaves ET0 so calculate_season_statistics can derive NDWS / NDWL0.
+    if {'min_temperature', 'max_temperature', 'date'}.issubset(df.columns):
+        view = df.rename(columns={'min_temperature': 'tmin',
+                                  'max_temperature': 'tmax'})
+        df['ET0_mm_day'] = add_et0(view, lat)['ET0_mm_day'].values
+    return df
+
 def _fetch(lat: float, lon: float, start: str, end: str,
            model: str, scenario: str) -> pd.DataFrame:
     df = preprocess_data(
@@ -121,16 +133,27 @@ def _fetch(lat: float, lon: float, start: str, end: str,
     )
     if df is None or df.empty:
         raise RuntimeError(f"no data for {model}/{scenario} {start}->{end}")
-    rename = {c: _COLMAP[c] for c in df.columns if c in _COLMAP}
-    if rename:
-        df = df.rename(columns=rename)
+    return _prepare(df, lat)
 
-    # Attach Hargreaves ET0 so calculate_season_statistics can derive NDWS / NDWL0.
-    if {'min_temperature', 'max_temperature', 'date'}.issubset(df.columns):
-        view = df.rename(columns={'min_temperature': 'tmin',
-                                  'max_temperature': 'tmax'})
-        df['ET0_mm_day'] = add_et0(view, lat)['ET0_mm_day'].values
+def _fetch_span(lat: float, lon: float, windows: List[Dict],
+                model: str, scenario: str) -> pd.DataFrame:
+    """Fetch the full date span covering all windows in ONE GEE call.
+
+    Replaces one GEE round-trip per window with one per (model, scenario).
+    The returned frame carries a datetime '_date' column used for slicing.
+    """
+    span_start = min(w['start'] for w in windows)
+    span_end   = max(w['end']   for w in windows)
+    df = _fetch(lat, lon, span_start, span_end, model, scenario)
+    df = df.copy()
+    df['_date'] = pd.to_datetime(df['date'])
     return df
+
+def _slice(full: pd.DataFrame, w: Dict) -> pd.DataFrame:
+    """In-memory slice of a pre-fetched span for a single window."""
+    lo = pd.Timestamp(w['start'])
+    hi = pd.Timestamp(w['end'])
+    return full[(full['_date'] >= lo) & (full['_date'] <= hi)].drop(columns='_date')
 
 def _detect_windows(lat: float, lon: float, sy: int, ey: int,
                     model: str, scenario: str) -> List[Dict]:
@@ -165,9 +188,17 @@ def _detect_windows(lat: float, lon: float, sy: int, ey: int,
 def _evaluate(crop: str, lat: float, lon: float,
               w: Dict, model: str, scenario: str,
               soilcp: float = DEFAULT_SOILCP,
-              soilsat: float = DEFAULT_SOILSAT) -> Dict:
-    """hazards.py-style assessment for a single window using NEX-GDDP."""
-    df    = _fetch(lat, lon, w['start'], w['end'], model, scenario)
+              soilsat: float = DEFAULT_SOILSAT,
+              df: Optional[pd.DataFrame] = None) -> Dict:
+    """hazards.py-style assessment for a single window using NEX-GDDP.
+
+    If ``df`` is provided it is used directly (an in-memory slice of a
+    pre-fetched span); otherwise the window is fetched on demand.
+    """
+    if df is None:
+        df = _fetch(lat, lon, w['start'], w['end'], model, scenario)
+    if df.empty:
+        raise RuntimeError(f"no data for {model}/{scenario} {w['start']}->{w['end']}")
     stats = calculate_season_statistics(df, soilcp=soilcp, soilsat=soilsat)
     th    = CROP_THRESHOLDS.get(crop.capitalize(), {})
 
@@ -274,41 +305,94 @@ def _agg_hazard_statuses(bucket: List[Dict]) -> Dict:
     return out
 
 # Driver
+def _run_projection(crop: str, lat: float, lon: float,
+                    start_year: int, end_year: int,
+                    model: str, scenario: str,
+                    fixed_w: Optional[List[Dict]],
+                    soilcp: float, soilsat: float) -> Tuple[str, str, List[Dict], List[str]]:
+    """Process one (model, scenario): resolve windows, fetch the span ONCE,
+    then evaluate each window from in-memory slices.
+
+    Returns (model, scenario, results, log_lines). Safe to run in a thread —
+    it performs no shared-state mutation and catches its own errors.
+    """
+    logs: List[str] = []
+    try:
+        windows = (fixed_w if fixed_w is not None
+                   else _detect_windows(lat, lon, start_year, end_year, model, scenario))
+    except Exception as e:
+        return model, scenario, [], [f"      ! detection failed: {e}"]
+    if not windows:
+        return model, scenario, [], ["      ! no windows"]
+
+    # One GEE round-trip for the whole span instead of one per window.
+    try:
+        full = _fetch_span(lat, lon, windows, model, scenario)
+    except Exception as e:
+        return model, scenario, [], [f"      ! span fetch failed: {e}"]
+
+    results: List[Dict] = []
+    for w in windows:
+        tag = f"y{w['year']} s{w['season_number']}/{w['total']} {w['start']}->{w['end']}"
+        try:
+            sub = _slice(full, w)
+            results.append(_evaluate(crop, lat, lon, w, model, scenario,
+                                     soilcp=soilcp, soilsat=soilsat, df=sub))
+            logs.append(f"      {tag}  OK")
+        except Exception as e:
+            logs.append(f"      {tag}  x {e}")
+    return model, scenario, results, logs
+
 def calculate_ensemble(crop: str, lat: float, lon: float,
                        start_year: int, end_year: int,
                        models: List[str], scenarios: List[str],
                        fixed_season: Optional[str] = None,
                        soilcp: float = DEFAULT_SOILCP,
-                       soilsat: float = DEFAULT_SOILSAT) -> Dict:
+                       soilsat: float = DEFAULT_SOILSAT,
+                       max_workers: int = 8) -> Dict:
     mode = 'fixed_season' if fixed_season else 'auto_detect'
     fixed_w = (_expand_windows(start_year, end_year, _parse_fixed(fixed_season))
                if fixed_season else None)
 
+    jobs = [(m, sc) for sc in scenarios for m in models]
+    workers = max(1, min(max_workers, len(jobs)))
+
     print(f"\nNEX-GDDP ensemble: {crop} at ({lat:.4f}, {lon:.4f})  "
           f"{start_year}-{end_year}")
     print(f"  Mode: {mode}" + (f"  ({fixed_season})" if fixed_season else ""))
-    print(f"  Models: {len(models)}   Scenarios: {len(scenarios)}\n")
+    print(f"  Models: {len(models)}   Scenarios: {len(scenarios)}   "
+          f"Workers: {workers}\n")
 
     results: List[Dict] = []
-    for sc in scenarios:
-        for i, m in enumerate(models, 1):
-            print(f"  [{sc}] [{i}/{len(models)}] {m}")
-            try:
-                windows = (fixed_w if fixed_w is not None
-                           else _detect_windows(lat, lon, start_year, end_year, m, sc))
-            except Exception as e:
-                print(f"      ! detection failed: {e}")
-                continue
-            for w in windows:
-                tag = f"y{w['year']} s{w['season_number']}/{w['total']} {w['start']}->{w['end']}"
-                try:
-                    results.append(_evaluate(crop, lat, lon, w, m, sc,
-                                             soilcp=soilcp, soilsat=soilsat))
-                    print(f"      {tag}  ✓")
-                except Exception as e:
-                    print(f"      {tag}  ✗ {e}")
+
+    def _emit(m, sc, res, logs):
+        print(f"  [{sc}] {m}")
+        for line in logs:
+            print(line)
+        results.extend(res)
+
+    if workers == 1:
+        for m, sc in jobs:
+            _emit(*_run_projection(crop, lat, lon, start_year, end_year,
+                                   m, sc, fixed_w, soilcp, soilsat))
+    else:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = {
+                ex.submit(_run_projection, crop, lat, lon, start_year, end_year,
+                          m, sc, fixed_w, soilcp, soilsat): (m, sc)
+                for m, sc in jobs
+            }
+            for fut in as_completed(futs):
+                _emit(*fut.result())
     if not results:
         return {'error': 'No projections succeeded.'}
+
+    # Sort for deterministic output regardless of worker completion order.
+    results.sort(key=lambda r: (r['projection']['scenario'],
+                                r['season_info']['year'],
+                                r['season_info']['season_number'],
+                                r['projection']['model']))
 
     # Bucket by (scenario, year, season_number) to keep scenarios separate
     buckets: Dict[Tuple[str, int, int], List[Dict]] = defaultdict(list)
@@ -520,19 +604,19 @@ def _print_block(a: Dict, crop: str, lat: float, lon: float,
     print(f"  {'─'*25} {'─'*18}  {'─'*20}")
     if 'precipitation' in h:
         p = h['precipitation']
-        print(f"  {'Precipitation':<25} {p['value_mm']:>16.2f} mm  "
+        print(f"  {'Precipitation':<25} {s.get('total_precipitation_mm', 0):>16.2f} mm  "
               f"[{_sym(p['status'])}] {p['status'].replace('_', ' ').upper()}")
     if 'temperature' in h:
         t_ = h['temperature']
-        print(f"  {'Temperature':<25} {t_['value_c']:>16.2f} degC "
+        print(f"  {'Temperature':<25} {s.get('mean_temperature_c', 0):>16.2f} degC "
               f"[{_sym(t_['status'])}] {t_['status'].replace('_', ' ').upper()}")
     if 'water_stress' in h:
         ws = h['water_stress']
-        print(f"  {'Water Stress (NDWS)':<25} {ws['value_days']:>16.2f} d   "
+        print(f"  {'Water Stress (NDWS)':<25} {s.get('NDWS', 0):>16.2f} d   "
               f"[{_severity_symbol(ws['status'])}] {ws['status'].replace('_', ' ').upper()}")
     if 'water_logging' in h:
         wl = h['water_logging']
-        print(f"  {'Water Logging (NDWL0)':<25} {wl['value_days']:>16.2f} d   "
+        print(f"  {'Water Logging (NDWL0)':<25} {s.get('NDWL0', 0):>16.2f} d   "
               f"[{_severity_symbol(wl['status'])}] {wl['status'].replace('_', ' ').upper()}")
     print(f"\n{'='*70}")
 
@@ -633,6 +717,9 @@ if __name__ == "__main__":
     p.add_argument('--soilsat', type=float, default=DEFAULT_SOILSAT,
                    help=f'Extra soil water from field capacity to saturation, mm '
                         f'(water-balance NDWL0; default: {DEFAULT_SOILSAT})')
+    p.add_argument('--workers',      type=int, default=8,
+                   help='parallel GEE fetch workers across model x scenario '
+                        '(default: 8; use 1 to disable parallelism)')
     p.add_argument('--format',       choices=['json', 'text'], default='text')
     p.add_argument('--output',       type=str, default=None,
                    help='write full result as JSON to this path')
@@ -670,6 +757,7 @@ if __name__ == "__main__":
         models=models, scenarios=scenarios,
         fixed_season=args.fixed_season,
         soilcp=soilcp, soilsat=soilsat,
+        max_workers=args.workers,
     )
 
     if args.format == 'json':
