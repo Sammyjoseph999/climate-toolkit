@@ -284,6 +284,8 @@ def evaluate_threshold(value: float, thresholds: Dict[str, Tuple]) -> str:
 # Water-balance hazard severity classes (unit: days), per the Adaptation Atlas
 NDWS_SEVERITY  = (15, 20, 25)
 NDWL0_SEVERITY = (2, 5, 8)
+# Dry-days (NDD) severity class (unit: days), generic per the AE-project wiki
+NDD_SEVERITY   = (15, 20, 25)
 
 def classify_water_hazard(value: float, bounds: Tuple[int, int, int]) -> str:
     """Map a day count to a severity class using the Atlas water-balance bands."""
@@ -312,6 +314,18 @@ def water_balance_hazards(stats: Dict[str, Any]) -> Dict[str, Any]:
             'index':      'NDWL0',
             'value_days': round(float(v), 2),
             'status':     classify_water_hazard(v, NDWL0_SEVERITY),
+        }
+    return out
+
+def dry_days_hazard(stats: Dict[str, Any]) -> Dict[str, Any]:
+    """Build an NDD (dry-days) severity entry from season statistics."""
+    out: Dict[str, Any] = {}
+    if stats.get('NDD') is not None:
+        v = stats['NDD']
+        out['dry_days'] = {
+            'index':      'NDD',
+            'value_days': round(float(v), 2),
+            'status':     classify_water_hazard(v, NDD_SEVERITY),
         }
     return out
 
@@ -474,6 +488,9 @@ def compute_ltm_baseline(
             }
         # NDWS / NDWL0 water-balance severity on the LTM means
         hazard_eval.update(water_balance_hazards(agg))
+        # NTx35 / NTx40 heat-stress (crop-specific) and NDD dry-days on LTM means
+        hazard_eval.update(heat_stress_hazards(agg, crop_name))
+        hazard_eval.update(dry_days_hazard(agg))
 
         ltm_blocks.append({
             'season_number':          sn,
@@ -642,6 +659,9 @@ def calculate_hazards(
             }
         # NDWS / NDWL0 water-balance severity (Adaptation Atlas classes)
         hazard_eval.update(water_balance_hazards(stats))
+        # NTx35 / NTx40 heat-stress severity (crop-specific) and NDD dry-days
+        hazard_eval.update(heat_stress_hazards(stats, crop_name))
+        hazard_eval.update(dry_days_hazard(stats))
         assessments.append({
             'crop':              crop_name,
             'location':          {'latitude': lat, 'longitude': lon},
@@ -742,6 +762,18 @@ def _print_ltm_block(ltm: Dict[str, Any]) -> None:
                 wl  = h['water_logging']
                 sym = _severity_symbol(wl['status'])
                 print(f"  {'Water Logging (NDWL0)':<25} {wl['value_days']:>16.2f} d   [{sym}] {wl['status'].replace('_', ' ').upper()}")
+            if 'heat_stress' in h:
+                hs  = h['heat_stress']
+                sym = _severity_symbol(hs['status'])
+                print(f"  {'Heat Stress (NTx35)':<25} {hs['value_days']:>16.2f} d   [{sym}] {hs['status'].replace('_', ' ').upper()}")
+            if 'extreme_heat_stress' in h:
+                ehs = h['extreme_heat_stress']
+                sym = _severity_symbol(ehs['status'])
+                print(f"  {'Extreme Heat (NTx40)':<25} {ehs['value_days']:>16.2f} d   [{sym}] {ehs['status'].replace('_', ' ').upper()}")
+            if 'dry_days' in h:
+                dd  = h['dry_days']
+                sym = _severity_symbol(dd['status'])
+                print(f"  {'Dry Days (NDD)':<25} {dd['value_days']:>16.2f} d   [{sym}] {dd['status'].replace('_', ' ').upper()}")
     print(f"\n{'='*70}\n")
 
 def print_hazard_results(result: Dict[str, Any]) -> None:
@@ -874,6 +906,18 @@ def print_hazard_results(result: Dict[str, Any]) -> None:
         wl  = hazards['water_logging']
         sym = _severity_symbol(wl['status'])
         print(f"  {'Water Logging (NDWL0)':<25} {wl['value_days']:>16.2f} d   [{sym}] {wl['status'].replace('_', ' ').upper()}")
+    if 'heat_stress' in hazards:
+        hs  = hazards['heat_stress']
+        sym = _severity_symbol(hs['status'])
+        print(f"  {'Heat Stress (NTx35)':<25} {hs['value_days']:>16.2f} d   [{sym}] {hs['status'].replace('_', ' ').upper()}")
+    if 'extreme_heat_stress' in hazards:
+        ehs = hazards['extreme_heat_stress']
+        sym = _severity_symbol(ehs['status'])
+        print(f"  {'Extreme Heat (NTx40)':<25} {ehs['value_days']:>16.2f} d   [{sym}] {ehs['status'].replace('_', ' ').upper()}")
+    if 'dry_days' in hazards:
+        dd  = hazards['dry_days']
+        sym = _severity_symbol(dd['status'])
+        print(f"  {'Dry Days (NDD)':<25} {dd['value_days']:>16.2f} d   [{sym}] {dd['status'].replace('_', ' ').upper()}")
 
     print(f"\n{'='*70}\n")
 
