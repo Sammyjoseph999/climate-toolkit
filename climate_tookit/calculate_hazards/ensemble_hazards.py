@@ -361,13 +361,14 @@ def calculate_ensemble(crop: str, lat: float, lon: float,
                        fixed_season: Optional[str] = None,
                        soilcp: float = DEFAULT_SOILCP,
                        soilsat: float = DEFAULT_SOILSAT,
-                       max_workers: int = 8) -> Dict:
+                       max_workers: int = 0) -> Dict:
     mode = 'fixed_season' if fixed_season else 'auto_detect'
     fixed_w = (_expand_windows(start_year, end_year, _parse_fixed(fixed_season))
                if fixed_season else None)
 
     jobs = [(m, sc) for sc in scenarios for m in models]
-    workers = max(1, min(max_workers, len(jobs)))
+    # max_workers <= 0 -> auto: one worker per job, capped at 16.
+    workers = max(1, min(len(jobs), 16) if max_workers <= 0 else min(max_workers, len(jobs)))
 
     print(f"\nNEX-GDDP ensemble: {crop} at ({lat:.4f}, {lon:.4f})  "
           f"{start_year}-{end_year}")
@@ -842,9 +843,9 @@ if __name__ == "__main__":
     p.add_argument('--soilsat', type=float, default=DEFAULT_SOILSAT,
                    help=f'Extra soil water from field capacity to saturation, mm '
                         f'(water-balance NDWL0; default: {DEFAULT_SOILSAT})')
-    p.add_argument('--workers',      type=int, default=8,
+    p.add_argument('--workers',      type=int, default=0,
                    help='parallel GEE fetch workers across model x scenario '
-                        '(default: 8; use 1 to disable parallelism)')
+                        '(default: auto = one per job, capped at 16; use 1 to disable)')
     p.add_argument('--baseline-source', type=str, default=None,
                    choices=['era_5', 'agera_5', 'chirps+chirts'],
                    help='enable Baseline LTM vs Future LTM comparison using this '
