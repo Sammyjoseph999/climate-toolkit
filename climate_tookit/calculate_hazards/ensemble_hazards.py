@@ -604,19 +604,19 @@ def _print_block(a: Dict, crop: str, lat: float, lon: float,
     print(f"  {'─'*25} {'─'*18}  {'─'*20}")
     if 'precipitation' in h:
         p = h['precipitation']
-        print(f"  {'Precipitation':<25} {p['value_mm']:>16.2f} mm  "
+        print(f"  {'Precipitation':<25} {s.get('total_precipitation_mm', 0):>16.2f} mm  "
               f"[{_sym(p['status'])}] {p['status'].replace('_', ' ').upper()}")
     if 'temperature' in h:
         t_ = h['temperature']
-        print(f"  {'Temperature':<25} {t_['value_c']:>16.2f} degC "
+        print(f"  {'Temperature':<25} {s.get('mean_temperature_c', 0):>16.2f} degC "
               f"[{_sym(t_['status'])}] {t_['status'].replace('_', ' ').upper()}")
     if 'water_stress' in h:
         ws = h['water_stress']
-        print(f"  {'Water Stress (NDWS)':<25} {ws['value_days']:>16.2f} d   "
+        print(f"  {'Water Stress (NDWS)':<25} {s.get('NDWS', 0):>16.2f} d   "
               f"[{_severity_symbol(ws['status'])}] {ws['status'].replace('_', ' ').upper()}")
     if 'water_logging' in h:
         wl = h['water_logging']
-        print(f"  {'Water Logging (NDWL0)':<25} {wl['value_days']:>16.2f} d   "
+        print(f"  {'Water Logging (NDWL0)':<25} {s.get('NDWL0', 0):>16.2f} d   "
               f"[{_severity_symbol(wl['status'])}] {wl['status'].replace('_', ' ').upper()}")
     print(f"\n{'='*70}")
 
