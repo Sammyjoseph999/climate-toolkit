@@ -605,6 +605,7 @@ def ensemble_compare(
     exclude_models: Optional[List[str]] = None,
     focal_summary: Optional[Dict[str, Any]] = None,
     verbose:        bool = True,
+    max_workers:    int = 8,
 ) -> Dict[str, Any]:
     """
     Run the future-period-vs-baseline-period comparison once per NEX-GDDP model, then average across models.
@@ -637,12 +638,10 @@ def ensemble_compare(
         print(f"  Models    : {len(active)}")
         print(f"{'=' * 60}")
 
-    per_model: List[Dict[str, Any]] = []
-    failed:    List[Dict[str, str]] = []
-
-    for i, model in enumerate(active, 1):
-        if verbose:
-            print(f"\n  [{i:02d}/{len(active):02d}] {model}", flush=True)
+    # Each model runs an independent baseline + future comparison (two
+    # I/O-bound GEE span-fetches). Run models concurrently; restore order after.
+    def _run_model(model: str):
+        """Compare one model. Returns (model, result_dict, error)."""
         try:
             r = _compare_one_model(
                 location=location,
@@ -655,15 +654,41 @@ def ensemble_compare(
                 scenario=scenario,
             )
             if "error" in r:
-                if verbose: print(f"    x  {r['error']}")
-                failed.append({"model": model, "error": r["error"]})
-                continue
-            r["_model"] = model
-            per_model.append(r)
-            if verbose: print("    ok")
+                return model, None, r["error"]
+            return model, r, None
         except Exception as exc:
-            if verbose: print(f"    x  {exc}")
-            failed.append({"model": model, "error": str(exc)})
+            return model, None, str(exc)
+
+    by_model: Dict[str, Dict[str, Any]] = {}
+    failed:   List[Dict[str, str]] = []
+    workers = max(1, min(max_workers, len(active)))
+
+    def _record(model, r, err, idx):
+        if err is not None or r is None:
+            failed.append({"model": model, "error": err or "unknown error"})
+            if verbose:
+                print(f"  [{idx:02d}/{len(active):02d}] {model}  x  {err}", flush=True)
+        else:
+            r["_model"] = model
+            by_model[model] = r
+            if verbose:
+                print(f"  [{idx:02d}/{len(active):02d}] {model}  ok", flush=True)
+
+    if workers == 1:
+        for i, model in enumerate(active, 1):
+            m, r, err = _run_model(model)
+            _record(m, r, err, i)
+    else:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        order = {m: i for i, m in enumerate(active, 1)}
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = {ex.submit(_run_model, m): m for m in active}
+            for fut in as_completed(futs):
+                m, r, err = fut.result()
+                _record(m, r, err, order[m])
+
+    # Deterministic input-model order regardless of completion order.
+    per_model: List[Dict[str, Any]] = [by_model[m] for m in active if m in by_model]
 
     if not per_model:
         return {"error": "All models failed.", "failed_models": failed}
@@ -897,6 +922,13 @@ def print_report(r: Dict[str, Any]) -> None:
 
 # CLI
 def main() -> None:
+    # Ensure Unicode output works on Windows consoles that default to cp1252.
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass
+
     if "--list-models" in sys.argv:
         print("Available NEX-GDDP-CMIP6 models:")
         for i, m in enumerate(NEX_GDDP_MODELS, 1):
@@ -945,6 +977,9 @@ def main() -> None:
                         f"{', '.join(sorted(SUPPORTED))}")
     p.add_argument("--output",         default=None, help="Save JSON result to this path")
     p.add_argument("--quiet",          action="store_true")
+    p.add_argument("--workers",        type=int, default=8,
+                   help="Parallel GEE fetch workers across models "
+                        "(default: 8; use 1 to disable parallelism)")
     args = p.parse_args()
 
     try:
@@ -1022,6 +1057,7 @@ def main() -> None:
             exclude_models=exclude,
             focal_summary=scenario_focal,
             verbose=not args.quiet,
+            max_workers=args.workers,
         )
         all_results[scenario] = result
         print_report(result)

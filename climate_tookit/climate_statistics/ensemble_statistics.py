@@ -253,6 +253,7 @@ def analyze_ensemble_nex_gddp(
     exclude_models: Optional[List[str]] = None,
     extra_months:   int = 6,
     verbose:        bool = True,
+    max_workers:    int = 8,
 ) -> Dict[str, Any]:
     """
     Future LTM via NEX-GDDP CMIP6 ensemble.
@@ -284,17 +285,11 @@ def analyze_ensemble_nex_gddp(
         print(f"{'=' * 60}")
 
     # Per-model collection. The LTM list is keyed by model name so callers can verify the ensemble = mean of per-model values.
-    per_model_seasons: List[List[Dict[str, Any]]] = []
-    per_model_ltm_list: List[Dict[str, Any]]     = []  # ordered, used for step 2 below
-    per_model_ltm_by_name: Dict[str, Dict[str, Any]] = {}
-    per_model_annual:  List[Dict[str, Dict]]     = []
-    models_ok: List[str]            = []
-    failed:    List[Dict[str, str]] = []
-    for i, model in enumerate(active, 1):
-        if verbose:
-            print(f"\n  [{i:02d}/{len(active):02d}] {model}", flush=True)
+    # Each model's analyze_climate_statistics() is an independent, I/O-bound GEE
+    # run, so the models are fetched concurrently. Order is restored afterwards.
+    def _run_model(model: str):
+        """Run one model's statistics. Returns (model, result_dict, error)."""
         try:
-            # STEP 1 of the FUTURE LTM pipeline (per-model):
             r = analyze_climate_statistics(
                 location_coord=location_coord,
                 start_year=start_year, end_year=end_year,
@@ -302,26 +297,58 @@ def analyze_ensemble_nex_gddp(
                 model=model, scenario=scenario,
                 extra_months=extra_months,
             )
-            seasons    = r.get('season_statistics') or []
-            ltm_model  = r.get('ltm_season_summary') or {}  
-            annual     = r.get('annual_summary') or {}
+            seasons   = r.get('season_statistics') or []
+            ltm_model = r.get('ltm_season_summary') or {}
             if not seasons and not ltm_model.get('windows'):
-                failed.append({'model': model,
-                               'error': 'no seasons or LTM produced'})
-                if verbose:
-                    print("    x  no seasons or LTM produced")
-                continue
-            per_model_seasons.append(seasons)
-            per_model_ltm_list.append(ltm_model)
-            per_model_ltm_by_name[model] = ltm_model
-            per_model_annual.append(annual)
-            models_ok.append(model)
-            if verbose:
-                print("    ok")
+                return model, None, 'no seasons or LTM produced'
+            return model, r, None
         except Exception as exc:
-            failed.append({'model': model, 'error': str(exc)})
+            return model, None, str(exc)
+
+    raw_by_model: Dict[str, Dict[str, Any]] = {}
+    failed:    List[Dict[str, str]] = []
+    workers = max(1, min(max_workers, len(active)))
+
+    def _record(model, r, err, idx):
+        if err is not None or r is None:
+            failed.append({'model': model, 'error': err or 'unknown error'})
             if verbose:
-                print(f"    x  {exc}")
+                print(f"  [{idx:02d}/{len(active):02d}] {model}  x  {err}", flush=True)
+        else:
+            raw_by_model[model] = r
+            if verbose:
+                print(f"  [{idx:02d}/{len(active):02d}] {model}  ok", flush=True)
+
+    if workers == 1:
+        for i, model in enumerate(active, 1):
+            m, r, err = _run_model(model)
+            _record(m, r, err, i)
+    else:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        order = {m: i for i, m in enumerate(active, 1)}
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = {ex.submit(_run_model, m): m for m in active}
+            for fut in as_completed(futs):
+                m, r, err = fut.result()
+                _record(m, r, err, order[m])
+
+    # Restore deterministic (input) model order, then unpack into the
+    # downstream per-model lists exactly as the serial path produced them.
+    per_model_seasons: List[List[Dict[str, Any]]] = []
+    per_model_ltm_list: List[Dict[str, Any]]     = []
+    per_model_ltm_by_name: Dict[str, Dict[str, Any]] = {}
+    per_model_annual:  List[Dict[str, Dict]]     = []
+    models_ok: List[str]            = []
+    for model in active:
+        r = raw_by_model.get(model)
+        if r is None:
+            continue
+        per_model_seasons.append(r.get('season_statistics') or [])
+        ltm_model = r.get('ltm_season_summary') or {}
+        per_model_ltm_list.append(ltm_model)
+        per_model_ltm_by_name[model] = ltm_model
+        per_model_annual.append(r.get('annual_summary') or {})
+        models_ok.append(model)
 
     if not models_ok:
         return {'error': 'All models failed.', 'failed_models': failed}
@@ -537,6 +564,14 @@ def print_report(result: Dict[str, Any]) -> None:
 
 # CLI
 def main() -> None:
+    # Ensure Unicode output (arrows, box-drawing, degree sign) works on
+    # Windows consoles that default to cp1252.
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass
+
     if "--list-models" in sys.argv:
         print("Available NEX-GDDP CMIP6 models:")
         for i, m in enumerate(NEX_GDDP_MODELS, 1):
@@ -592,6 +627,9 @@ def main() -> None:
                    help='Skip saving the JSON output')
     p.add_argument("--quiet",      action='store_true',
                    help='Suppress per-model progress prints')
+    p.add_argument("--workers",    type=int, default=8,
+                   help='Parallel GEE fetch workers across models '
+                        '(default: 8; use 1 to disable parallelism)')
     args = p.parse_args()
 
     try:
@@ -637,6 +675,7 @@ def main() -> None:
             exclude_models=excl,
             extra_months=args.extra_months,
             verbose=not args.quiet,
+            max_workers=args.workers,
         )
         all_results[scenario] = result
 
