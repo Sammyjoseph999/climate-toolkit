@@ -508,6 +508,70 @@ def compute_ltm_baseline(
         'baseline_method': 'long_term_mean',
         'per_season':      ltm_blocks,
     }
+
+# Actual-year vs Baseline-LTM anomalies
+# (metric_key, display label, unit) for the season-hazard anomaly view.
+_ANOMALY_METRICS: List[Tuple[str, str, str]] = [
+    ('total_precipitation_mm', 'Total Precip', 'mm'),
+    ('mean_temperature_c',     'TAVG',         'degC'),
+    ('max_tmax_c',             'Max Tmax',     'degC'),
+    ('min_tmin_c',             'Min Tmin',     'degC'),
+    ('NTx35',                  'NTx35',        'd'),
+    ('NTx40',                  'NTx40',        'd'),
+    ('NDD',                    'NDD',          'd'),
+    ('NDWS',                   'NDWS',         'd'),
+    ('NDWL0',                  'NDWL0',        'd'),
+]
+
+def compute_ltm_anomalies(
+    assessments: List[Dict[str, Any]],
+    baseline_ltm: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Per-season deviations of each actual year from the Baseline LTM.
+
+    For each assessed season, diffs its hazard metrics against the LTM block
+    for the same season slot (season_number): anomaly = actual - LTM, plus
+    percent change. Realises the architecture's 'Actual year vs LTM season
+    hazards' comparison.
+    """
+    if not baseline_ltm or not baseline_ltm.get('per_season'):
+        return None
+    ltm_by_slot = {b['season_number']: b for b in baseline_ltm['per_season']}
+    per_assessment: List[Dict[str, Any]] = []
+    for a in assessments:
+        si = a.get('season_info', {})
+        sn = si.get('season_number', 1)
+        ltm_blk = ltm_by_slot.get(sn)
+        if not ltm_blk:
+            continue
+        a_stats = a.get('season_statistics', {})
+        l_stats = ltm_blk.get('season_statistics', {})
+        metrics: Dict[str, Any] = {}
+        for key, _label, _unit in _ANOMALY_METRICS:
+            av, lv = a_stats.get(key), l_stats.get(key)
+            if av is None or lv is None:
+                continue
+            diff = round(float(av) - float(lv), 2)
+            pct  = round(diff / float(lv) * 100, 1) if lv not in (0, None) else None
+            metrics[key] = {
+                'actual': round(float(av), 2),
+                'ltm':    round(float(lv), 2),
+                'diff':   diff,
+                'pct':    pct,
+            }
+        per_assessment.append({
+            'year':                   si.get('year'),
+            'season_number':          sn,
+            'total_seasons_per_year': si.get('total_seasons_per_year', 1),
+            'metrics':                metrics,
+        })
+    if not per_assessment:
+        return None
+    return {
+        'crop':           baseline_ltm.get('crop'),
+        'method':         'actual_minus_baseline_ltm',
+        'per_assessment': per_assessment,
+    }
 # Main hazard calculation
 def calculate_hazards(
     crop_name:         str,
@@ -672,9 +736,11 @@ def calculate_hazards(
     # Single season -> flat dict; multiple -> wrapped list with Baseline LTM
     if len(assessments) == 1:
         return assessments[0]
+    baseline_ltm = compute_ltm_baseline(assessments, crop_name, thresholds)
     return {
         'assessments':  assessments,
-        'baseline_ltm': compute_ltm_baseline(assessments, crop_name, thresholds),
+        'baseline_ltm': baseline_ltm,
+        'ltm_anomalies': compute_ltm_anomalies(assessments, baseline_ltm),
     }
 
 # Pretty printer
@@ -776,6 +842,35 @@ def _print_ltm_block(ltm: Dict[str, Any]) -> None:
                 print(f"  {'Dry Days (NDD)':<25} {dd['value_days']:>16.2f} d   [{sym}] {dd['status'].replace('_', ' ').upper()}")
     print(f"\n{'='*70}\n")
 
+def _print_ltm_anomalies(anom: Dict[str, Any]) -> None:
+    """Print per-season Actual-vs-Baseline-LTM anomaly tables."""
+    if not anom or not anom.get('per_assessment'):
+        return
+    print(f"\n{'='*70}")
+    print(f"  ANOMALIES: ACTUAL YEAR vs BASELINE LTM: {str(anom.get('crop','')).upper()}")
+    print(f"  (anomaly = actual - LTM; arrow & % show direction/magnitude)")
+    print(f"{'='*70}")
+    for blk in anom['per_assessment']:
+        y   = blk.get('year', '')
+        sn  = blk.get('season_number', 1)
+        t   = blk.get('total_seasons_per_year', 1)
+        label = f"Year {y}  –  Season {sn} of {t}" if t and t > 1 else f"Year {y}"
+        print(f"\n  {label}")
+        print(f"  {'─'*66}")
+        print(f"  {'Metric':<18}{'Actual':>12}{'LTM':>12}{'Anomaly':>14}{'% change':>12}")
+        print(f"  {'─'*18}{'─'*12}{'─'*12}{'─'*14}{'─'*12}")
+        for key, label2, unit in _ANOMALY_METRICS:
+            m = blk['metrics'].get(key)
+            if not m:
+                continue
+            diff  = m['diff']
+            arrow = '↑' if diff > 0 else '↓' if diff < 0 else '→'
+            anom_str = f"{arrow} {abs(diff):.2f}"
+            pct   = f"{m['pct']:+.1f}%" if m['pct'] is not None else "n/a"
+            name  = f"{label2} ({unit})"
+            print(f"  {name:<18}{m['actual']:>12.2f}{m['ltm']:>12.2f}{anom_str:>14}{pct:>12}")
+    print(f"\n{'='*70}\n")
+
 def print_hazard_results(result: Dict[str, Any]) -> None:
     # Multi-season wrapper, label each block as "Year YYYY – Season X of Y" when available
     if 'assessments' in result:
@@ -796,6 +891,8 @@ def print_hazard_results(result: Dict[str, Any]) -> None:
             print_hazard_results(a)
         if result.get('baseline_ltm'):
             _print_ltm_block(result['baseline_ltm'])
+        if result.get('ltm_anomalies'):
+            _print_ltm_anomalies(result['ltm_anomalies'])
         return
 
     if 'error' in result:
