@@ -29,6 +29,7 @@ from hazards import (
     CROP_THRESHOLDS,
     evaluate_threshold,
     calculate_season_statistics,
+    calculate_hazards,
     add_et0,
     water_balance_hazards,
     heat_stress_hazards,
@@ -713,6 +714,98 @@ def print_results(r: Dict) -> None:
               f"{h['dry_days']['status'].replace('_', ' ').upper()}")
     print(f"\n{'='*70}\n")
 
+# Baseline LTM vs Future LTM hazard comparison (#79 Part C)
+# (metric_key, display label, unit) for the season-hazard comparison view.
+_CMP_METRICS: List[Tuple[str, str, str]] = [
+    ('total_precipitation_mm', 'Total Precip', 'mm'),
+    ('mean_temperature_c',     'TAVG',         'degC'),
+    ('max_tmax_c',             'Max Tmax',     'degC'),
+    ('min_tmin_c',             'Min Tmin',     'degC'),
+    ('NTx35',                  'NTx35',        'd'),
+    ('NTx40',                  'NTx40',        'd'),
+    ('NDD',                    'NDD',          'd'),
+    ('NDWS',                   'NDWS',         'd'),
+    ('NDWL0',                  'NDWL0',        'd'),
+]
+
+def _overall_hazard_stats(hazards_result: Dict) -> Dict:
+    """Collapse a hazards.py result to one overall LTM stats dict (mean across
+    all assessed seasons), so it can be compared to the future ensemble mean."""
+    if 'assessments' in hazards_result:
+        rows = [a.get('season_statistics', {}) for a in hazards_result['assessments']]
+    elif 'season_statistics' in hazards_result:
+        rows = [hazards_result['season_statistics']]
+    else:
+        return {}
+    out: Dict[str, float] = {}
+    keys = [k for k, _l, _u in _CMP_METRICS] + ['mean_tmax_c', 'mean_tmin_c']
+    for k in keys:
+        vals = [r[k] for r in rows if r.get(k) is not None]
+        if vals:
+            out[k] = round(mean(vals), 2)
+    return out
+
+def compare_baseline_future_ltm(crop: str, baseline_stats: Dict,
+                                future_stats: Dict) -> Dict:
+    """Diff Baseline-LTM vs Future-LTM hazard metrics, with status transitions.
+
+    Both sides are classified with the same crop-specific logic (_avg_hazards)
+    so status changes are directly comparable.
+    """
+    bh = _avg_hazards(crop, baseline_stats)
+    fh = _avg_hazards(crop, future_stats)
+    metrics = []
+    for key, label, unit in _CMP_METRICS:
+        bv, fv = baseline_stats.get(key), future_stats.get(key)
+        if bv is None or fv is None:
+            continue
+        change = round(float(fv) - float(bv), 2)
+        pct    = round(change / float(bv) * 100, 1) if bv not in (0, None) else None
+        metrics.append({'key': key, 'label': label, 'unit': unit,
+                        'baseline': round(float(bv), 2), 'future': round(float(fv), 2),
+                        'change': change, 'pct': pct})
+    status = {}
+    for ind in ('precipitation', 'temperature', 'water_stress', 'water_logging',
+                'heat_stress', 'extreme_heat_stress', 'dry_days'):
+        if ind in bh or ind in fh:
+            status[ind] = {'baseline': (bh.get(ind) or {}).get('status'),
+                           'future':   (fh.get(ind) or {}).get('status')}
+    return {'crop': crop, 'metrics': metrics, 'status_transitions': status}
+
+def print_baseline_future_ltm(cmp: Dict, baseline_label: str,
+                              future_label: str) -> None:
+    """Render the Baseline-LTM vs Future-LTM hazard comparison."""
+    print(f"\n{'='*70}")
+    print(f"  BASELINE LTM vs FUTURE LTM: {cmp['crop'].upper()}")
+    print(f"  Baseline: {baseline_label}")
+    print(f"  Future:   {future_label}")
+    print(f"  (change = future - baseline)")
+    print(f"{'='*70}")
+    print(f"  {'Metric':<18}{'Baseline':>12}{'Future':>12}{'Change':>14}{'% change':>12}")
+    print(f"  {'─'*18}{'─'*12}{'─'*12}{'─'*14}{'─'*12}")
+    for m in cmp['metrics']:
+        arrow = '↑' if m['change'] > 0 else '↓' if m['change'] < 0 else '→'
+        chg   = f"{arrow} {abs(m['change']):.2f}"
+        pct   = f"{m['pct']:+.1f}%" if m['pct'] is not None else "n/a"
+        name  = f"{m['label']} ({m['unit']})"
+        print(f"  {name:<18}{m['baseline']:>12.2f}{m['future']:>12.2f}{chg:>14}{pct:>12}")
+    st = cmp.get('status_transitions') or {}
+    if st:
+        print(f"\n  Status transitions (baseline -> future)")
+        print(f"  {'─'*66}")
+        labels = {'precipitation': 'Precipitation', 'temperature': 'Temperature',
+                  'water_stress': 'Water Stress (NDWS)', 'water_logging': 'Water Logging (NDWL0)',
+                  'heat_stress': 'Heat Stress (NTx35)', 'extreme_heat_stress': 'Extreme Heat (NTx40)',
+                  'dry_days': 'Dry Days (NDD)'}
+        for ind, lab in labels.items():
+            if ind not in st:
+                continue
+            b = (st[ind]['baseline'] or 'n/a').replace('_', ' ').upper()
+            f = (st[ind]['future'] or 'n/a').replace('_', ' ').upper()
+            mark = '' if b == f else '  *changed'
+            print(f"  {lab:<25} {b:<22} -> {f}{mark}")
+    print(f"\n{'='*70}\n")
+
 # CLI
 if __name__ == "__main__":
     # Ensure Unicode output works on Windows consoles that default to cp1252.
@@ -752,6 +845,14 @@ if __name__ == "__main__":
     p.add_argument('--workers',      type=int, default=8,
                    help='parallel GEE fetch workers across model x scenario '
                         '(default: 8; use 1 to disable parallelism)')
+    p.add_argument('--baseline-source', type=str, default=None,
+                   choices=['era_5', 'agera_5', 'chirps+chirts'],
+                   help='enable Baseline LTM vs Future LTM comparison using this '
+                        'observed source for the baseline (needs --baseline-start/-end)')
+    p.add_argument('--baseline-start', type=int, default=None,
+                   help='baseline period start year (for the LTM comparison)')
+    p.add_argument('--baseline-end',   type=int, default=None,
+                   help='baseline period end year (for the LTM comparison)')
     p.add_argument('--format',       choices=['json', 'text'], default='text')
     p.add_argument('--output',       type=str, default=None,
                    help='write full result as JSON to this path')
@@ -792,10 +893,41 @@ if __name__ == "__main__":
         max_workers=args.workers,
     )
 
+    # Baseline LTM vs Future LTM comparison (#79 Part C)
+    cmp_result = None
+    if args.baseline_source and args.baseline_start and args.baseline_end:
+        if 'error' in result:
+            print("\nSkipping baseline comparison: future ensemble produced no result.")
+        else:
+            print(f"\nFetching baseline {args.baseline_start}-{args.baseline_end} "
+                  f"from {args.baseline_source} for LTM comparison...")
+            baseline = calculate_hazards(
+                crop_name=args.crop,
+                location_coord=(lat, lon),
+                date_from=f"{args.baseline_start}-01-01",
+                date_to=f"{args.baseline_end}-12-31",
+                fixed_season=args.fixed_season,
+                source=args.baseline_source,
+                soilcp=soilcp, soilsat=soilsat,
+            )
+            if 'error' in baseline:
+                print(f"Baseline comparison unavailable: {baseline['error']}")
+            else:
+                base_stats   = _overall_hazard_stats(baseline)
+                future_stats = (result.get('overall_ensemble') or {}).get('season_statistics', {})
+                cmp_result = compare_baseline_future_ltm(args.crop, base_stats, future_stats)
+                result['baseline_future_ltm_comparison'] = cmp_result
+
     if args.format == 'json':
         print(json.dumps(result, indent=2, default=str))
     else:
         print_results(result)
+        if cmp_result:
+            print_baseline_future_ltm(
+                cmp_result,
+                baseline_label=f"{args.baseline_start}-{args.baseline_end} ({args.baseline_source})",
+                future_label=f"{args.start_year}-{args.end_year} (NEX-GDDP ensemble, {', '.join(scenarios)})",
+            )
 
     if args.output:
         os.makedirs(os.path.dirname(os.path.abspath(args.output)) or '.', exist_ok=True)
