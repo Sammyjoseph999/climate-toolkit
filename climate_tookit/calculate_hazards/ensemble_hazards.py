@@ -32,6 +32,7 @@ from hazards import (
     add_et0,
     water_balance_hazards,
     heat_stress_hazards,
+    dry_days_hazard,
     _severity_symbol,
     DEFAULT_SOILCP,
     DEFAULT_SOILSAT,
@@ -216,6 +217,8 @@ def _evaluate(crop: str, lat: float, lon: float,
     hazards.update(water_balance_hazards(stats))
     # NTx35 / NTx40 heat-stress severity (crop-specific bands)
     hazards.update(heat_stress_hazards(stats, crop))
+    # NDD dry-days severity
+    hazards.update(dry_days_hazard(stats))
     length = (datetime.fromisoformat(w['end'])
               - datetime.fromisoformat(w['start'])).days
     return {
@@ -286,6 +289,8 @@ def _avg_hazards(crop: str, agg: Dict) -> Dict:
     out.update(water_balance_hazards(agg))
     # NTx35 / NTx40 heat-stress severity on the ensemble-mean day counts
     out.update(heat_stress_hazards(agg, crop))
+    # NDD dry-days severity on the ensemble-mean day counts
+    out.update(dry_days_hazard(agg))
     return out
 
 def _agg_hazard_statuses(bucket: List[Dict]) -> Dict:
@@ -295,7 +300,7 @@ def _agg_hazard_statuses(bucket: List[Dict]) -> Dict:
     """
     from collections import Counter
     indicators = ['precipitation', 'temperature', 'water_stress', 'water_logging',
-                  'heat_stress', 'extreme_heat_stress']
+                  'heat_stress', 'extreme_heat_stress', 'dry_days']
     out = {}
     for ind in indicators:
         statuses = [
@@ -632,6 +637,10 @@ def _print_block(a: Dict, crop: str, lat: float, lon: float,
         ehs = h['extreme_heat_stress']
         print(f"  {'Extreme Heat (NTx40)':<25} {s.get('NTx40', 0):>16.2f} d   "
               f"[{_severity_symbol(ehs['status'])}] {ehs['status'].replace('_', ' ').upper()}")
+    if 'dry_days' in h:
+        dd = h['dry_days']
+        print(f"  {'Dry Days (NDD)':<25} {s.get('NDD', 0):>16.2f} d   "
+              f"[{_severity_symbol(dd['status'])}] {dd['status'].replace('_', ' ').upper()}")
     print(f"\n{'='*70}")
 
 def print_results(r: Dict) -> None:
@@ -699,6 +708,9 @@ def print_results(r: Dict) -> None:
     if 'extreme_heat_stress' in h:
         print(f"  NTx40  status:        [{_severity_symbol(h['extreme_heat_stress']['status'])}] "
               f"{h['extreme_heat_stress']['status'].replace('_', ' ').upper()}")
+    if 'dry_days' in h:
+        print(f"  NDD    status:        [{_severity_symbol(h['dry_days']['status'])}] "
+              f"{h['dry_days']['status'].replace('_', ' ').upper()}")
     print(f"\n{'='*70}\n")
 
 # CLI
