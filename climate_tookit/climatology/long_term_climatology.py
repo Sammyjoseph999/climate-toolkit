@@ -901,7 +901,7 @@ def calculate_climatology_ensemble(
     exclude_models: Optional[List[str]] = None,
     output_dir: Optional[str] = None,
     verbose: bool = True,
-    max_workers: int = 8,
+    max_workers: int = 0,
 ) -> Dict[str, Any]:
     """
     NEX-GDDP-CMIP6 ensemble climatology.
@@ -945,7 +945,8 @@ def calculate_climatology_ensemble(
 
     per_model_results: Dict[str, Dict[str, Any]] = {}
     failed: List[Dict[str, str]] = []
-    workers = max(1, min(max_workers, len(active)))
+    # max_workers <= 0 -> auto: one worker per model, capped at 16.
+    workers = max(1, min(len(active), 16) if max_workers <= 0 else min(max_workers, len(active)))
 
     def _record(model: str, r: Optional[Dict[str, Any]], err: Optional[str], idx: int) -> None:
         if err is not None or r is None:
@@ -1266,9 +1267,9 @@ Examples:
                             '(default: all 16).')
     parser.add_argument('--exclude-models', type=str, default=None,
                        help='NEX-GDDP only. Comma-separated CMIP6 models to drop.')
-    parser.add_argument('--workers', type=int, default=8,
+    parser.add_argument('--workers', type=int, default=0,
                        help='NEX-GDDP only. Parallel fetch workers across models '
-                            '(default: 8; use 1 to disable parallelism).')
+                            '(default: auto = one per model, capped at 16; use 1 to disable).')
     parser.add_argument('--format', choices=['text', 'json'], default='text',
                        help='Output format (default: text)')
     parser.add_argument('--output', type=str,

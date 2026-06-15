@@ -359,7 +359,7 @@ def aggregate_overall(model_results: List[Dict]):
     return ensemble, model_averages
 
 # Top-level orchestrator
-def run_ensemble(lat, lon, start_year, end_year, scenarios, models, fixed_arg=None, verbose=True, max_workers=8):
+def run_ensemble(lat, lon, start_year, end_year, scenarios, models, fixed_arg=None, verbose=True, max_workers=0):
     results = {}
     mode    = 'fixed' if fixed_arg else 'auto'
 
@@ -408,7 +408,8 @@ def run_ensemble(lat, lon, start_year, end_year, scenarios, models, fixed_arg=No
             return entry.get('model', '?')
 
         by_model = {}
-        workers = max(1, min(max_workers, len(models)))
+        # max_workers <= 0 -> auto: one worker per model, capped at 16.
+        workers = max(1, min(len(models), 16) if max_workers <= 0 else min(max_workers, len(models)))
         if workers == 1:
             for i, model in enumerate(models, 1):
                 _, entry, err = _run_model(model)
@@ -666,8 +667,8 @@ def main():
     p.add_argument('--list-models',  action='store_true', help='Print models and exit')
     p.add_argument('--output',       help='Save JSON result here')
     p.add_argument('--quiet',        action='store_true')
-    p.add_argument('--workers',      type=int, default=8,
-        help='Parallel GEE fetch workers across models (default: 8; use 1 to disable)')
+    p.add_argument('--workers',      type=int, default=0,
+        help='Parallel GEE fetch workers across models (default: auto = one per model, capped at 16; use 1 to disable)')
     args = p.parse_args()
 
     if args.source_key:

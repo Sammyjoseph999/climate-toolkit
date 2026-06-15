@@ -253,7 +253,7 @@ def analyze_ensemble_nex_gddp(
     exclude_models: Optional[List[str]] = None,
     extra_months:   int = 6,
     verbose:        bool = True,
-    max_workers:    int = 8,
+    max_workers:    int = 0,
 ) -> Dict[str, Any]:
     """
     Future LTM via NEX-GDDP CMIP6 ensemble.
@@ -307,7 +307,8 @@ def analyze_ensemble_nex_gddp(
 
     raw_by_model: Dict[str, Dict[str, Any]] = {}
     failed:    List[Dict[str, str]] = []
-    workers = max(1, min(max_workers, len(active)))
+    # max_workers <= 0 -> auto: one worker per model, capped at 16.
+    workers = max(1, min(len(active), 16) if max_workers <= 0 else min(max_workers, len(active)))
 
     def _record(model, r, err, idx):
         if err is not None or r is None:
@@ -627,9 +628,9 @@ def main() -> None:
                    help='Skip saving the JSON output')
     p.add_argument("--quiet",      action='store_true',
                    help='Suppress per-model progress prints')
-    p.add_argument("--workers",    type=int, default=8,
+    p.add_argument("--workers",    type=int, default=0,
                    help='Parallel GEE fetch workers across models '
-                        '(default: 8; use 1 to disable parallelism)')
+                        '(default: auto = one per model, capped at 16; use 1 to disable)')
     args = p.parse_args()
 
     try:
