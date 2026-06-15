@@ -120,6 +120,47 @@ def _normalize_units(df: pd.DataFrame, tmax_col: Optional[str], tmin_col: Option
             df[tmin_col] = df[tmin_col] - 273.15
     return df
 
+def _default_variables() -> List:
+    return [
+        ClimateVariable.precipitation,
+        ClimateVariable.max_temperature,
+        ClimateVariable.min_temperature,
+    ]
+
+def _fetch_climatology_span(
+    lat: float, lon: float, start_year: int, end_year: int,
+    source: str, variables: Optional[List] = None,
+    model: Optional[str] = None, scenario: Optional[str] = None,
+) -> pd.DataFrame:
+    """Fetch the entire start_year..end_year daily series in ONE call.
+
+    Replaces one fetch per year with one per (model, scenario). The frame
+    carries a datetime 'date' column so callers can slice per year in memory.
+    """
+    if not PREPROCESS_AVAILABLE:
+        raise Exception("Preprocessing pipeline required")
+    if variables is None:
+        variables = _default_variables()
+    fetch_kwargs: Dict[str, Any] = {}
+    if model is not None:
+        fetch_kwargs['model'] = model
+    if scenario is not None:
+        fetch_kwargs['scenario'] = scenario
+    df = preprocess_data(
+        source=source,
+        location_coord=(lat, lon),
+        variables=variables,
+        date_from=date(start_year, 1, 1),
+        date_to=date(end_year, 12, 31),
+        **fetch_kwargs,
+    )
+    if df is None or df.empty:
+        return pd.DataFrame()
+    df = df.copy()
+    if 'date' in df.columns:
+        df['date'] = pd.to_datetime(df['date'])
+    return df
+
 def calculate_annual_statistics(
     lat: float,
     lon: float,
@@ -128,40 +169,41 @@ def calculate_annual_statistics(
     variables: Optional[List] = None,
     model: Optional[str] = None,
     scenario: Optional[str] = None,
-    verbose: bool = True
+    verbose: bool = True,
+    df: Optional[pd.DataFrame] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Calculate annual statistics for a single year.
     Works with partial data - accepts datasets with only precipitation, only temperature, or both.
+
+    If ``df`` is provided it is used directly (an in-memory slice of a
+    pre-fetched multi-year span); otherwise the year is fetched on demand.
     """
     if not PREPROCESS_AVAILABLE:
         raise Exception("Preprocessing pipeline required")
 
     if variables is None:
-        variables = [
-            ClimateVariable.precipitation,
-            ClimateVariable.max_temperature,
-            ClimateVariable.min_temperature
-        ]
+        variables = _default_variables()
     try:
-        date_from = date(year, 1, 1)
-        date_to = date(year, 12, 31)
+        if df is None:
+            date_from = date(year, 1, 1)
+            date_to = date(year, 12, 31)
 
-        fetch_kwargs: Dict[str, Any] = {}
-        if model is not None:
-            fetch_kwargs['model'] = model
-        if scenario is not None:
-            fetch_kwargs['scenario'] = scenario
-        df = preprocess_data(
-            source=source,
-            location_coord=(lat, lon),
-            variables=variables,
-            date_from=date_from,
-            date_to=date_to,
-            **fetch_kwargs
-        )
-        
-        if df.empty or len(df) < 300:  
+            fetch_kwargs: Dict[str, Any] = {}
+            if model is not None:
+                fetch_kwargs['model'] = model
+            if scenario is not None:
+                fetch_kwargs['scenario'] = scenario
+            df = preprocess_data(
+                source=source,
+                location_coord=(lat, lon),
+                variables=variables,
+                date_from=date_from,
+                date_to=date_to,
+                **fetch_kwargs
+            )
+
+        if df is None or df.empty or len(df) < 300:
             if verbose:
                 print(f"  ✗ {year}: Insufficient data ({len(df)} days)")
             return None
@@ -472,13 +514,32 @@ def calculate_climatology(
 
     annual_stats = []
 
+    # Fetch the whole period in one call, then slice per year in memory.
+    # Falls back to per-year fetching if the span fetch fails.
+    full_span: Optional[pd.DataFrame] = None
+    try:
+        full_span = _fetch_climatology_span(
+            lat, lon, start_year, end_year, source, variables,
+            model=model, scenario=scenario,
+        )
+    except Exception as e:
+        if verbose:
+            print(f"  (span fetch unavailable, falling back to per-year: {e})")
+        full_span = None
+
+    have_span = full_span is not None and not full_span.empty and 'date' in full_span.columns
+
     for year in range(start_year, end_year + 1):
         if verbose:
             print(f"  [{year - start_year + 1}/{n_years}] {year}...", end=' ')
 
+        year_df = None
+        if have_span:
+            year_df = full_span[full_span['date'].dt.year == year].copy()
+
         stats = calculate_annual_statistics(lat, lon, year, source, variables,
                                             model=model, scenario=scenario,
-                                            verbose=verbose)
+                                            verbose=verbose, df=year_df)
         if stats:
             annual_stats.append(stats)
             if verbose:
@@ -834,6 +895,7 @@ def calculate_climatology_ensemble(
     exclude_models: Optional[List[str]] = None,
     output_dir: Optional[str] = None,
     verbose: bool = True,
+    max_workers: int = 8,
 ) -> Dict[str, Any]:
     """
     NEX-GDDP-CMIP6 ensemble climatology.
@@ -859,11 +921,8 @@ def calculate_climatology_ensemble(
         print(f"  Models   : {len(active)}")
         print(f"{'='*70}\n")
 
-    per_model_results: Dict[str, Dict[str, Any]] = {}
-    failed: List[Dict[str, str]] = []
-    for i, model in enumerate(active, 1):
-        if verbose:
-            print(f"  [{i:02d}/{len(active):02d}] {model:<22}", end=' ', flush=True)
+    def _run_model(model: str) -> Tuple[str, Optional[Dict[str, Any]], Optional[str]]:
+        """Compute one model's climatology. Returns (model, result, error)."""
         try:
             r = calculate_climatology(
                 location_coord=(lat, lon),
@@ -873,18 +932,41 @@ def calculate_climatology_ensemble(
                 verbose=False,
             )
             if 'error' in r:
-                failed.append({'model': model, 'error': r['error']})
-                if verbose:
-                    print(f"✗  {r['error']}")
-                continue
+                return model, None, r['error']
+            return model, r, None
+        except Exception as exc:
+            return model, None, str(exc)
+
+    per_model_results: Dict[str, Dict[str, Any]] = {}
+    failed: List[Dict[str, str]] = []
+    workers = max(1, min(max_workers, len(active)))
+
+    def _record(model: str, r: Optional[Dict[str, Any]], err: Optional[str], idx: int) -> None:
+        if err is not None or r is None:
+            failed.append({'model': model, 'error': err or 'unknown error'})
+            if verbose:
+                print(f"  [{idx:02d}/{len(active):02d}] {model:<22} ✗  {err}")
+        else:
             per_model_results[model] = r
             if verbose:
                 yrs = r['period']['years_with_data']
-                print(f"✓  {yrs}/{n_years} years")
-        except Exception as exc:
-            failed.append({'model': model, 'error': str(exc)})
-            if verbose:
-                print(f"✗  {exc}")
+                print(f"  [{idx:02d}/{len(active):02d}] {model:<22} ✓  {yrs}/{n_years} years")
+
+    if workers == 1:
+        for i, model in enumerate(active, 1):
+            m, r, err = _run_model(model)
+            _record(m, r, err, i)
+    else:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        order = {m: i for i, m in enumerate(active, 1)}
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = {ex.submit(_run_model, m): m for m in active}
+            for fut in as_completed(futs):
+                m, r, err = fut.result()
+                _record(m, r, err, order[m])
+
+    # Restore deterministic (input) model order regardless of completion order.
+    per_model_results = {m: per_model_results[m] for m in active if m in per_model_results}
 
     if not per_model_results:
         return {'error': 'All models failed.', 'failed_models': failed,
@@ -1142,6 +1224,13 @@ def print_ensemble_climatology_report(result: Dict[str, Any]) -> None:
 
 def main():
     """Command-line interface for climatology analysis."""
+    # Ensure Unicode output (✓, ✗, 📊) works on Windows consoles that default to cp1252.
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass
+
     parser = argparse.ArgumentParser(
         description='Calculate long-term climate normals (WMO 30-year standards)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1171,6 +1260,9 @@ Examples:
                             '(default: all 16).')
     parser.add_argument('--exclude-models', type=str, default=None,
                        help='NEX-GDDP only. Comma-separated CMIP6 models to drop.')
+    parser.add_argument('--workers', type=int, default=8,
+                       help='NEX-GDDP only. Parallel fetch workers across models '
+                            '(default: 8; use 1 to disable parallelism).')
     parser.add_argument('--format', choices=['text', 'json'], default='text',
                        help='Output format (default: text)')
     parser.add_argument('--output', type=str,
@@ -1254,6 +1346,7 @@ Examples:
                     exclude_models=excl,
                     output_dir=plot_dir,
                     verbose=verbose_text,
+                    max_workers=args.workers,
                 )
             all_results[scenario] = result
             if 'error' not in result:
