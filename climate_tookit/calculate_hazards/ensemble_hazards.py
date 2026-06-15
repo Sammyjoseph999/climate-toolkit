@@ -367,8 +367,9 @@ def calculate_ensemble(crop: str, lat: float, lon: float,
                if fixed_season else None)
 
     jobs = [(m, sc) for sc in scenarios for m in models]
-    # max_workers <= 0 -> auto: one worker per job, capped at 16.
-    workers = max(1, min(len(jobs), 16) if max_workers <= 0 else min(max_workers, len(jobs)))
+    # max_workers <= 0 -> auto: one worker per job, capped at 10 to match the
+    # GEE HTTP connection pool (avoids "connection pool is full" churn).
+    workers = max(1, min(len(jobs), 10) if max_workers <= 0 else min(max_workers, len(jobs)))
 
     print(f"\nNEX-GDDP ensemble: {crop} at ({lat:.4f}, {lon:.4f})  "
           f"{start_year}-{end_year}")
