@@ -214,8 +214,8 @@ def _evaluate(crop: str, lat: float, lon: float,
                                   'status':  evaluate_threshold(v, th['TAVG'])}
     # NDWS / NDWL0 water-balance severity (Adaptation Atlas classes)
     hazards.update(water_balance_hazards(stats))
-    # NTx35 / NTx40 heat-stress severity
-    hazards.update(heat_stress_hazards(stats))
+    # NTx35 / NTx40 heat-stress severity (crop-specific bands)
+    hazards.update(heat_stress_hazards(stats, crop))
     length = (datetime.fromisoformat(w['end'])
               - datetime.fromisoformat(w['start'])).days
     return {
@@ -285,7 +285,7 @@ def _avg_hazards(crop: str, agg: Dict) -> Dict:
     # NDWS / NDWL0 severity on the ensemble-mean day counts
     out.update(water_balance_hazards(agg))
     # NTx35 / NTx40 heat-stress severity on the ensemble-mean day counts
-    out.update(heat_stress_hazards(agg))
+    out.update(heat_stress_hazards(agg, crop))
     return out
 
 def _agg_hazard_statuses(bucket: List[Dict]) -> Dict:
