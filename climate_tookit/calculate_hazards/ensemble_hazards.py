@@ -31,6 +31,7 @@ from hazards import (
     calculate_season_statistics,
     add_et0,
     water_balance_hazards,
+    heat_stress_hazards,
     _severity_symbol,
     DEFAULT_SOILCP,
     DEFAULT_SOILSAT,
@@ -213,6 +214,8 @@ def _evaluate(crop: str, lat: float, lon: float,
                                   'status':  evaluate_threshold(v, th['TAVG'])}
     # NDWS / NDWL0 water-balance severity (Adaptation Atlas classes)
     hazards.update(water_balance_hazards(stats))
+    # NTx35 / NTx40 heat-stress severity
+    hazards.update(heat_stress_hazards(stats))
     length = (datetime.fromisoformat(w['end'])
               - datetime.fromisoformat(w['start'])).days
     return {
@@ -281,6 +284,8 @@ def _avg_hazards(crop: str, agg: Dict) -> Dict:
                               'status': evaluate_threshold(v, th['TAVG'])}
     # NDWS / NDWL0 severity on the ensemble-mean day counts
     out.update(water_balance_hazards(agg))
+    # NTx35 / NTx40 heat-stress severity on the ensemble-mean day counts
+    out.update(heat_stress_hazards(agg))
     return out
 
 def _agg_hazard_statuses(bucket: List[Dict]) -> Dict:
@@ -289,7 +294,8 @@ def _agg_hazard_statuses(bucket: List[Dict]) -> Dict:
     Returns the modal status for each hazard indicator plus a counts breakdown.
     """
     from collections import Counter
-    indicators = ['precipitation', 'temperature', 'water_stress', 'water_logging']
+    indicators = ['precipitation', 'temperature', 'water_stress', 'water_logging',
+                  'heat_stress', 'extreme_heat_stress']
     out = {}
     for ind in indicators:
         statuses = [
@@ -618,6 +624,14 @@ def _print_block(a: Dict, crop: str, lat: float, lon: float,
         wl = h['water_logging']
         print(f"  {'Water Logging (NDWL0)':<25} {s.get('NDWL0', 0):>16.2f} d   "
               f"[{_severity_symbol(wl['status'])}] {wl['status'].replace('_', ' ').upper()}")
+    if 'heat_stress' in h:
+        hs = h['heat_stress']
+        print(f"  {'Heat Stress (NTx35)':<25} {s.get('NTx35', 0):>16.2f} d   "
+              f"[{_severity_symbol(hs['status'])}] {hs['status'].replace('_', ' ').upper()}")
+    if 'extreme_heat_stress' in h:
+        ehs = h['extreme_heat_stress']
+        print(f"  {'Extreme Heat (NTx40)':<25} {s.get('NTx40', 0):>16.2f} d   "
+              f"[{_severity_symbol(ehs['status'])}] {ehs['status'].replace('_', ' ').upper()}")
     print(f"\n{'='*70}")
 
 def print_results(r: Dict) -> None:
@@ -679,6 +693,12 @@ def print_results(r: Dict) -> None:
     if 'water_logging' in h:
         print(f"  NDWL0  status:        [{_severity_symbol(h['water_logging']['status'])}] "
               f"{h['water_logging']['status'].replace('_', ' ').upper()}")
+    if 'heat_stress' in h:
+        print(f"  NTx35  status:        [{_severity_symbol(h['heat_stress']['status'])}] "
+              f"{h['heat_stress']['status'].replace('_', ' ').upper()}")
+    if 'extreme_heat_stress' in h:
+        print(f"  NTx40  status:        [{_severity_symbol(h['extreme_heat_stress']['status'])}] "
+              f"{h['extreme_heat_stress']['status'].replace('_', ' ').upper()}")
     print(f"\n{'='*70}\n")
 
 # CLI

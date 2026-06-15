@@ -315,6 +315,31 @@ def water_balance_hazards(stats: Dict[str, Any]) -> Dict[str, Any]:
         }
     return out
 
+# Heat-stress severity classes (unit: days per season), tunable defaults.
+# NTx35 = days Tmax > 35C, NTx40 = days Tmax > 40C. Bands give (moderate,
+# severe, extreme) floors; values below the moderate floor are no_significant_stress.
+NTX35_SEVERITY = (5, 15, 30)
+NTX40_SEVERITY = (1, 5, 10)
+
+def heat_stress_hazards(stats: Dict[str, Any]) -> Dict[str, Any]:
+    """Build NTx35 / NTx40 heat-stress severity entries from season statistics."""
+    out: Dict[str, Any] = {}
+    if stats.get('NTx35') is not None:
+        v = stats['NTx35']
+        out['heat_stress'] = {
+            'index':      'NTx35',
+            'value_days': round(float(v), 2),
+            'status':     classify_water_hazard(v, NTX35_SEVERITY),
+        }
+    if stats.get('NTx40') is not None:
+        v = stats['NTx40']
+        out['extreme_heat_stress'] = {
+            'index':      'NTx40',
+            'value_days': round(float(v), 2),
+            'status':     classify_water_hazard(v, NTX40_SEVERITY),
+        }
+    return out
+
 def _severity_symbol(status: str) -> str:
     """Console marker for a hazard status (handles severe/extreme classes too)."""
     if 'no_stress' in status or 'no_significant' in status:
