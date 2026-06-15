@@ -284,6 +284,8 @@ def evaluate_threshold(value: float, thresholds: Dict[str, Tuple]) -> str:
 # Water-balance hazard severity classes (unit: days), per the Adaptation Atlas
 NDWS_SEVERITY  = (15, 20, 25)
 NDWL0_SEVERITY = (2, 5, 8)
+# Dry-days (NDD) severity class (unit: days), generic per the AE-project wiki
+NDD_SEVERITY   = (15, 20, 25)
 
 def classify_water_hazard(value: float, bounds: Tuple[int, int, int]) -> str:
     """Map a day count to a severity class using the Atlas water-balance bands."""
@@ -312,6 +314,66 @@ def water_balance_hazards(stats: Dict[str, Any]) -> Dict[str, Any]:
             'index':      'NDWL0',
             'value_days': round(float(v), 2),
             'status':     classify_water_hazard(v, NDWL0_SEVERITY),
+        }
+    return out
+
+def dry_days_hazard(stats: Dict[str, Any]) -> Dict[str, Any]:
+    """Build an NDD (dry-days) severity entry from season statistics."""
+    out: Dict[str, Any] = {}
+    if stats.get('NDD') is not None:
+        v = stats['NDD']
+        out['dry_days'] = {
+            'index':      'NDD',
+            'value_days': round(float(v), 2),
+            'status':     classify_water_hazard(v, NDD_SEVERITY),
+        }
+    return out
+
+# Heat-stress severity classes (unit: days per season), per the AE-project
+# crop-specific hazard thresholds wiki. Bands give (moderate, severe, extreme)
+# floors; values below the moderate floor are no_significant_stress.
+# NTx35 = days Tmax > 35C, NTx40 = days Tmax > 40C.
+NTX35_SEVERITY_DEFAULT = (7, 14, 21)
+NTX40_SEVERITY_DEFAULT = (7, 14, 21)
+
+# Crop-specific overrides (only the crops that deviate from the default).
+NTX35_SEVERITY_BY_CROP: Dict[str, Tuple[int, int, int]] = {
+    'Cassava': (1, 5, 10),
+}
+NTX40_SEVERITY_BY_CROP: Dict[str, Tuple[int, int, int]] = {
+    'Millet':       (1, 5, 10),   # Pearl-millet
+    'Sorghum':      (1, 5, 10),
+    'Wheat':        (1, 5, 10),
+    'Cowpea':       (1, 5, 10),
+    'Pigeon peas':  (1, 5, 10),
+    'Sweet potato': (1, 5, 10),
+    'Sesame seeds': (1, 5, 10),
+    'Yams':         (1, 5, 10),   # wiki bands overlap; normalised to 1/5/10
+}
+
+def heat_stress_hazards(stats: Dict[str, Any], crop: Optional[str] = None) -> Dict[str, Any]:
+    """Build NTx35 / NTx40 heat-stress severity entries from season statistics.
+
+    Severity bands are crop-specific; the crop name selects the bands and falls
+    back to the generic defaults when the crop has no override.
+    """
+    crop_key = crop.capitalize() if crop else None
+    ntx35_bounds = NTX35_SEVERITY_BY_CROP.get(crop_key, NTX35_SEVERITY_DEFAULT)
+    ntx40_bounds = NTX40_SEVERITY_BY_CROP.get(crop_key, NTX40_SEVERITY_DEFAULT)
+    out: Dict[str, Any] = {}
+    if stats.get('NTx35') is not None:
+        v = stats['NTx35']
+        out['heat_stress'] = {
+            'index':      'NTx35',
+            'value_days': round(float(v), 2),
+            'status':     classify_water_hazard(v, ntx35_bounds),
+        }
+    if stats.get('NTx40') is not None:
+        v = stats['NTx40']
+        out['extreme_heat_stress'] = {
+            'index':      'NTx40',
+            'value_days': round(float(v), 2),
+            'status':     classify_water_hazard(v, ntx40_bounds),
         }
     return out
 
@@ -426,6 +488,9 @@ def compute_ltm_baseline(
             }
         # NDWS / NDWL0 water-balance severity on the LTM means
         hazard_eval.update(water_balance_hazards(agg))
+        # NTx35 / NTx40 heat-stress (crop-specific) and NDD dry-days on LTM means
+        hazard_eval.update(heat_stress_hazards(agg, crop_name))
+        hazard_eval.update(dry_days_hazard(agg))
 
         ltm_blocks.append({
             'season_number':          sn,
@@ -442,6 +507,70 @@ def compute_ltm_baseline(
         'n_total_seasons': len(assessments),
         'baseline_method': 'long_term_mean',
         'per_season':      ltm_blocks,
+    }
+
+# Actual-year vs Baseline-LTM anomalies
+# (metric_key, display label, unit) for the season-hazard anomaly view.
+_ANOMALY_METRICS: List[Tuple[str, str, str]] = [
+    ('total_precipitation_mm', 'Total Precip', 'mm'),
+    ('mean_temperature_c',     'TAVG',         'degC'),
+    ('max_tmax_c',             'Max Tmax',     'degC'),
+    ('min_tmin_c',             'Min Tmin',     'degC'),
+    ('NTx35',                  'NTx35',        'd'),
+    ('NTx40',                  'NTx40',        'd'),
+    ('NDD',                    'NDD',          'd'),
+    ('NDWS',                   'NDWS',         'd'),
+    ('NDWL0',                  'NDWL0',        'd'),
+]
+
+def compute_ltm_anomalies(
+    assessments: List[Dict[str, Any]],
+    baseline_ltm: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Per-season deviations of each actual year from the Baseline LTM.
+
+    For each assessed season, diffs its hazard metrics against the LTM block
+    for the same season slot (season_number): anomaly = actual - LTM, plus
+    percent change. Realises the architecture's 'Actual year vs LTM season
+    hazards' comparison.
+    """
+    if not baseline_ltm or not baseline_ltm.get('per_season'):
+        return None
+    ltm_by_slot = {b['season_number']: b for b in baseline_ltm['per_season']}
+    per_assessment: List[Dict[str, Any]] = []
+    for a in assessments:
+        si = a.get('season_info', {})
+        sn = si.get('season_number', 1)
+        ltm_blk = ltm_by_slot.get(sn)
+        if not ltm_blk:
+            continue
+        a_stats = a.get('season_statistics', {})
+        l_stats = ltm_blk.get('season_statistics', {})
+        metrics: Dict[str, Any] = {}
+        for key, _label, _unit in _ANOMALY_METRICS:
+            av, lv = a_stats.get(key), l_stats.get(key)
+            if av is None or lv is None:
+                continue
+            diff = round(float(av) - float(lv), 2)
+            pct  = round(diff / float(lv) * 100, 1) if lv not in (0, None) else None
+            metrics[key] = {
+                'actual': round(float(av), 2),
+                'ltm':    round(float(lv), 2),
+                'diff':   diff,
+                'pct':    pct,
+            }
+        per_assessment.append({
+            'year':                   si.get('year'),
+            'season_number':          sn,
+            'total_seasons_per_year': si.get('total_seasons_per_year', 1),
+            'metrics':                metrics,
+        })
+    if not per_assessment:
+        return None
+    return {
+        'crop':           baseline_ltm.get('crop'),
+        'method':         'actual_minus_baseline_ltm',
+        'per_assessment': per_assessment,
     }
 # Main hazard calculation
 def calculate_hazards(
@@ -594,6 +723,9 @@ def calculate_hazards(
             }
         # NDWS / NDWL0 water-balance severity (Adaptation Atlas classes)
         hazard_eval.update(water_balance_hazards(stats))
+        # NTx35 / NTx40 heat-stress severity (crop-specific) and NDD dry-days
+        hazard_eval.update(heat_stress_hazards(stats, crop_name))
+        hazard_eval.update(dry_days_hazard(stats))
         assessments.append({
             'crop':              crop_name,
             'location':          {'latitude': lat, 'longitude': lon},
@@ -604,9 +736,11 @@ def calculate_hazards(
     # Single season -> flat dict; multiple -> wrapped list with Baseline LTM
     if len(assessments) == 1:
         return assessments[0]
+    baseline_ltm = compute_ltm_baseline(assessments, crop_name, thresholds)
     return {
         'assessments':  assessments,
-        'baseline_ltm': compute_ltm_baseline(assessments, crop_name, thresholds),
+        'baseline_ltm': baseline_ltm,
+        'ltm_anomalies': compute_ltm_anomalies(assessments, baseline_ltm),
     }
 
 # Pretty printer
@@ -694,6 +828,47 @@ def _print_ltm_block(ltm: Dict[str, Any]) -> None:
                 wl  = h['water_logging']
                 sym = _severity_symbol(wl['status'])
                 print(f"  {'Water Logging (NDWL0)':<25} {wl['value_days']:>16.2f} d   [{sym}] {wl['status'].replace('_', ' ').upper()}")
+            if 'heat_stress' in h:
+                hs  = h['heat_stress']
+                sym = _severity_symbol(hs['status'])
+                print(f"  {'Heat Stress (NTx35)':<25} {hs['value_days']:>16.2f} d   [{sym}] {hs['status'].replace('_', ' ').upper()}")
+            if 'extreme_heat_stress' in h:
+                ehs = h['extreme_heat_stress']
+                sym = _severity_symbol(ehs['status'])
+                print(f"  {'Extreme Heat (NTx40)':<25} {ehs['value_days']:>16.2f} d   [{sym}] {ehs['status'].replace('_', ' ').upper()}")
+            if 'dry_days' in h:
+                dd  = h['dry_days']
+                sym = _severity_symbol(dd['status'])
+                print(f"  {'Dry Days (NDD)':<25} {dd['value_days']:>16.2f} d   [{sym}] {dd['status'].replace('_', ' ').upper()}")
+    print(f"\n{'='*70}\n")
+
+def _print_ltm_anomalies(anom: Dict[str, Any]) -> None:
+    """Print per-season Actual-vs-Baseline-LTM anomaly tables."""
+    if not anom or not anom.get('per_assessment'):
+        return
+    print(f"\n{'='*70}")
+    print(f"  ANOMALIES: ACTUAL YEAR vs BASELINE LTM: {str(anom.get('crop','')).upper()}")
+    print(f"  (anomaly = actual - LTM; arrow & % show direction/magnitude)")
+    print(f"{'='*70}")
+    for blk in anom['per_assessment']:
+        y   = blk.get('year', '')
+        sn  = blk.get('season_number', 1)
+        t   = blk.get('total_seasons_per_year', 1)
+        label = f"Year {y}  –  Season {sn} of {t}" if t and t > 1 else f"Year {y}"
+        print(f"\n  {label}")
+        print(f"  {'─'*66}")
+        print(f"  {'Metric':<18}{'Actual':>12}{'LTM':>12}{'Anomaly':>14}{'% change':>12}")
+        print(f"  {'─'*18}{'─'*12}{'─'*12}{'─'*14}{'─'*12}")
+        for key, label2, unit in _ANOMALY_METRICS:
+            m = blk['metrics'].get(key)
+            if not m:
+                continue
+            diff  = m['diff']
+            arrow = '↑' if diff > 0 else '↓' if diff < 0 else '→'
+            anom_str = f"{arrow} {abs(diff):.2f}"
+            pct   = f"{m['pct']:+.1f}%" if m['pct'] is not None else "n/a"
+            name  = f"{label2} ({unit})"
+            print(f"  {name:<18}{m['actual']:>12.2f}{m['ltm']:>12.2f}{anom_str:>14}{pct:>12}")
     print(f"\n{'='*70}\n")
 
 def print_hazard_results(result: Dict[str, Any]) -> None:
@@ -716,6 +891,8 @@ def print_hazard_results(result: Dict[str, Any]) -> None:
             print_hazard_results(a)
         if result.get('baseline_ltm'):
             _print_ltm_block(result['baseline_ltm'])
+        if result.get('ltm_anomalies'):
+            _print_ltm_anomalies(result['ltm_anomalies'])
         return
 
     if 'error' in result:
@@ -826,6 +1003,18 @@ def print_hazard_results(result: Dict[str, Any]) -> None:
         wl  = hazards['water_logging']
         sym = _severity_symbol(wl['status'])
         print(f"  {'Water Logging (NDWL0)':<25} {wl['value_days']:>16.2f} d   [{sym}] {wl['status'].replace('_', ' ').upper()}")
+    if 'heat_stress' in hazards:
+        hs  = hazards['heat_stress']
+        sym = _severity_symbol(hs['status'])
+        print(f"  {'Heat Stress (NTx35)':<25} {hs['value_days']:>16.2f} d   [{sym}] {hs['status'].replace('_', ' ').upper()}")
+    if 'extreme_heat_stress' in hazards:
+        ehs = hazards['extreme_heat_stress']
+        sym = _severity_symbol(ehs['status'])
+        print(f"  {'Extreme Heat (NTx40)':<25} {ehs['value_days']:>16.2f} d   [{sym}] {ehs['status'].replace('_', ' ').upper()}")
+    if 'dry_days' in hazards:
+        dd  = hazards['dry_days']
+        sym = _severity_symbol(dd['status'])
+        print(f"  {'Dry Days (NDD)':<25} {dd['value_days']:>16.2f} d   [{sym}] {dd['status'].replace('_', ' ').upper()}")
 
     print(f"\n{'='*70}\n")
 
