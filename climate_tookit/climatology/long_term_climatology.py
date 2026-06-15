@@ -68,6 +68,12 @@ from utils.models import ClimateVariable
 PREPROCESS_AVAILABLE = True
 
 try:
+    import matplotlib
+    # Force the non-interactive Agg backend: plots are only saved to PNG, never
+    # shown. This avoids the Tk/Tcl backend, which crashes ("main thread is not
+    # in main loop" / "Tcl_AsyncDelete") when figures are created while worker
+    # threads are alive during the parallel ensemble fetch.
+    matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     from matplotlib.ticker import MaxNLocator
     MATPLOTLIB_AVAILABLE = True
