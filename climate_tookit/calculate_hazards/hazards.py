@@ -1144,7 +1144,7 @@ if __name__ == "__main__":
                 f.write(json.dumps(result, indent=2, default=str))
 
 # Auto-detect season (no season flag supplied -- always uses chirps+chirts internally):
-# python -m climate_tookit.calculate_hazards.hazards maize --location="-1.286,36.817" --date-from 2016-01-01 --date-to 2016-12-31 --season-start 2016-03-01 --season-end 2016-06-30
+# python -m climate_tookit.calculate_hazards.hazards maize --location="-1.286,36.817" --date-from 2016-01-01 --date-to 2016-12-31
 
 # Fixed single season:
 # python -m climate_tookit.calculate_hazards.hazards maize --location="-1.286,36.817" --date-from 2018-01-01 --date-to 2022-12-31 --fixed-season "03-01:06-30" --source era_5
