@@ -15,6 +15,7 @@ from sources.gee import DownloadData as DownloadGEE
 from sources.tamsat import DownloadTAMSAT
 from sources.nasa_power import DownloadData as DownloadNASA
 from sources.nex_gddp import DownloadData as DownloadNEXGDDP
+from sources.nex_gddp import AVAILABLE_MODELS as NEX_GDDP_MODELS
 from sources.soil_grid import DownloadData as DownloadSoilGrid
 from sources.utils.models import ClimateDataset, ClimateVariable, SoilVariable, Location
 from sources.utils.settings import Settings
@@ -109,6 +110,31 @@ def save_output(data, output_path, fmt):
     else:
         raise ValueError(fmt)
 
+def resolve_models(model, models):
+    """Resolve the requested model list from --model/--models.
+
+    Returns a list of model names (or [None] when no model was requested, e.g.
+    for non-NEX-GDDP sources). 'all' expands to every available NEX-GDDP model.
+    """
+    if models:
+        spec = models.strip()
+        if spec.lower() == 'all':
+            return list(NEX_GDDP_MODELS)
+        names = [m.strip() for m in spec.split(',') if m.strip()]
+        unknown = [m for m in names if m not in NEX_GDDP_MODELS]
+        if unknown:
+            raise ValueError(
+                f"Unknown model(s): {', '.join(unknown)}. "
+                f"Available: {', '.join(NEX_GDDP_MODELS)}"
+            )
+        return names
+    return [model]
+
+def _suffix_path(path, suffix):
+    """Insert '_<suffix>' before the file extension (foo.csv -> foo_GFDL.csv)."""
+    stem, ext = os.path.splitext(path)
+    return f"{stem}_{suffix}{ext}"
+
 def main():
     parser = argparse.ArgumentParser(description='Download climate data')
     parser.add_argument('--lon', type=float, required=True)
@@ -117,7 +143,13 @@ def main():
     parser.add_argument('--variables', required=True)
     parser.add_argument('--from', dest='date_from', required=True)
     parser.add_argument('--to', dest='date_to', required=True)
-    parser.add_argument('--model', default=None)
+    parser.add_argument('--model', default=None,
+                        help='Single NEX-GDDP model (e.g. GFDL-ESM4).')
+    parser.add_argument('--models', default=None,
+                        help="NEX-GDDP only. Comma-separated models, or 'all' "
+                             "for every available model. Fetches each model and "
+                             "saves one file per model (output stem + _<model>). "
+                             "Overrides --model.")
     parser.add_argument('--scenario', default=None)
     parser.add_argument('--output', '-o', default=None)
     parser.add_argument(
@@ -157,24 +189,36 @@ def main():
 
     settings = Settings.load()
 
-    source_data = SourceData(
-        location_coord=(args.lat, args.lon),
-        variables=variables,
-        source=source,
-        date_from_utc=date_from,
-        date_to_utc=date_to,
-        settings=settings,
-        model=args.model,
-        scenario=args.scenario
-    )
+    try:
+        model_list = resolve_models(args.model, args.models)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 1
+    multi = len(model_list) > 1
 
-    climate_data = source_data.download()
+    for model in model_list:
+        if multi:
+            print(f"\n=== NEX-GDDP model: {model} ===")
+        source_data = SourceData(
+            location_coord=(args.lat, args.lon),
+            variables=variables,
+            source=source,
+            date_from_utc=date_from,
+            date_to_utc=date_to,
+            settings=settings,
+            model=model,
+            scenario=args.scenario
+        )
 
-    if args.format == "print" or not args.output:
-        print(climate_data.to_string())
-    else:
-        save_output(climate_data, args.output, args.format)
-        print(f"Saved to {args.output}")
+        climate_data = source_data.download()
+
+        if args.format == "print" or not args.output:
+            print(climate_data.to_string())
+        else:
+            # One file per model when multiple are requested.
+            out_path = _suffix_path(args.output, model) if multi else args.output
+            save_output(climate_data, out_path, args.format)
+            print(f"Saved to {out_path}")
 
     return 0
 

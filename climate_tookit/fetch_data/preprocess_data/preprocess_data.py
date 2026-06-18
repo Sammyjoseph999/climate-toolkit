@@ -17,6 +17,31 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'transform_data'))
 
 from transform_data import transform_data
 from sources.utils.models import ClimateVariable, ClimateDataset
+from sources.nex_gddp import AVAILABLE_MODELS as NEX_GDDP_MODELS
+
+
+def resolve_models(model, models):
+    """Resolve --model/--models into a list. 'all' = every NEX-GDDP model;
+    returns [None] when no model was requested (non-NEX-GDDP sources)."""
+    if models:
+        spec = models.strip()
+        if spec.lower() == 'all':
+            return list(NEX_GDDP_MODELS)
+        names = [m.strip() for m in spec.split(',') if m.strip()]
+        unknown = [m for m in names if m not in NEX_GDDP_MODELS]
+        if unknown:
+            raise ValueError(
+                f"Unknown model(s): {', '.join(unknown)}. "
+                f"Available: {', '.join(NEX_GDDP_MODELS)}"
+            )
+        return names
+    return [model]
+
+
+def _suffix_path(path, suffix):
+    """Insert '_<suffix>' before the file extension."""
+    stem, ext = os.path.splitext(path)
+    return f"{stem}_{suffix}{ext}"
 
 
 def clean_climate_data(df: pd.DataFrame) -> pd.DataFrame:
@@ -174,6 +199,10 @@ if __name__ == "__main__":
     parser.add_argument("--start", type=str)
     parser.add_argument("--end", type=str)
     parser.add_argument("--model", type=str)
+    parser.add_argument("--models", type=str, default=None,
+                        help="NEX-GDDP only. Comma-separated models, or 'all'. "
+                             "Saves one file per model (output stem + _<model>). "
+                             "Overrides --model.")
     parser.add_argument("--scenario", type=str)
     parser.add_argument("-o", "--output", default=None)
     parser.add_argument(
@@ -188,20 +217,31 @@ if __name__ == "__main__":
     date_from = date.fromisoformat(args.start) if args.start else None
     date_to = date.fromisoformat(args.end) if args.end else None
 
-    df = preprocess_data(
-        source=args.source,
-        location_coord=location_coord,
-        date_from=date_from,
-        date_to=date_to,
-        model=args.model,
-        scenario=args.scenario
-    )
+    try:
+        model_list = resolve_models(args.model, args.models)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    multi = len(model_list) > 1
 
-    if args.format == "print" or not args.output:
-        print(df)
-    else:
-        save_output(df, args.output, args.format)
-        print(f"Saved to {args.output}")
+    for model in model_list:
+        if multi:
+            print(f"\n=== NEX-GDDP model: {model} ===")
+        df = preprocess_data(
+            source=args.source,
+            location_coord=location_coord,
+            date_from=date_from,
+            date_to=date_to,
+            model=model,
+            scenario=args.scenario
+        )
+
+        if args.format == "print" or not args.output:
+            print(df)
+        else:
+            out_path = _suffix_path(args.output, model) if multi else args.output
+            save_output(df, out_path, args.format)
+            print(f"Saved to {out_path}")
  
         
 # python climate_tookit/fetch_data/preprocess_data/preprocess_data.py --source era_5 --lon 36.8 --lat -1.3 --start 2020-01-01 --end 2020-03-05
