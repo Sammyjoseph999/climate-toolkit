@@ -523,19 +523,33 @@ def compare_sources(sources, lat=None, lon=None, start=None, end=None,
                 else:
                     print(f"  ℹ️   NEX-GDDP ensemble  models={', '.join(models)}  "
                           f"scenario={scenario_key}")
-                    per_model = {}
-                    for m in models:
-                        print(f"        • fetching {m} …")
+                    # Each model is an independent, I/O-bound GEE fetch — run
+                    # them concurrently (capped at 10 to match the GEE
+                    # connection pool), then restore input-model order.
+                    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                    def _fetch_model(m):
                         try:
                             mdf = _fetch_source(source, lat, lon, start, end,
                                                 model=m, scenario=scenario_key)
+                            return m, mdf, None
                         except Exception as exc:
-                            print(f"        ⚠️   {m} failed: {exc}")
-                            continue
-                        if mdf is not None and not mdf.empty and len(mdf.columns) > 1:
-                            per_model[m] = mdf
-                        else:
-                            print(f"        ⚠️   {m}: no usable variables returned.")
+                            return m, None, str(exc)
+
+                    raw_models = {}
+                    workers = max(1, min(len(models), 10))
+                    with ThreadPoolExecutor(max_workers=workers) as ex:
+                        futs = {ex.submit(_fetch_model, m): m for m in models}
+                        for fut in as_completed(futs):
+                            m, mdf, err = fut.result()
+                            if err is not None:
+                                print(f"        ⚠️   {m} failed: {err}")
+                            elif mdf is not None and not mdf.empty and len(mdf.columns) > 1:
+                                raw_models[m] = mdf
+                                print(f"        • fetched {m}")
+                            else:
+                                print(f"        ⚠️   {m}: no usable variables returned.")
+                    per_model = {m: raw_models[m] for m in models if m in raw_models}
                     if not per_model:
                         print("  ⚠️   nex_gddp ensemble: no models returned usable data.")
                         continue
@@ -647,6 +661,14 @@ def print_report(results: dict, output_dir: str = "./outputs"):
 
 # CLI
 def main():
+    # Ensure Unicode output (emoji status markers, arrows) works on Windows
+    # consoles that default to cp1252.
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass
+
     parser = argparse.ArgumentParser(
         description="Extended climate dataset comparison tool",
         formatter_class=argparse.RawTextHelpFormatter,
