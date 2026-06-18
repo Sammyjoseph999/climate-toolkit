@@ -5,7 +5,7 @@ import yaml
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "source_data"))
 
-from source_data import SourceData
+from source_data import SourceData, resolve_models, _suffix_path
 from sources.utils.models import ClimateVariable, ClimateDataset, SoilVariable
 from sources.utils.settings import Settings
 
@@ -171,6 +171,10 @@ if __name__ == "__main__":
     parser.add_argument("--start", type=str)
     parser.add_argument("--end", type=str)
     parser.add_argument("--model", type=str)
+    parser.add_argument("--models", type=str, default=None,
+                        help="NEX-GDDP only. Comma-separated models, or 'all'. "
+                             "Saves one file per model (output stem + _<model>). "
+                             "Overrides --model.")
     parser.add_argument("--scenario", type=str)
     parser.add_argument("-o", "--output", default=None)
     parser.add_argument("--format", choices=["csv", "json", "print"], default="print")
@@ -186,13 +190,20 @@ if __name__ == "__main__":
     date_from = date.fromisoformat(args.start) if args.start else None
     date_to = date.fromisoformat(args.end) if args.end else None
 
+    try:
+        model_list = resolve_models(args.model, args.models)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    multi = len(model_list) > 1
+
     errors = validate_inputs(
         args.source,
         args.lat,
         args.lon,
         date_from,
         date_to,
-        args.model,
+        model_list[0],
         args.scenario,
     )
 
@@ -202,24 +213,24 @@ if __name__ == "__main__":
             print(f" - {err}")
         sys.exit(1)
 
-    location_coord = (args.lat, args.lon)
-    date_from = date.fromisoformat(args.start) if args.start else None
-    date_to = date.fromisoformat(args.end) if args.end else None
+    for model in model_list:
+        if multi:
+            print(f"\n=== NEX-GDDP model: {model} ===")
+        df = transform_data(
+            source=args.source,
+            location_coord=location_coord,
+            date_from=date_from,
+            date_to=date_to,
+            model=model,
+            scenario=args.scenario,
+        )
 
-    df = transform_data(
-        source=args.source,
-        location_coord=location_coord,
-        date_from=date_from,
-        date_to=date_to,
-        model=args.model,
-        scenario=args.scenario,
-    )
-
-    if args.format == "print" or not args.output:
-        print(df)
-    else:
-        save_output(df, args.output, args.format)
-        print(f"Saved to {args.output}")
+        if args.format == "print" or not args.output:
+            print(df)
+        else:
+            out_path = _suffix_path(args.output, model) if multi else args.output
+            save_output(df, out_path, args.format)
+            print(f"Saved to {out_path}")
     
 # python climate_tookit/fetch_data/transform_data/transform_data.py --source era_5 --lon 36.817223 --lat -1.286389 --start 2020-01-01 --end 2020-03-05
 
