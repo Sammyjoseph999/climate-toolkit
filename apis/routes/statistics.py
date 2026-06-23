@@ -6,7 +6,7 @@ project_root = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(project_root))
 
 from apis.dependencies import get_settings
-from apis.schemas.responses import ClimateResponse, StatisticsRequest
+from apis.schemas.responses import ClimateResponse, StatisticsRequest, EnsembleStatisticsRequest
 
 router = APIRouter()
 
@@ -54,5 +54,48 @@ async def analyze_climate_statistics(request: StatisticsRequest, settings=Depend
             status_code=500,
             status="SERVICE_UNREACHABLE",
             message=f"Error analyzing climate statistics: {str(e)}",
+            data=None
+        )
+
+
+@router.post("/ensemble", response_model=ClimateResponse)
+async def analyze_ensemble_statistics(request: EnsembleStatisticsRequest, settings=Depends(get_settings)):
+    """NEX-GDDP CMIP6 ensemble climate statistics (future LTM, mean across models)."""
+    try:
+        from climate_tookit.climate_statistics.ensemble_statistics import (
+            analyze_ensemble_nex_gddp,
+        )
+
+        result = analyze_ensemble_nex_gddp(
+            location_coord=(request.lat, request.lon),
+            start_year=request.start_year,
+            end_year=request.end_year,
+            scenario=request.scenario,
+            fixed_season=request.fixed_season,
+            models=request.models,
+            verbose=False,
+            max_workers=request.workers,
+        )
+
+        if "error" in result:
+            return ClimateResponse(
+                status_code=400,
+                status="REQUEST_UNSUCCESSFUL",
+                message=f"Error analyzing ensemble statistics: {result.get('error')}",
+                data=result
+            )
+
+        return ClimateResponse(
+            status_code=200,
+            status="REQUEST_SUCCESSFUL",
+            message="Ensemble climate statistics completed successfully",
+            data=result
+        )
+
+    except Exception as e:
+        return ClimateResponse(
+            status_code=500,
+            status="SERVICE_UNREACHABLE",
+            message=f"Error analyzing ensemble statistics: {str(e)}",
             data=None
         )

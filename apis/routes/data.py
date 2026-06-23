@@ -130,32 +130,62 @@ async def fetch_data(request: DataFetchRequest, settings=Depends(get_settings)):
         date_from = datetime.strptime(request.date_from, "%Y-%m-%d").date()
         date_to = datetime.strptime(request.date_to, "%Y-%m-%d").date()
 
-        source_data = SourceData(
-            location_coord=(request.lat, request.lon),
-            variables=variables,
-            source=source_enum,
-            date_from_utc=date_from,
-            date_to_utc=date_to,
-            settings=settings,
-            model=request.model,
-            scenario=request.scenario
-        )
+        def _fetch_one(model):
+            sd = SourceData(
+                location_coord=(request.lat, request.lon),
+                variables=variables,
+                source=source_enum,
+                date_from_utc=date_from,
+                date_to_utc=date_to,
+                settings=settings,
+                model=model,
+                scenario=request.scenario,
+            )
+            df = sd.download()
+            return {
+                "records": df.to_dict(orient="records"),
+                "count": len(df),
+                "columns": list(df.columns),
+            }
 
-        climate_data = source_data.download()
+        # Multi-model NEX-GDDP fetch: request.models is a list, or ['all'].
+        if request.models:
+            from sources.nex_gddp import AVAILABLE_MODELS as NEX_GDDP_MODELS
+            spec = request.models
+            if len(spec) == 1 and spec[0].lower() == "all":
+                model_list = list(NEX_GDDP_MODELS)
+            else:
+                model_list = spec
+            unknown = [m for m in model_list if m not in NEX_GDDP_MODELS]
+            if unknown:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown model(s): {', '.join(unknown)}. Available: {', '.join(NEX_GDDP_MODELS)}",
+                )
+            per_model = {m: _fetch_one(m) for m in model_list}
+            total = sum(b["count"] for b in per_model.values())
+            return ClimateResponse(
+                status_code=200,
+                status="REQUEST_SUCCESSFUL",
+                message=f"Fetched {len(model_list)} NEX-GDDP model(s), {total} total records",
+                data={
+                    "per_model": per_model,
+                    "models": model_list,
+                    "source": request.source,
+                    "location": {"lat": request.lat, "lon": request.lon},
+                    "date_range": {"from": request.date_from, "to": request.date_to},
+                }
+            )
 
-        if request.format == "csv":
-            data_dict = climate_data.to_dict(orient="records")
-        else:
-            data_dict = climate_data.to_dict(orient="records")
-
+        block = _fetch_one(request.model)
         return ClimateResponse(
             status_code=200,
             status="REQUEST_SUCCESSFUL",
-            message=f"Successfully fetched {len(climate_data)} records from {request.source}",
+            message=f"Successfully fetched {block['count']} records from {request.source}",
             data={
-                "records": data_dict,
-                "count": len(climate_data),
-                "columns": list(climate_data.columns),
+                "records": block["records"],
+                "count": block["count"],
+                "columns": block["columns"],
                 "source": request.source,
                 "location": {"lat": request.lat, "lon": request.lon},
                 "date_range": {"from": request.date_from, "to": request.date_to}

@@ -27,6 +27,7 @@ class DataFetchRequest(BaseModel):
     date_from: str = Field(description="Start date in YYYY-MM-DD format")
     date_to: str = Field(description="End date in YYYY-MM-DD format")
     model: Optional[str] = Field(default=None, description="Climate model (for NEX-GDDP)")
+    models: Optional[list[str]] = Field(default=None, description="NEX-GDDP only: several models, or ['all']. Returns one series per model; overrides 'model'.")
     scenario: Optional[str] = Field(default=None, description="Emissions scenario (for NEX-GDDP)")
     format: Literal["csv", "json"] = Field(default="json", description="Output format")
 
@@ -57,6 +58,52 @@ class HazardsRequest(BaseModel):
     season_end: Optional[str] = Field(default=None, description="Explicit season end (YYYY-MM-DD); pair with season_start")
     model: Optional[str] = Field(default=None, description="Climate model (for NEX-GDDP)")
     scenario: Optional[str] = Field(default=None, description="Emissions scenario (for NEX-GDDP)")
+
+
+class EnsembleHazardsRequest(BaseModel):
+    lat: float = Field(ge=-90, le=90, description="Latitude in decimal degrees")
+    lon: float = Field(ge=-180, le=180, description="Longitude in decimal degrees")
+    crop: str = Field(description="Crop type (e.g., Maize, Beans, Millet)")
+    start_year: int = Field(description="Start year")
+    end_year: int = Field(description="End year")
+    scenarios: list[str] = Field(default=["ssp245"], description="SSP scenarios, e.g. ['ssp245','ssp585']")
+    models: Optional[list[str]] = Field(default=None, description="Subset of CMIP6 models; null = all 16")
+    fixed_season: Optional[str] = Field(default=None, description="Fixed season 'MM-DD:MM-DD[,MM-DD:MM-DD]'; omit for auto-detect")
+    workers: int = Field(default=0, description="Parallel fetch workers; 0 = auto")
+
+
+class EnsembleClimatologyRequest(BaseModel):
+    lat: float = Field(ge=-90, le=90, description="Latitude in decimal degrees")
+    lon: float = Field(ge=-180, le=180, description="Longitude in decimal degrees")
+    start_year: int = Field(description="Start year")
+    end_year: int = Field(description="End year")
+    scenarios: list[str] = Field(default=["ssp245"], description="SSP scenarios")
+    models: Optional[list[str]] = Field(default=None, description="Subset of CMIP6 models; null = all 16")
+    workers: int = Field(default=0, description="Parallel fetch workers; 0 = auto")
+
+
+class EnsembleStatisticsRequest(BaseModel):
+    lat: float = Field(ge=-90, le=90, description="Latitude in decimal degrees")
+    lon: float = Field(ge=-180, le=180, description="Longitude in decimal degrees")
+    start_year: int = Field(description="Start year")
+    end_year: int = Field(description="End year")
+    scenario: str = Field(default="ssp245", description="SSP scenario")
+    fixed_season: Optional[str] = Field(default=None, description="Fixed season 'MM-DD:MM-DD[,MM-DD:MM-DD]'")
+    models: Optional[list[str]] = Field(default=None, description="Subset of CMIP6 models; null = all 16")
+    workers: int = Field(default=0, description="Parallel fetch workers; 0 = auto")
+
+
+class EnsembleCompareRequest(BaseModel):
+    lat: float = Field(ge=-90, le=90, description="Latitude in decimal degrees")
+    lon: float = Field(ge=-180, le=180, description="Longitude in decimal degrees")
+    baseline_start: int = Field(description="Baseline period start year")
+    baseline_end: int = Field(description="Baseline period end year")
+    future_start: int = Field(description="Future period start year")
+    future_end: int = Field(description="Future period end year")
+    scenario: str = Field(default="ssp245", description="SSP scenario")
+    fixed_season: Optional[str] = Field(default=None, description="Fixed season 'MM-DD:MM-DD[,MM-DD:MM-DD]'")
+    models: Optional[list[str]] = Field(default=None, description="Subset of CMIP6 models; null = all 16")
+    workers: int = Field(default=0, description="Parallel fetch workers; 0 = auto")
 
 
 class ComparePeriodsRequest(BaseModel):
