@@ -1,0 +1,241 @@
+{% extends "base.html" %}
+
+{% block title %}Compare Periods{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto">
+    <h1 class="text-3xl font-bold text-gray-900 mb-8">Compare Climate Periods</h1>
+
+    <form method="POST" action="{{ url_for('compare_page') }}" id="compare-form" class="space-y-6" onsubmit="handleFormSubmit(event, 'Comparing Climate Periods', 'Calculating baseline and comparison statistics...')">
+        <!-- Location -->
+        <div class="bg-white p-6 rounded-lg shadow">
+            <h2 class="text-lg font-semibold mb-4">Location</h2>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Latitude</label>
+                    <input type="number" name="lat" step="0.001" value="-1.286" required
+                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Longitude</label>
+                    <input type="number" name="lon" step="0.001" value="36.817" required
+                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+            </div>
+        </div>
+
+        <!-- Data Source -->
+        <div class="bg-white p-6 rounded-lg shadow">
+            <h2 class="text-lg font-semibold mb-4">Data Source</h2>
+            <select name="source" required
+                class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                <option value="chirps">CHIRPS</option>
+                <option value="agera_5">AgERA5</option>
+                <option value="terraclimate">TerraClimate</option>
+                <option value="imerg">IMERG</option>
+                <option value="tamsat">TAMSAT</option>
+                <option value="hirts">CHIRTS</option>
+                <option value="era_5">ERA5</option>
+                <option value="nex_gddp">NEX-GDDP</option>
+                <option value="nasa_power">NASA POWER</option>
+                <option value="cmip_6">CMIP6</option>
+            </select>
+        </div>
+
+        <!-- Period 1 (Baseline) -->
+        <div class="bg-white p-6 rounded-lg shadow">
+            <h2 class="text-lg font-semibold mb-4">Period 1 (Baseline)</h2>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">From Date</label>
+                    <input type="date" name="period1_from" value="2000-01-01" required
+                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">To Date</label>
+                    <input type="date" name="period1_to" value="2010-12-31" required
+                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+            </div>
+        </div>
+
+        <!-- Period 2 (Comparison) -->
+        <div class="bg-white p-6 rounded-lg shadow">
+            <h2 class="text-lg font-semibold mb-4">Period 2 (Comparison)</h2>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">From Date</label>
+                    <input type="date" name="period2_from" value="2020-01-01" required
+                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">To Date</label>
+                    <input type="date" name="period2_to" value="2020-12-31" required
+                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+            </div>
+        </div>
+
+        <!-- Model & Scenario (NEX-GDDP) -->
+        <div class="bg-white p-6 rounded-lg shadow">
+            <h2 class="text-lg font-semibold mb-4 text-gray-500">Model & Scenario (NEX-GDDP only)</h2>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Model (optional)</label>
+                    <input type="text" name="model" placeholder="e.g., ACCESS-CM2"
+                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Scenario (optional)</label>
+                    <input type="text" name="scenario" placeholder="e.g., ssp245"
+                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+            </div>
+        </div>
+
+        <!-- Submit -->
+        <button type="submit" class="w-full bg-primary text-white py-3 px-4 rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 font-semibold">
+            Compare Periods
+        </button>
+    </form>
+
+    {% if result %}
+    <div class="mt-8 bg-white p-6 rounded-lg shadow">
+        <h2 class="text-lg font-semibold mb-4">Results</h2>
+        {% if result.status_code == 200 %}
+            <div class="bg-green-50 border border-green-200 rounded-md p-4 mb-4">
+                <p class="text-green-800">{{ result.message }}</p>
+            </div>
+
+            {% set comparison = comparison if comparison else {} %}
+            {% set precip = comparison.overall_statistics.precipitation if comparison.overall_statistics else {} %}
+            {% set temp = comparison.overall_statistics.temperature if comparison.overall_statistics else {} %}
+            {% set wb = comparison.overall_statistics.water_balance if comparison.overall_statistics else {} %}
+
+            <!-- Summary -->
+            <div class="grid grid-cols-3 gap-4 mb-6">
+                <div class="bg-blue-50 p-4 rounded-lg">
+                    <p class="text-sm text-gray-600">Focal Year</p>
+                    <p class="text-2xl font-bold text-blue-600">{{ comparison.focal_year if comparison else 'N/A' }}</p>
+                </div>
+                <div class="bg-green-50 p-4 rounded-lg">
+                    <p class="text-sm text-gray-600">Baseline Period</p>
+                    <p class="text-xl font-bold text-green-600">{{ comparison.baseline_period if comparison else 'N/A' }}</p>
+                </div>
+                <div class="bg-purple-50 p-4 rounded-lg">
+                    <p class="text-sm text-gray-600">Source</p>
+                    <p class="text-xl font-bold text-purple-600">{{ comparison.source if comparison else 'N/A' }}</p>
+                </div>
+            </div>
+
+            <!-- Precipitation Comparison -->
+            {% if precip %}
+            <div class="mb-6">
+                <h3 class="font-semibold text-lg mb-3">Precipitation Comparison</h3>
+                <div class="grid grid-cols-3 gap-4">
+                    <div class="bg-gray-50 p-3 rounded">
+                        <p class="text-xs text-gray-500">Baseline Total</p>
+                        <p class="font-semibold">{{ "%.2f"|format(precip.total_mm.baseline_avg) }} mm</p>
+                    </div>
+                    <div class="bg-gray-50 p-3 rounded">
+                        <p class="text-xs text-gray-500">Focal Total</p>
+                        <p class="font-semibold">{{ "%.2f"|format(precip.total_mm.focal) }} mm</p>
+                    </div>
+                    <div class="bg-gray-50 p-3 rounded">
+                        <p class="text-xs text-gray-500">Difference</p>
+                        <p class="font-semibold {% if precip.total_mm.diff > 0 %}text-green-600{% elif precip.total_mm.diff < 0 %}text-red-600{% endif %}">
+                            {{ "%.2f"|format(precip.total_mm.diff) }} mm ({{ "%.1f"|format(precip.total_mm.pct) }}%)
+                        </p>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+            <!-- Temperature Comparison -->
+            {% if temp %}
+            <div class="mb-6">
+                <h3 class="font-semibold text-lg mb-3">Temperature Comparison</h3>
+                <div class="grid grid-cols-3 gap-4">
+                    <div class="bg-gray-50 p-3 rounded">
+                        <p class="text-xs text-gray-500">Baseline Mean</p>
+                        <p class="font-semibold">{{ "%.2f"|format(temp.mean_tavg.baseline_avg) }} °C</p>
+                    </div>
+                    <div class="bg-gray-50 p-3 rounded">
+                        <p class="text-xs text-gray-500">Focal Mean</p>
+                        <p class="font-semibold">{{ "%.2f"|format(temp.mean_tavg.focal) }} °C</p>
+                    </div>
+                    <div class="bg-gray-50 p-3 rounded">
+                        <p class="text-xs text-gray-500">Difference</p>
+                        <p class="font-semibold {% if temp.mean_tavg.diff > 0 %}text-red-600{% elif temp.mean_tavg.diff < 0 %}text-green-600{% endif %}">
+                            {{ "%.2f"|format(temp.mean_tavg.diff) }} °C ({{ "%.1f"|format(temp.mean_tavg.pct) }}%)
+                        </p>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+            <!-- Water Balance Comparison -->
+            {% if wb %}
+            <div>
+                <h3 class="font-semibold text-lg mb-3">Water Balance Comparison</h3>
+                <div class="grid grid-cols-3 gap-4">
+                    <div class="bg-gray-50 p-3 rounded">
+                        <p class="text-xs text-gray-500">Baseline Balance</p>
+                        <p class="font-semibold">{{ "%.2f"|format(wb.total_balance.baseline_avg) }} mm</p></p>
+                    </div>
+                    <div class="bg-gray-50 p-3 rounded">
+                        <p class="text-xs text-gray-500">Focal Balance</p>
+                        <p class="font-semibold">{{ "%.2f"|format(wb.total_balance.focal) }} mm</p>
+                    </div>
+                    <div class="bg-gray-50 p-3 rounded">
+                        <p class="text-xs text-gray-500">Difference</p>
+                        <p class="font-semibold {% if wb.total_balance.diff > 0 %}text-green-600{% elif wb.total_balance.diff < 0 %}text-red-600{% endif %}">
+                            {{ "%.2f"|format(wb.total_balance.diff) }} mm ({{ "%.1f"|format(wb.total_balance.pct) }}%)
+                        </p>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+        {% else %}
+            <div class="bg-red-50 border border-red-200 rounded-md p-4">
+                <p class="text-red-800">{{ result.message }}</p>
+            </div>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function handleFormSubmit(event, title, initialMessage) {
+    event.preventDefault();
+    showLoading(title, initialMessage);
+    addLog('Authenticating to data source...');
+    updateProgress(20, 'Computing baseline statistics...');
+
+    const form = event.target;
+    const formData = new FormData(form);
+
+    fetch(form.action, {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => {
+        addLog('Baseline computed, fetching focal period...');
+        updateProgress(60, 'Computing comparison data...');
+        return response.text();
+    })
+    .then(html => {
+        addLog('Comparison complete!');
+        updateProgress(80, 'Generating comparison report...');
+        document.documentElement.innerHTML = html;
+        window.scrollTo(0, 0);
+    })
+    .catch(error => {
+        showError('Error: ' + error.message);
+    });
+}
+</script>
+{% endblock %}

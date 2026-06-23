@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Climate Toolkit{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#059669',
+                        secondary: '#0891b2',
+                    }
+                }
+            }
+        }
+    </script>
+    {% block extra_head %}{% endblock %}
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <!-- Navigation -->
+    <nav class="bg-white shadow-md">
+        <div class="max-w-7xl mx-auto px-4">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <a href="{{ url_for('index') }}" class="flex items-center space-x-2">
+                        <svg class="w-8 h-8 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a.5.5 0 00.5-.5v-.5a.5.5 0 00-.5-.5h-.5A2.5 2.5 0 008 3.935zM3 11v4a2 2 0 002 2h.055a2 2 0 001.683-1.182A2.98 2.98 0 005.293 14.5H20a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2z"></path>
+                        </svg>
+                        <span class="text-xl font-bold text-gray-800">Climate Toolkit</span>
+                    </a>
+                </div>
+                <div class="flex items-center space-x-1">
+                    <a href="{{ url_for('index') }}" class="px-3 py-2 rounded-md text-sm font-medium {% if request.path == '/' %}bg-primary text-white{% else %}text-gray-700 hover:bg-gray-100{% endif %}">Home</a>
+                    <a href="{{ url_for('fetch_data_page') }}" class="px-3 py-2 rounded-md text-sm font-medium {% if request.path == '/fetch' %}bg-primary text-white{% else %}text-gray-700 hover:bg-gray-100{% endif %}">Fetch Data</a>
+                    <a href="{{ url_for('statistics_page') }}" class="px-3 py-2 rounded-md text-sm font-medium {% if request.path == '/statistics' %}bg-primary text-white{% else %}text-gray-700 hover:bg-gray-100{% endif %}">Statistics</a>
+                    <a href="{{ url_for('seasons_page') }}" class="px-3 py-2 rounded-md text-sm font-medium {% if request.path == '/seasons' %}bg-primary text-white{% else %}text-gray-700 hover:bg-gray-100{% endif %}">Seasons</a>
+                    <a href="{{ url_for('climatology_page') }}" class="px-3 py-2 rounded-md text-sm font-medium {% if request.path == '/climatology' %}bg-primary text-white{% else %}text-gray-700 hover:bg-gray-100{% endif %}">Climatology</a>
+                    <a href="{{ url_for('compare_periods_page') }}" class="px-3 py-2 rounded-md text-sm font-medium {% if request.path == '/compare-periods' %}bg-primary text-white{% else %}text-gray-700 hover:bg-gray-100{% endif %}">Compare Periods</a>
+                    <a href="{{ url_for('compare_datasets_page') }}" class="px-3 py-2 rounded-md text-sm font-medium {% if request.path == '/compare-datasets' %}bg-primary text-white{% else %}text-gray-700 hover:bg-gray-100{% endif %}">Compare Datasets</a>
+                    <a href="{{ url_for('hazards_page') }}" class="px-3 py-2 rounded-md text-sm font-medium {% if request.path == '/hazards' %}bg-primary text-white{% else %}text-gray-700 hover:bg-gray-100{% endif %}">Hazards</a>
+                    <a href="/docs" class="px-3 py-2 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-100" target="_blank">API Docs</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="max-w-7xl mx-auto px-4 py-8">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="fixed inset-0 bg-gray-900 bg-opacity-50 hidden z-50 flex items-center justify-center">
+        <div class="bg-white rounded-lg shadow-2xl p-6 max-w-2xl w-full mx-4">
+            <div class="flex items-center space-x-4">
+                <div class="animate-spin rounded-full h-10 w-10 border-4 border-primary border-t-transparent"></div>
+                <div class="flex-1">
+                    <h3 class="text-lg font-semibold text-gray-900" id="loading-title">Processing...</h3>
+                    <p class="text-sm text-gray-600" id="loading-message">Please wait while we fetch your data.</p>
+                </div>
+            </div>
+            
+            <!-- Progress Bar -->
+            <div class="mt-4">
+                <div class="w-full bg-gray-200 rounded-full h-2">
+                    <div id="progress-bar" class="bg-primary h-2 rounded-full" style="width: 0%"></div>
+                </div>
+            </div>
+            
+            <!-- Logs -->
+            <div class="mt-4">
+                <h4 class="text-sm font-medium text-gray-700 mb-2">Progress Logs:</h4>
+                <div id="log-container" class="bg-gray-50 border rounded-md p-3 h-48 overflow-y-auto text-xs font-mono">
+                    <div class="text-gray-500">Waiting for process to start...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="bg-white border-t mt-auto">
+        <div class="max-w-7xl mx-auto px-4 py-4">
+            <p class="text-center text-sm text-gray-500">Climate Toolkit API - Powered by FastAPI</p>
+        </div>
+    </footer>
+
+    <script>
+        function showLoading(title, message) {
+            document.getElementById('loading-title').textContent = title || 'Processing...';
+            document.getElementById('loading-message').textContent = message || 'Please wait while we fetch your data.';
+            document.getElementById('loading-overlay').classList.remove('hidden');
+            document.getElementById('progress-bar').style.width = '10%';
+            addLog('Starting process...');
+        }
+
+        function updateProgress(percent, message) {
+            document.getElementById('progress-bar').style.width = percent + '%';
+            if (message) {
+                addLog(message);
+            }
+        }
+
+        function addLog(message) {
+            const container = document.getElementById('log-container');
+            const time = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = 'py-1 border-b border-gray-200';
+            entry.innerHTML = `<span class="text-gray-400">[${time}]</span> ${message}`;
+            container.appendChild(entry);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function hideLoading() {
+            document.getElementById('loading-overlay').classList.add('hidden');
+        }
+
+        function showError(message) {
+            addLog('ERROR: ' + message);
+            setTimeout(() => {
+                hideLoading();
+            }, 2000);
+        }
+
+        function handleFormSubmit(event, title, initialMessage) {
+            event.preventDefault();
+            showLoading(title, initialMessage);
+            addLog('Submitting request...');
+
+            const form = event.target;
+            const formData = new FormData(form);
+            const action = form.action || window.location.pathname;
+
+            fetch(action, {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => {
+                updateProgress(90, 'Processing complete, loading results...');
+                if (!response.ok) {
+                    throw new Error(`Server error: ${response.status}`);
+                }
+                updateProgress(100, 'Done!');
+                addLog('Redirecting to results...');
+                return response.text();
+            })
+            .then(html => {
+                document.open();
+                document.write(html);
+                document.close();
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                showError(error.message || 'An error occurred');
+            });
+        }
+    </script>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

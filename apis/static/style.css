@@ -1,0 +1,46 @@
+/* Custom styles for Climate Toolkit */
+:root {
+    --primary: #059669;
+    --primary-hover: #047857;
+}
+
+.btn-primary {
+    @apply bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 transition;
+}
+
+.card {
+    @apply bg-white rounded-lg shadow p-6;
+}
+
+.input-field {
+    @apply w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent;
+}
+
+/* Override some Tailwind defaults */
+table {
+    font-size: 0.875rem;
+}
+
+th {
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/* Smooth transitions */
+a, button {
+    transition: all 0.2s ease-in-out;
+}
+
+/* Form focus states */
+input:focus, select:focus {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.1);
+}
+
+/* Responsive adjustments */
+@media (max-width: 640px) {
+    .grid-cols-2, .grid-cols-3, .grid-cols-4 {
+        grid-template-columns: 1fr;
+    }
+}

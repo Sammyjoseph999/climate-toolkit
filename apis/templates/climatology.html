@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+
+{% block title %}Climatology Analysis{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto">
+    <h1 class="text-3xl font-bold text-gray-900 mb-8">Long-term Climatology Analysis</h1>
+
+    <form method="POST" action="{{ url_for('climatology_page') }}" id="climatology-form" class="space-y-6" onsubmit="handleFormSubmit(event, 'Calculating Climatology', 'Computing long-term climate normals...')">
+        <!-- Location -->
+        <div class="bg-white p-6 rounded-lg shadow">
+            <h2 class="text-lg font-semibold mb-4">Location</h2>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Latitude</label>
+                    <input type="number" name="lat" step="0.001" value="-1.286" required
+                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Longitude</label>
+                    <input type="number" name="lon" step="0.001" value="36.817" required
+                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+            </div>
+        </div>
+
+        <!-- Data Source -->
+        <div class="bg-white p-6 rounded-lg shadow">
+            <h2 class="text-lg font-semibold mb-4">Data Source</h2>
+            <select name="source" required
+                class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                <option value="chirps">CHIRPS</option>
+                <option value="agera_5">AgERA5</option>
+                <option value="era_5">ERA5</option>
+                <option value="terraclimate">TerraClimate</option>
+            </select>
+        </div>
+
+        <!-- Year Range -->
+        <div class="bg-white p-6 rounded-lg shadow">
+            <h2 class="text-lg font-semibold mb-4">Climatology Period</h2>
+            <p class="text-xs text-gray-500 mb-3">Standard WMO periods: 1961-1990, 1971-2000, 1981-2010, 1991-2020</p>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Start Year</label>
+                    <input type="number" name="start_year" value="1991" min="1961" max="2020" required
+                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">End Year</label>
+                    <input type="number" name="end_year" value="2020" min="1961" max="2024" required
+                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+            </div>
+        </div>
+
+        <!-- Submit -->
+        <div class="flex justify-end">
+            <button type="submit" id="submit-btn"
+                class="px-6 py-3 bg-primary text-white font-semibold rounded-lg hover:bg-primary-dark transition-colors">
+                Calculate Climatology
+            </button>
+        </div>
+    </form>
+
+    {% if result and result.status_code == 200 %}
+    <div class="mt-8 bg-white p-6 rounded-lg shadow">
+        <h2 class="text-lg font-semibold mb-4">Results</h2>
+
+        {% set clim = result.data %}
+
+        <!-- Summary -->
+        <div class="grid grid-cols-3 gap-4 mb-6">
+            <div class="bg-blue-50 p-4 rounded-lg">
+                <p class="text-sm text-gray-600">Location</p>
+                <p class="text-xl font-bold text-blue-600">{{ clim.location.latitude }}, {{ clim.location.longitude }}</p>
+            </div>
+            <div class="bg-green-50 p-4 rounded-lg">
+                <p class="text-sm text-gray-600">Period</p>
+                <p class="text-xl font-bold text-green-600">{{ clim.period.start_year }}-{{ clim.period.end_year }}</p>
+            </div>
+            <div class="bg-purple-50 p-4 rounded-lg">
+                <p class="text-sm text-gray-600">Source</p>
+                <p class="text-xl font-bold text-purple-600">{{ clim.source }}</p>
+            </div>
+        </div>
+
+        <!-- Years Processed -->
+        <div class="bg-gray-50 p-4 rounded-lg mb-6">
+            <p class="text-sm text-gray-600">Years Analyzed</p>
+            <p class="text-lg font-semibold">{{ clim.precipitation.years_used if clim.precipitation else (clim.temperature.years_used if clim.temperature else 0) }} years with valid data</p>
+        </div>
+
+        <!-- Precipitation Climatology -->
+        {% if clim.precipitation %}
+        <div class="mb-6">
+            <h3 class="font-semibold text-lg mb-3">Precipitation Climatology</h3>
+            <div class="grid grid-cols-3 gap-4">
+                <div class="bg-gray-50 p-3 rounded">
+                    <p class="text-xs text-gray-500">Mean Annual Total</p>
+                    <p class="font-semibold text-lg">{{ "%.1f"|format(clim.precipitation.mean_annual_total_mm) }} mm</p>
+                </div>
+                <div class="bg-gray-50 p-3 rounded">
+                    <p class="text-xs text-gray-500">Median Annual Total</p>
+                    <p class="font-semibold text-lg">{{ "%.1f"|format(clim.precipitation.median_annual_total_mm) }} mm</p>
+                </div>
+                <div class="bg-gray-50 p-3 rounded">
+                    <p class="text-xs text-gray-500">Std Dev</p>
+                    <p class="font-semibold text-lg">{{ "%.1f"|format(clim.precipitation.std_annual_total_mm) }} mm</p>
+                </div>
+            </div>
+            <div class="grid grid-cols-2 gap-4 mt-4">
+                <div class="bg-gray-50 p-3 rounded">
+                    <p class="text-xs text-gray-500">Min Annual Total</p>
+                    <p class="font-semibold">{{ "%.1f"|format(clim.precipitation.min_annual_total_mm) }} mm</p>
+                </div>
+                <div class="bg-gray-50 p-3 rounded">
+                    <p class="text-xs text-gray-500">Max Annual Total</p>
+                    <p class="font-semibold">{{ "%.1f"|format(clim.precipitation.max_annual_total_mm) }} mm</p>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Temperature Climatology -->
+        {% if clim.temperature %}
+        <div class="mb-6">
+            <h3 class="font-semibold text-lg mb-3">Temperature Climatology</h3>
+            <div class="grid grid-cols-3 gap-4">
+                <div class="bg-gray-50 p-3 rounded">
+                    <p class="text-xs text-gray-500">Mean Annual Tavg</p>
+                    <p class="font-semibold text-lg">{{ "%.1f"|format(clim.temperature.mean_annual_tavg_c) }} °C</p>
+                </div>
+                <div class="bg-gray-50 p-3 rounded">
+                    <p class="text-xs text-gray-500">Mean Annual Tmax</p>
+                    <p class="font-semibold text-lg">{{ "%.1f"|format(clim.temperature.mean_annual_tmax_c) }} °C</p>
+                </div>
+                <div class="bg-gray-50 p-3 rounded">
+                    <p class="text-xs text-gray-500">Mean Annual Tmin</p>
+                    <p class="font-semibold text-lg">{{ "%.1f"|format(clim.temperature.mean_annual_tmin_c) }} °C</p>
+                </div>
+            </div>
+            <div class="grid grid-cols-2 gap-4 mt-4">
+                <div class="bg-gray-50 p-3 rounded">
+                    <p class="text-xs text-gray-500">Min Tavg</p>
+                    <p class="font-semibold">{{ "%.1f"|format(clim.temperature.min_annual_tavg_c) }} °C</p>
+                </div>
+                <div class="bg-gray-50 p-3 rounded">
+                    <p class="text-xs text-gray-500">Max Tavg</p>
+                    <p class="font-semibold">{{ "%.1f"|format(clim.temperature.max_annual_tavg_c) }} °C</p>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Trends -->
+        {% if clim.trends %}
+        <div>
+            <h3 class="font-semibold text-lg mb-3">Climate Trends</h3>
+            <div class="bg-yellow-50 p-4 rounded-lg">
+                <p class="text-sm text-gray-600">Precipitation Trend</p>
+                <p class="font-semibold {% if clim.trends.precipitation.slope > 0 %}text-green-600{% else %}text-red-600{% endif %}">
+                    {{ "%.2f"|format(clim.trends.precipitation.slope) }} mm/year
+                    ({{ "%.1f"|format(clim.trends.precipitation.change_per_decade) }} mm/decade)
+                </p>
+            </div>
+        </div>
+        {% endif %}
+
+    {% elif result and result.status_code != 200 %}
+    <div class="mt-8 bg-red-50 border border-red-200 rounded-md p-4">
+        <p class="text-red-800">{{ result.message }}</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function handleFormSubmit(event, title, initialMessage) {
+    event.preventDefault();
+    showLoading(title, initialMessage);
+    addLog('Initializing climatology calculation...');
+    updateProgress(10, 'Connecting to data source...');
+
+    const form = event.target;
+    const formData = new FormData(form);
+
+    fetch(form.action, {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => {
+        addLog('Fetching annual data for each year...');
+        updateProgress(50, 'Computing annual statistics...');
+        return response.text();
+    })
+    .then(html => {
+        addLog('Calculating long-term normals...');
+        updateProgress(80, 'Computing climate normals...');
+        document.documentElement.innerHTML = html;
+        window.scrollTo(0, 0);
+    })
+    .catch(error => {
+        showError('Error: ' + error.message);
+    });
+}
+</script>
+{% endblock %}

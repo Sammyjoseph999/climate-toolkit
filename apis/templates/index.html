@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+
+{% block title %}Climate Toolkit - Home{% endblock %}
+
+{% block content %}
+<div class="space-y-8">
+    <!-- Hero Section -->
+    <div class="text-center py-12">
+        <h1 class="text-4xl font-bold text-gray-900 mb-4">Welcome to Climate Toolkit</h1>
+        <p class="text-xl text-gray-600 max-w-2xl mx-auto">A unified toolkit for retrieving climate data from various global datasets. Analyze precipitation, temperature, soil moisture, and more.</p>
+    </div>
+
+    <!-- Datasets Grid -->
+    <div>
+        <h2 class="text-2xl font-bold text-gray-900 mb-6">Available Datasets</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div class="bg-white p-4 rounded-lg shadow border border-gray-200">
+                <h3 class="font-semibold text-lg text-blue-600">CHIRPS</h3>
+                <p class="text-sm text-gray-600">Climate Hazards group InfraRed Precipitation with Station data</p>
+            </div>
+            <div class="bg-white p-4 rounded-lg shadow border border-gray-200">
+                <h3 class="font-semibold text-lg text-green-600">AgERA5</h3>
+                <p class="text-sm text-gray-600">Agricultural ERA5 - daily weather data for agriculture</p>
+            </div>
+            <div class="bg-white p-4 rounded-lg shadow border border-gray-200">
+                <h3 class="font-semibold text-lg text-gray-600">TerraClimate</h3>
+                <p class="text-sm text-gray-600">TerraClimate - monthly climate data</p>
+            </div>
+            <div class="bg-white p-4 rounded-lg shadow border border-gray-200">
+                <h3 class="font-semibold text-lg text-emerald-600">IMERG</h3>
+                <p class="text-sm text-gray-600">Integrated Multi-satellitE Retrievals for GPM</p>
+            </div>
+            <div class="bg-white p-4 rounded-lg shadow border border-gray-200">
+                <h3 class="font-semibold text-lg text-yellow-600">TAMSAT</h3>
+                <p class="text-sm text-gray-600">TAMSAT - African rainfall data</p>
+            </div>
+            <div class="bg-white p-4 rounded-lg shadow border border-gray-200">
+                <h3 class="font-semibold text-lg text-purple-600">CHIRTS</h3>
+                <p class="text-sm text-gray-600">Climate Hazards InfraRed Temperature with Stations</p>
+            </div>
+            <div class="bg-white p-4 rounded-lg shadow border border-gray-200">
+                <h3 class="font-semibold text-lg text-orange-600">ERA5</h3>
+                <p class="text-sm text-gray-600">ECMWF Reanalysis v5</p>
+            </div>
+            <div class="bg-white p-4 rounded-lg shadow border border-gray-200">
+                <h3 class="font-semibold text-lg text-blue-600">NEX-GDDP</h3>
+                <p class="text-sm text-gray-600">NASA Earth Exchange Global Daily Downscaled Projections</p>
+            </div>
+            <div class="bg-white p-4 rounded-lg shadow border border-gray-200">
+                <h3 class="font-semibold text-lg text-sky-600">NASA POWER</h3>
+                <p class="text-sm text-gray-600">NASA Prediction of Worldwide Energy Resources</p>
+            </div>
+            <div class="bg-white p-4 rounded-lg shadow border border-gray-200">
+                <h3 class="font-semibold text-lg text-red-600">CMIP6</h3>
+                <p class="text-sm text-gray-600">Coupled Model Intercomparison Project Phase 6</p>
+            </div>
+            <div class="bg-white p-4 rounded-lg shadow border border-gray-200">
+                <h3 class="font-semibold text-lg text-amber-700">SoilGrids</h3>
+                <p class="text-sm text-gray-600">ISRIC SoilGrids - global soil data</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Features -->
+    <div>
+        <h2 class="text-2xl font-bold text-gray-900 mb-6">Features</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <a href="{{ url_for('fetch_data_page') }}" class="bg-white p-6 rounded-lg shadow hover:shadow-lg transition border border-gray-200 block">
+                <div class="flex items-center justify-center w-12 h-12 bg-blue-100 rounded-full mb-4">
+                    <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                    </svg>
+                </div>
+                <h3 class="font-semibold text-lg mb-2">Fetch Data</h3>
+                <p class="text-sm text-gray-600">Download climate data from any of the 11 available datasets</p>
+            </a>
+            <a href="{{ url_for('statistics_page') }}" class="bg-white p-6 rounded-lg shadow hover:shadow-lg transition border border-gray-200 block">
+                <div class="flex items-center justify-center w-12 h-12 bg-green-100 rounded-full mb-4">
+                    <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                    </svg>
+                </div>
+                <h3 class="font-semibold text-lg mb-2">Statistics</h3>
+                <p class="text-sm text-gray-600">Analyze climate statistics by season with water balance</p>
+            </a>
+            <a href="{{ url_for('hazards_page') }}" class="bg-white p-6 rounded-lg shadow hover:shadow-lg transition border border-gray-200 block">
+                <div class="flex items-center justify-center w-12 h-12 bg-yellow-100 rounded-full mb-4">
+                    <svg class="w-6 h-6 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                </div>
+                <h3 class="font-semibold text-lg mb-2">Hazards</h3>
+                <p class="text-sm text-gray-600">Calculate crop hazard indices for specific locations</p>
+            </a>
+            <a href="{{ url_for('compare_periods_page') }}" class="bg-white p-6 rounded-lg shadow hover:shadow-lg transition border border-gray-200 block">
+                <div class="flex items-center justify-center w-12 h-12 bg-purple-100 rounded-full mb-4">
+                    <svg class="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                    </svg>
+                </div>
+                <h3 class="font-semibold text-lg mb-2">Compare Periods</h3>
+                <p class="text-sm text-gray-600">Compare climate between historical periods</p>
+            </a>
+</div>
+            <a href="{{ url_for('compare_datasets_page') }}" class="bg-white p-6 rounded-lg shadow hover:shadow-lg transition border border-gray-200 block">
+                <div class="flex items-center justify-center w-12 h-12 bg-indigo-100 rounded-full mb-4">
+                    <svg class="w-6 h-6 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2"></path>
+                    </svg>
+                </div>
+                <h3 class="font-semibold text-lg mb-2">Compare Datasets</h3>
+                <p class="text-sm text-gray-600">Compare statistics across multiple climate datasets</p>
+            </a>
+        </div>
+    </div>
+</div>
+{% endblock %}
